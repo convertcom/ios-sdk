@@ -5,20 +5,26 @@
 //
 // Usage: `install(into:)` prepends this protocol to a `URLSessionConfiguration`'s
 // `protocolClasses`, `stub(url:statusCode:data:headers:)` registers a canned
-// response keyed on the absolute URL string, and `reset()` clears the registry
-// (call it first in every test — NFR21 forbids state leaking between cases).
-// A request whose URL has no registered stub falls back to a 404 response with an
-// empty body (a real HTTP response, NOT a transport error), so an un-stubbed call
-// surfaces as a server-style miss rather than a thrown `URLError`.
+// response keyed on the absolute URL string, `stubFailure(url:error:)` registers a
+// transport-level failure for a URL (the load is failed with the given `URLError`
+// rather than answered), and `reset()` clears all registries plus the captured
+// request (call it first in every test — NFR21 forbids state leaking between cases).
+// A request whose URL has neither a stub nor a failure registered falls back to a
+// 404 response with an empty body (a real HTTP response, NOT a transport error), so
+// an un-stubbed call surfaces as a server-style miss rather than a thrown `URLError`.
+// Every intercepted request is recorded in `lastRequest` so a test can assert what
+// the client actually sent (e.g. the outbound `User-Agent` header).
 //
 // ── Concurrency shape (AC9) ───────────────────────────────────────────────────
 // `URLProtocol` is an `NSObject` subclass, so `URLProtocolStub` CANNOT be an
-// `actor`, and the handler registry the framework reads from `startLoading()` is
-// inherently PROCESS-GLOBAL: `URLProtocol` is instantiated by the loading system,
-// not by the test, so the registry must be CLASS-LEVEL `static` mutable state.
+// `actor`, and the state the framework reads from / writes to in `startLoading()`
+// is inherently PROCESS-GLOBAL: `URLProtocol` is instantiated by the loading
+// system, not by the test, so that state must be CLASS-LEVEL `static` mutable
+// storage. Three pieces share this shape — the response registry `handlers`, the
+// failure registry `failures`, and the captured `lastRequest`.
 //
-// That static storage needs `nonisolated(unsafe)` — it is the ONE annotation in
-// this file, applied to `handlers` alone. It is unavoidable here because:
+// That static storage needs `nonisolated(unsafe)`, applied to exactly those three
+// declarations and nothing else. It is unavoidable here because:
 //   * the `NSObject` inheritance rules out an `actor`, forcing static state;
 //   * `Synchronization.Mutex` (the annotation-free Sendable lock cell) is
 //     `@available(iOS 18, *)`, but this package's deployment floor is iOS 15 /
@@ -26,9 +32,9 @@
 //   * a plain `NSLock`-guarded `static var` does not satisfy Swift 6 strict
 //     concurrency's global-mutable-state checking, because the compiler cannot
 //     see the runtime lock.
-// The annotation is sound because EVERY read and write of `handlers` goes through
-// `lock.withLock`, so all accesses are mutually exclusive at runtime; the audit
-// surface is exactly the three accessors below. AC9 explicitly permits
+// The annotations are sound because EVERY read and write of all three goes through
+// the single shared `lock.withLock`, so all accesses are mutually exclusive at
+// runtime; the audit surface is exactly the accessors below. AC9 explicitly permits
 // `nonisolated(unsafe)` "where URLProtocol's inheritance model makes it
 // unavoidable" — this is precisely that case.
 
@@ -49,11 +55,26 @@ final class URLProtocolStub: URLProtocol {
 
     /// Process-global registry of canned responses, keyed on `url.absoluteString`.
     ///
-    /// This is the only `nonisolated(unsafe)` declaration in the file (see the
-    /// file header for why it is structurally unavoidable: `NSObject` subclass +
-    /// iOS 15 floor where `Synchronization.Mutex` is unavailable). It is sound
-    /// because every access below is serialized through ``lock``.
+    /// One of three `nonisolated(unsafe)` declarations in the file (see the file
+    /// header for why they are structurally unavoidable: `NSObject` subclass +
+    /// iOS 15 floor where `Synchronization.Mutex` is unavailable). Sound because
+    /// every access below is serialized through ``lock``.
     private nonisolated(unsafe) static var handlers: [String: StubResponse] = [:]
+
+    /// Process-global registry of transport-level failures, keyed on
+    /// `url.absoluteString`. When a URL is registered here, ``startLoading()`` fails
+    /// the load with the stored `URLError` instead of answering it — exercising the
+    /// client's error path (e.g. the body-read-throws / no-hang contract). A failure
+    /// registered for a URL takes precedence over any response stub for the same URL.
+    /// Guarded by ``lock`` exactly like ``handlers`` (see the file header).
+    private nonisolated(unsafe) static var failures: [String: URLError] = [:]
+
+    /// The most recent request intercepted by ``startLoading()``, recorded so a test
+    /// can assert what the client actually sent (e.g. the outbound `User-Agent`
+    /// header, which Foundation surfaces on the intercepted request when the caller
+    /// sets it explicitly via `setValue(_:forHTTPHeaderField:)`). Guarded by ``lock``
+    /// exactly like ``handlers`` (see the file header). Cleared by ``reset()``.
+    private nonisolated(unsafe) static var lastRequest: URLRequest?
 
     // MARK: - Registration
 
@@ -72,9 +93,30 @@ final class URLProtocolStub: URLProtocol {
         lock.withLock { handlers[url.absoluteString] = response }
     }
 
-    /// Clears all registered handlers, restoring the empty registry.
+    /// Registers a transport-level failure for `url`: a request to it fails the
+    /// load with `error` instead of producing an `HTTPURLResponse`. Models the
+    /// network-error path (connection lost, body read failed, …) so the client's
+    /// throwing / no-hang behavior can be exercised. Takes precedence over any
+    /// response stub for the same URL.
+    static func stubFailure(url: URL, error: URLError) {
+        lock.withLock { failures[url.absoluteString] = error }
+    }
+
+    /// The most recent intercepted request, or `nil` if none has been recorded
+    /// since the last ``reset()``. Read under ``lock``. Lets a test assert the
+    /// outbound request the client built (headers, method, URL).
+    static func recordedRequest() -> URLRequest? {
+        lock.withLock { lastRequest }
+    }
+
+    /// Clears every registry (responses and failures) and the captured request,
+    /// restoring the empty initial state.
     static func reset() {
-        lock.withLock { handlers.removeAll() }
+        lock.withLock {
+            handlers.removeAll()
+            failures.removeAll()
+            lastRequest = nil
+        }
     }
 
     // MARK: - URLProtocol overrides
@@ -91,14 +133,28 @@ final class URLProtocolStub: URLProtocol {
     }
 
     override func startLoading() {
+        // Record the intercepted request before answering it, so a test can assert
+        // what the client sent. Done under the same lock as the lookups below.
+        let capturedRequest = request
+
         guard let url = request.url else {
+            Self.lock.withLock { Self.lastRequest = capturedRequest }
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
         }
 
-        let matched = Self.lock.withLock { Self.handlers[url.absoluteString] }
+        // One critical section: capture the request and resolve both registries so
+        // the lock is taken once and the failure/stub decision is consistent.
+        let (failure, matched): (URLError?, StubResponse?) = Self.lock.withLock {
+            Self.lastRequest = capturedRequest
+            return (Self.failures[url.absoluteString], Self.handlers[url.absoluteString])
+        }
 
-        if let matched {
+        if let failure {
+            // Registered transport failure: fail the load with the given error.
+            // Takes precedence over any response stub for the same URL.
+            client?.urlProtocol(self, didFailWithError: failure)
+        } else if let matched {
             sendResponse(
                 url: url,
                 statusCode: matched.statusCode,
