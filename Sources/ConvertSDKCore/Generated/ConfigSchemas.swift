@@ -6212,7 +6212,6 @@ public enum Components {
             ///
             ///
             /// - Remark: Generated from `#/components/schemas/ConfigExperience/environments`.
-            @available(*, deprecated)
             public var environments: [Swift.String]?
             /// The environment where this experience will run. It has to be one of the environments defined at the project level
             ///
@@ -6225,12 +6224,10 @@ public enum Components {
                 /// Minimum order value for transactions outliers
                 ///
                 /// - Remark: Generated from `#/components/schemas/ConfigExperience/settings/min_order_value`.
-                @available(*, deprecated)
                 public var min_order_value: Swift.Double?
                 /// Maximum order value for transactions outliers
                 ///
                 /// - Remark: Generated from `#/components/schemas/ConfigExperience/settings/max_order_value`.
-                @available(*, deprecated)
                 public var max_order_value: Swift.Double?
                 /// Various settings used by the stats engine to detect outliers
                 ///
@@ -8311,12 +8308,10 @@ public enum Components {
                     /// Minimum order value for transactions outliers
                     ///
                     /// - Remark: Generated from `#/components/schemas/ConfigProject/settings/value1/min_order_value`.
-                    @available(*, deprecated)
                     public var min_order_value: Swift.Double?
                     /// Maximum order value for transactions outliers
                     ///
                     /// - Remark: Generated from `#/components/schemas/ConfigProject/settings/value1/max_order_value`.
-                    @available(*, deprecated)
                     public var max_order_value: Swift.Double?
                     /// Various settings used by the stats engine to detect outliers
                     ///
