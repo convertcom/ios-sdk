@@ -33,4 +33,12 @@ public enum Defaults {
 
     /// Interval, in milliseconds, between remote configuration refreshes.
     public static let dataRefreshIntervalMs = 300_000
+
+    /// Per-request timeout (seconds) for foreground HTTP. FR45: a bounded value, NOT the
+    /// 7-day URLSession default.
+    public static let requestTimeoutSeconds: TimeInterval = 30
+
+    /// Whole-resource timeout (seconds) for foreground HTTP. FR45: bounded with generous
+    /// headroom for large configs on slow links (5 min), NOT the 7-day default.
+    public static let resourceTimeoutSeconds: TimeInterval = 300
 }
