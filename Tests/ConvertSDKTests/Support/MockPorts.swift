@@ -250,6 +250,10 @@ final class MockLogger: Logger {
 /// the Unix epoch so an unconfigured clock is still deterministic.
 final class MockClock: Clock {
     private let box: LockedBox<Date>
+    /// Records the `milliseconds` of every ``sleep(milliseconds:)`` call, in order, so a test can
+    /// assert what was slept on without any wall-clock wait. Separate ``LockedBox`` cell from the
+    /// `now` storage — the same lock-protected primitive the other synchronous mocks use.
+    private let recordedSleeps = LockedBox<[Int]>([])
 
     init(now: Date = Date(timeIntervalSince1970: 0)) {
         self.box = LockedBox(now)
@@ -259,9 +263,21 @@ final class MockClock: Clock {
         box.get
     }
 
+    /// The `milliseconds` of each recorded ``sleep(milliseconds:)`` call, in call order.
+    var sleeps: [Int] {
+        recordedSleeps.get
+    }
+
     /// Sets the instant returned by ``now``.
     func setNow(_ date: Date) {
         box.set(date)
+    }
+
+    /// Records the requested duration and resumes immediately — NO wall-clock wait (NFR21). A
+    /// deterministic stand-in for ``SystemClock/sleep(milliseconds:)``; the fuller virtual-clock
+    /// stepping API is added in a later task.
+    func sleep(milliseconds: Int) async {
+        recordedSleeps.withLock { $0.append(milliseconds) }
     }
 }
 

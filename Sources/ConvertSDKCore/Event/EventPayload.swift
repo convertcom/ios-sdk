@@ -10,10 +10,15 @@ public struct ReadyPayload: Sendable {
     public init() {}
 }
 
-/// Payload for `SystemEvent.configUpdated`. Carries no data.
+/// Payload for `SystemEvent.configUpdated` — the config snapshot that was (re)loaded.
 public struct ConfigUpdatedPayload: Sendable {
-    /// Creates an empty config-updated payload.
-    public init() {}
+    /// The config snapshot that was (re)loaded; `nil` for a degraded refresh with no typed config.
+    public let snapshot: ProjectConfig?
+
+    /// Memberwise initializer.
+    public init(snapshot: ProjectConfig?) {
+        self.snapshot = snapshot
+    }
 }
 
 /// Payload for `SystemEvent.bucketing` — the visitor/variation pairing that was resolved.
