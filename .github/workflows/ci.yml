@@ -1,0 +1,45 @@
+name: CI
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+permissions: read-all
+jobs:
+  build-test:
+    name: Build, Lint & Test
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: SwiftLint (zero-warnings)
+        run: swiftlint lint --strict --reporter github-actions-logging
+      - name: Resolve package graph
+        run: swift package resolve
+      - name: Build
+        run: swift build
+      - name: Import Guard — ConvertSDKCore Foundation-only
+        run: |
+          if grep -rE '^[[:space:]]*import[[:space:]]+(UIKit|AppKit|Security|BackgroundTasks|WatchKit)' Sources/ConvertSDKCore/ --include='*.swift'; then
+            echo "::error::forbidden framework import found in ConvertSDKCore (must be Foundation-only per AR3)"
+            exit 1
+          fi
+          echo "Import guard passed — ConvertSDKCore is Foundation-only."
+      - name: Compile against iOS 15 floor (ConvertSDKCore — pure logic, compile-only)
+        run: xcodebuild build -scheme ConvertSDK -destination 'generic/platform=iOS Simulator' -quiet
+      - name: Test + Coverage (all targets, latest iOS simulator)
+        run: xcodebuild test -scheme ConvertSDK -destination 'platform=iOS Simulator,name=iPhone 16' -enableCodeCoverage YES -resultBundlePath TestResults.xcresult -quiet
+      - name: Coverage gates (core >=85% / platform >=70%) — NON-BLOCKING until Story 5.5
+        continue-on-error: true   # TODO(story-5-5): harden to blocking gate
+        run: |
+          if ! python3 Scripts/check-coverage.py --result TestResults.xcresult --core-target ConvertSDKCore --core-min 85 --platform-target ConvertSDK --platform-min 70; then
+            echo "::warning::Coverage gate not yet met (core>=85%/platform>=70%). Non-blocking until Story 5.5 hardens it to a blocking gate."
+          fi
+  parity-suite:
+    name: Parity Suite (100%-pass independent job)
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Hash Parity (placeholder until Story 3.2)
+        run: echo "Parity job scaffolded — HashParityTests added in Story 3.2"
