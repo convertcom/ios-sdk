@@ -15,16 +15,16 @@ import Foundation
 /// `@unchecked Sendable`.
 public final class ConvertSDK: Sendable {
     /// The immutable configuration this handle was created with.
-    let configuration: ConvertConfiguration
+    private let configuration: ConvertConfiguration
     /// The bus on which `.ready` (and later system events) fire; shared with ``configStore``.
-    let eventBus: EventBus
+    private let eventBus: EventBus
     /// Owns the "config present" state and the one-shot ready gate.
-    let configStore: ConfigStore
+    private let configStore: ConfigStore
     /// Loads the project configuration. A no-op ``StubConfigLoader`` for the public key
     /// initializer until Story 2.3; a mock in tests.
-    let configLoader: ConfigLoader
+    private let configLoader: ConfigLoader
     /// Pre-fetched config payload for the direct-data initializer; `nil` on the key path.
-    let directData: Data?
+    private let directData: Data?
 
     /// Developer-assigned convenience, nil until set; not a singleton and not installed by
     /// init. `nonisolated(unsafe)` because it is intended to be assigned once at app startup,

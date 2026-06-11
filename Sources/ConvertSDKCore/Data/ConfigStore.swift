@@ -110,6 +110,10 @@ public actor ConfigStore {
         do {
             try ConfigValidation.validate(data)
         } catch {
+            // `signalError` is intentionally synchronous (non-`async`): it must run to
+            // completion on this actor without yielding between catching the validation
+            // error and latching/resuming on it, so no interleaved `setConfig`/`signalError`
+            // can race the terminal transition.
             signalError(error)
             return
         }
