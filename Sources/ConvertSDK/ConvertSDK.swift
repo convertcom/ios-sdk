@@ -76,7 +76,12 @@ public final class ConvertSDK: Sendable {
                 // Transient network/transport failure → resolve ready() DEGRADED: fall through
                 // to setConfig so the SDK is usable; never rethrow a transient load error.
             }
-            await store.setConfig()
+            // TRANSITIONAL degraded-ready bridge for Story 2.3: the real config fetch
+            // (ConfigFetchService) is wired in here by a LATER task ([SDK-2]). Until then the
+            // (no-op StubConfigLoader) load yields no typed `ProjectConfig`, so the load path
+            // resolves ready() DEGRADED (snapshot nil) — preserving non-blocking-init +
+            // degraded-ready semantics. [SDK-2] replaces `nil` with the fetched config.
+            await store.setConfig(nil)
         }
     }
 
