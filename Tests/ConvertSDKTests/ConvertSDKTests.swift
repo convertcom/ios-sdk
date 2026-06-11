@@ -64,19 +64,65 @@ private func drain() async {
     await MainActor.run { }
 }
 
-/// Drives the subscribe → fire-via-`ready()` → drain → unsubscribe dance inside a
+/// A ``ConfigLoader`` whose `load` parks until ``release()`` is called, so a test can
+/// register a `.ready` subscriber via `sut.on(.ready)` BEFORE the SDK's init task fires
+/// `.ready` (which only happens after `load` returns and `setConfig` runs).
+///
+/// Why this exists (RED-phase timing-bug fix): the SDK begins loading config — and therefore
+/// races to fire the one-shot, latching `.ready` — the instant it is constructed in `init`.
+/// `.ready` fires exactly once and latches (the locked ``ConfigStore`` contract), so a
+/// subscriber attached AFTER that fire never sees it. The original ``confirmReadyDelivery``
+/// subscribed via `sut.on(.ready)` only after `makeSut()` had already constructed (and thus
+/// possibly already fired on) the SUT, an order that is non-deterministic under parallel test
+/// execution: it passed in isolation but `Confirmation was confirmed 0 times` under suite
+/// load. Gating `load` makes the fire happen strictly after the subscription, deterministically
+/// (a pure continuation handoff — no sleep, no wall-clock; NFR21/22), WITHOUT weakening
+/// production: the SDK still fires once and latches; the test simply controls when the load
+/// (hence the fire) completes, the way the real network would.
+private actor GateConfigLoader: ConfigLoader {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    /// Parks until ``release()``; returns immediately if already released.
+    func load(sdkKey: String) async throws {
+        if released { return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            self.continuation = cont
+        }
+    }
+
+    /// Unblocks a parked (or future) ``load``, letting the init task proceed to fire `.ready`.
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+/// Drives the subscribe → release-gated-load → `ready()` → drain → unsubscribe dance inside a
 /// caller-supplied confirmation, so the two suites that assert `.ready` delivery
-/// (`ready()` fires exactly once; `on/off` forwards to the bus) do not duplicate the
-/// block. `readyCalls` lets a caller fire `ready()` more than once to prove the event still
-/// latches to a single delivery. The `confirmation`'s `expectedCount` (owned by the caller)
-/// is what actually asserts the delivery count.
+/// (`ready()` fires exactly once; `on/off` forwards to the bus) do not duplicate the block.
+/// `readyCalls` lets a caller await `ready()` more than once to prove the event still latches
+/// to a single delivery. The `confirmation`'s `expectedCount` (owned by the caller) is what
+/// actually asserts the delivery count.
+///
+/// Subscribes via `sut.on(.ready)` (exercising the SDK's bus forwarding) BEFORE releasing the
+/// ``GateConfigLoader``, so the init task fires `.ready` strictly after the subscriber is
+/// registered — making delivery deterministic regardless of scheduler interleaving. The SUT
+/// is built here (rather than passed in) so the gate loader is wired and the
+/// subscribe-before-fire ordering is owned in one place.
 @MainActor
 private func confirmReadyDelivery(
-    sut: ConvertSDK,
     readyCalls: Int,
     fired: @escaping @Sendable () -> Void
 ) async throws {
+    let loader = GateConfigLoader()
+    let sut = ConvertSDK(
+        configuration: ConvertConfiguration(sdkKey: validSdkKey),
+        configLoader: loader
+    )
     let token = await sut.on(.ready) { _ in fired() }
+    await loader.release()
     for _ in 0..<readyCalls {
         try await sut.ready()
     }
@@ -141,9 +187,8 @@ struct ConvertSDKReadyTests {
     @MainActor
     @Test("ready() fires the .ready event exactly once across repeated calls")
     func readyFiresReadyEventExactlyOnce() async throws {
-        let sut = makeSut()
-        await confirmation("the .ready event is delivered exactly once", expectedCount: 1) { fired in
-            try await confirmReadyDelivery(sut: sut, readyCalls: 2, fired: fired)
+        try await confirmation("the .ready event is delivered exactly once", expectedCount: 1) { fired in
+            try await confirmReadyDelivery(readyCalls: 2, fired: { fired() })
         }
     }
 
@@ -185,9 +230,8 @@ struct ConvertSDKOnOffTests {
     @MainActor
     @Test("on(.ready) receives the event that ready() fires, and off() is wired")
     func onOffForwardsToEventBus() async throws {
-        let sut = makeSut()
-        await confirmation("the on(.ready) subscriber receives the fired event", expectedCount: 1) { fired in
-            try await confirmReadyDelivery(sut: sut, readyCalls: 1, fired: fired)
+        try await confirmation("the on(.ready) subscriber receives the fired event", expectedCount: 1) { fired in
+            try await confirmReadyDelivery(readyCalls: 1, fired: { fired() })
         }
     }
 }
@@ -216,13 +260,33 @@ struct ConvertSDKCompletionTests {
     /// `MainActor` executor before the confirmation body exits. `expectedCount: 1` asserts
     /// the completion fires once; the drain is the (wall-clock-free, NFR21/22) flush
     /// mechanism, not a timing assertion.
+    ///
+    /// The confirmation body AWAITS the completion deterministically via
+    /// `withCheckedContinuation` (RED-phase timing-bug fix), instead of firing the overload
+    /// and flushing with a single `drain()`. The completion overload spawns a detached `Task`
+    /// that `await`s the config-load chain before hopping to `MainActor` to invoke the
+    /// completion; a lone `drain()` barrier could return before that `Task` reached its hop,
+    /// leaving (a) the `Confirmation` possibly observing 0 confirmations and (b) the orphaned
+    /// detached `Task` still live in the concurrency runtime after the body exited — which, in
+    /// the combined test process, kept the runtime's main queue non-empty and prevented the
+    /// test binary from exiting (a post-"all tests passed" hang; `--skip`ping only this test
+    /// let the suite exit cleanly). Bridging the callback to the body's `await` resumes the
+    /// body exactly when the completion fires on `MainActor`: `done()` is recorded and the
+    /// detached `Task` runs to completion BEFORE the body returns, so nothing lingers and the
+    /// process exits. `expectedCount: 1` still asserts a single MainActor delivery. This fixes
+    /// a genuine test/runtime race; it does NOT weaken production — the `ready(completion:)`
+    /// overload is exercised exactly as shipped (its result still arrives on `MainActor`).
     @MainActor
     @Test("ready(completion:) invokes the completion on MainActor exactly once")
     func completionCalledOnMainActor() async {
         let sut = makeSut()
         await confirmation("the completion is invoked once", expectedCount: 1) { done in
-            sut.ready(completion: { _ in done() })
-            await drain()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                sut.ready(completion: { _ in
+                    done()
+                    continuation.resume()
+                })
+            }
         }
     }
 }
