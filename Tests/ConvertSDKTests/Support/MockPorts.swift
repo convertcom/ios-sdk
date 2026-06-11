@@ -264,3 +264,38 @@ final class MockClock: Clock {
         box.set(date)
     }
 }
+
+// MARK: - MockConfigLoader
+
+/// Test double for ``ConfigLoader`` that always succeeds (Story 2.2 entry-point suites).
+///
+/// Shape: `actor` — `load(sdkKey:)` is the sole `async` requirement, so actor isolation
+/// satisfies the port with no `Sendable` suppression (mirrors ``MockHTTPClient`` /
+/// ``MockEventSink``). It records every key it was asked to load, in order, so a test can
+/// assert the SDK forwarded the configured key; the call itself returns immediately. This
+/// is the loader the entry-point happy-path suites inject so `ready()` resolves without
+/// touching the network.
+actor MockConfigLoader: ConfigLoader {
+    /// Every `sdkKey` the loader was asked to load, in call order. Lets tests assert the
+    /// SDK forwarded the configured key to its loader.
+    private(set) var loadedKeys: [String] = []
+
+    func load(sdkKey: String) async throws {
+        loadedKeys.append(sdkKey)
+    }
+}
+
+// MARK: - FailingMockConfigLoader
+
+/// Test double for ``ConfigLoader`` that simulates a transient network failure.
+///
+/// Shape: `actor` — same rationale as ``MockConfigLoader``. `load(sdkKey:)` always throws
+/// `URLError(.notConnectedToInternet)` to model the offline / transport-failure path. The
+/// SDK's config-load task is expected to CATCH this and still resolve `ready()` degraded
+/// (never rethrowing a transient network error); the entry-point degraded-path suite
+/// injects this loader to exercise that contract.
+actor FailingMockConfigLoader: ConfigLoader {
+    func load(sdkKey: String) async throws {
+        throw URLError(.notConnectedToInternet)
+    }
+}
