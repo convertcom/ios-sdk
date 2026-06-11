@@ -15,6 +15,10 @@ let package = Package(
         .target(
             name: "ConvertSDKCore",
             path: "Sources/ConvertSDKCore",
+            // Generated/README.md documents the codegen command (AC2). It is a
+            // non-Swift doc file inside a source directory; exclude it so SwiftPM
+            // does not emit an "unhandled file" warning (AC7 — zero warnings).
+            exclude: ["Generated/README.md"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .target(
