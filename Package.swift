@@ -27,12 +27,14 @@ let package = Package(
         .testTarget(
             name: "ConvertSDKCoreTests",
             dependencies: ["ConvertSDKCore"],
-            path: "Tests/ConvertSDKCoreTests"
+            path: "Tests/ConvertSDKCoreTests",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
             name: "ConvertSDKTests",
             dependencies: ["ConvertSDK"],
-            path: "Tests/ConvertSDKTests"
+            path: "Tests/ConvertSDKTests",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]
 )

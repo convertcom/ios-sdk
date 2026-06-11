@@ -3,3 +3,6 @@ DerivedData/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 .DS_Store
 .swiftpm/
+# Library package with zero external deps — Package.resolved is not pinned.
+# Remove this line if the team later decides to pin external dev/test dependencies.
+Package.resolved
