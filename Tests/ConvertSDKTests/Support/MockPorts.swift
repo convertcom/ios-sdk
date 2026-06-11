@@ -14,10 +14,11 @@
 //     requirement on these ports is `async`, so an actor satisfies them with the
 //     compiler fully reasoning about isolation: NO `@unchecked Sendable`, NO
 //     `nonisolated(unsafe)`, NO lock.
-//   * `final class` + `LockedBox` — `MockLogger`, `MockClock`. Their requirements
-//     are SYNCHRONOUS (`func log(...)`, `var now: Date { get }`), which an actor
-//     cannot satisfy (actor access is async). Their mutable state is held in a
-//     single `LockedBox` cell (see below).
+//   * `final class` + `LockedBox` — `MockLogger` (here) and `MockClock` (extracted to the
+//     sibling `MockClock.swift` once its stepping API outgrew this file's 400-line lint limit).
+//     Their requirements are SYNCHRONOUS (`func log(...)`, `var now: Date { get }`), which an
+//     actor cannot satisfy (actor access is async). Their mutable state is held in a single
+//     `LockedBox` cell (see below).
 //
 // `Mutex<Value>` from `Synchronization` — the modern lock-cell that the compiler
 // accepts as `Sendable` with mutable contents and needs no annotation — is NOT
@@ -37,7 +38,7 @@ import ConvertSDK
 // MARK: - LockedBox
 
 /// A `Sendable` lock-protected storage cell — the single concurrency primitive
-/// behind the synchronous mocks (`MockLogger`, `MockClock`).
+/// behind the synchronous mocks (`MockLogger` here, `MockClock` in `MockClock.swift`).
 ///
 /// `value` is the only `nonisolated(unsafe)` declaration in this file. It is sound
 /// because every read and write goes through `lock.withLock`, so accesses are
@@ -237,47 +238,6 @@ final class MockLogger: Logger {
         box.get.filter { entry in
             (type == nil || entry.type == type) && (method == nil || entry.method == method)
         }
-    }
-}
-
-// MARK: - MockClock
-
-/// Test double for ``Clock``.
-///
-/// Shape: `final class` + ``LockedBox`` — `now` is a synchronous getter, which an
-/// actor cannot satisfy, so this is the one port for which `final class` + a lock
-/// is mandatory. Tests inject deterministic time via ``setNow(_:)``. Defaults to
-/// the Unix epoch so an unconfigured clock is still deterministic.
-final class MockClock: Clock {
-    private let box: LockedBox<Date>
-    /// Records the `milliseconds` of every ``sleep(milliseconds:)`` call, in order, so a test can
-    /// assert what was slept on without any wall-clock wait. Separate ``LockedBox`` cell from the
-    /// `now` storage — the same lock-protected primitive the other synchronous mocks use.
-    private let recordedSleeps = LockedBox<[Int]>([])
-
-    init(now: Date = Date(timeIntervalSince1970: 0)) {
-        self.box = LockedBox(now)
-    }
-
-    var now: Date {
-        box.get
-    }
-
-    /// The `milliseconds` of each recorded ``sleep(milliseconds:)`` call, in call order.
-    var sleeps: [Int] {
-        recordedSleeps.get
-    }
-
-    /// Sets the instant returned by ``now``.
-    func setNow(_ date: Date) {
-        box.set(date)
-    }
-
-    /// Records the requested duration and resumes immediately — NO wall-clock wait (NFR21). A
-    /// deterministic stand-in for ``SystemClock/sleep(milliseconds:)``; the fuller virtual-clock
-    /// stepping API is added in a later task.
-    func sleep(milliseconds: Int) async {
-        recordedSleeps.withLock { $0.append(milliseconds) }
     }
 }
 
