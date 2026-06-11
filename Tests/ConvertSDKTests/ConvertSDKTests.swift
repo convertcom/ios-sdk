@@ -2,25 +2,38 @@
 // `@testable` import: these suites construct `ConvertSDK` through its INTERNAL
 // dependency-injecting initializer (a deliberate test seam) so a unit test never
 // touches the network. The public `init(configuration:)` delegates to that same seam
-// with a production loader. Reaching the internal init requires `@testable`.
+// with a production config provider. Reaching the internal init requires `@testable`.
 //
-// RED phase (Epic 2 / Story 2): the production entry point does not exist yet —
-// `Sources/ConvertSDK/ConvertSDK.swift` is currently only `@_exported import
-// ConvertSDKCore`. Every reference below to `ConvertSDK(...)` / `ready()` / `on` / `off`
-// / `createContext` / `ConvertContext`, and to the `ConfigLoader` port the mocks
-// conform to, is EXPECTED to fail compilation until the GREEN step builds them. That
-// compile-fail is the correct outcome of this phase.
+// RED phase ([SDK-2] — wiring the real config fetch into `ConvertSDK.init`): the GREEN
+// step has NOT yet introduced the ``ConfigProviding`` protocol nor changed the internal
+// init to take `configProvider:`. Every reference below to that protocol and to the
+// `configProvider:` init parameter is EXPECTED to fail compilation until GREEN builds
+// them. That compile-fail is the correct outcome of this phase. (The rest of the SDK
+// surface — `ConvertSDK(...)` / `ready()` / `on` / `off` / `createContext` /
+// `ConvertContext` — already compiles from Story 2.2.)
 //
 // Assumed GREEN seam (so the implementer matches these call sites):
+//   public protocol ConfigProviding: Sendable {
+//       func loadCachedConfig() async -> ProjectConfig?
+//       func fetchLiveConfig() async -> ProjectConfig?
+//   }
 //   internal init(
 //       configuration: ConvertConfiguration,
-//       configLoader: ConfigLoader,
-//       eventBus: EventBus = EventBus()
+//       configProvider: (any ConfigProviding)? = nil,   // nil → build the real ConfigFetchService
+//       eventBus: EventBus = EventBus(),
+//       directData: Data? = nil
 //   )
-//   public protocol ConfigLoader: Sendable { func load(sdkKey: String) async throws }
-// The internal init launches the async config-load Task that calls
-// `try await configLoader.load(sdkKey:)` then `configStore.setConfig()` on success, and
-// on a thrown network error still resolves `ready()` degraded (does NOT rethrow).
+// The internal init's config-load Task (AFTER the UNCHANGED empty-key validation branch,
+// which still `signalError`s → `ready()` throws) resolves a provider, then:
+//   if let cached = await provider.loadCachedConfig() { await store.setConfig(cached) }
+//   let live = await provider.fetchLiveConfig()
+//   await store.setConfig(live)
+// ``ConfigStore/setConfig(_:)`` latches the ready signal on its first non-terminal call,
+// so the unconditional final `setConfig(live)` (possibly `nil`) guarantees `ready()`
+// resolves — non-degraded if cache OR live produced a config, DEGRADED if both were `nil`.
+// The `configLoader:` parameter + production `StubConfigLoader` wiring are REMOVED from the
+// init by GREEN; the direct-data path (`validateAndSetConfig`) is UNCHANGED. The previous
+// `ConfigLoader` mocks are superseded by ``MockConfigProvider`` (in `MockPorts.swift`).
 import Testing
 import Foundation
 @testable import ConvertSDK
@@ -30,24 +43,50 @@ import Foundation
 /// Default SDK key used by `makeSut`; non-empty so the happy paths pass validation.
 private let validSdkKey = "test-key"
 
+/// A valid, minimal ``ProjectConfig`` decoded from a tiny wire payload, for the suites that
+/// only need a NON-`nil` config so `ready()` resolves non-degraded. Centralized here so the
+/// decode literal is never copy-pasted per test (SonarQube 3% new-duplicated-lines gate). The
+/// JSON mirrors `ConfigFetchServiceTests.validConfigJSON`; `ProjectConfig` decodes field-by-field
+/// and never throws on this shape, so `try` is satisfied without a fixture file.
+private func makeValidConfig() throws -> ProjectConfig {
+    try JSONDecoder().decode(
+        ProjectConfig.self,
+        from: Data(#"{"account_id":"acc-1","project":{"id":"p-1"}}"#.utf8)
+    )
+}
+
 /// Single construction site for the system-under-test, reused across every suite so the
 /// `ConvertConfiguration` build + internal-init wiring is never copy-pasted per test.
 ///
 /// `@MainActor` because the entry-point suites drive it from `MainActor`-affined bodies
 /// (confirmations whose callbacks land on `MainActor`); the SDK's internal init itself is
 /// non-async (the handle is constructed synchronously and the config-load runs in a
-/// detached Task), so the factory does not need to `await`. Pass `configLoader: nil` to get
-/// the always-succeeding ``MockConfigLoader``; pass ``FailingMockConfigLoader`` to exercise
-/// the degraded path.
+/// detached Task), so the factory does not need to `await`. The injected `configProvider`
+/// keeps the SUT off the network: callers pass a ``MockConfigProvider`` whose canned
+/// `(cached, live)` pair drives the ready outcome. The default is a cache-miss + live-success
+/// provider (`cached: nil, live: makeValidConfig()`) so the bare `makeSut()` happy paths
+/// resolve `ready()` NON-degraded; suites needing other outcomes pass an explicit provider.
 @MainActor
 private func makeSut(
     sdkKey: String = validSdkKey,
-    configLoader: (any ConfigLoader)? = nil
+    configProvider: any ConfigProviding
 ) -> ConvertSDK {
     let configuration = ConvertConfiguration(sdkKey: sdkKey)
     return ConvertSDK(
         configuration: configuration,
-        configLoader: configLoader ?? MockConfigLoader()
+        configProvider: configProvider
+    )
+}
+
+/// Convenience overload: the default happy-path SUT (cache miss + live success), so the bare
+/// `makeSut()` / `makeSut(sdkKey:)` call sites read unchanged and resolve `ready()`
+/// non-degraded without each test constructing a provider. `throws` because building the live
+/// ``ProjectConfig`` decodes JSON.
+@MainActor
+private func makeSut(sdkKey: String = validSdkKey) throws -> ConvertSDK {
+    makeSut(
+        sdkKey: sdkKey,
+        configProvider: MockConfigProvider.ungated(cached: nil, live: try makeValidConfig())
     )
 }
 
@@ -64,42 +103,7 @@ private func drain() async {
     await MainActor.run { }
 }
 
-/// A ``ConfigLoader`` whose `load` parks until ``release()`` is called, so a test can
-/// register a `.ready` subscriber via `sut.on(.ready)` BEFORE the SDK's init task fires
-/// `.ready` (which only happens after `load` returns and `setConfig` runs).
-///
-/// Why this exists (RED-phase timing-bug fix): the SDK begins loading config — and therefore
-/// races to fire the one-shot, latching `.ready` — the instant it is constructed in `init`.
-/// `.ready` fires exactly once and latches (the locked ``ConfigStore`` contract), so a
-/// subscriber attached AFTER that fire never sees it. The original ``confirmReadyDelivery``
-/// subscribed via `sut.on(.ready)` only after `makeSut()` had already constructed (and thus
-/// possibly already fired on) the SUT, an order that is non-deterministic under parallel test
-/// execution: it passed in isolation but `Confirmation was confirmed 0 times` under suite
-/// load. Gating `load` makes the fire happen strictly after the subscription, deterministically
-/// (a pure continuation handoff — no sleep, no wall-clock; NFR21/22), WITHOUT weakening
-/// production: the SDK still fires once and latches; the test simply controls when the load
-/// (hence the fire) completes, the way the real network would.
-private actor GateConfigLoader: ConfigLoader {
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var released = false
-
-    /// Parks until ``release()``; returns immediately if already released.
-    func load(sdkKey: String) async throws {
-        if released { return }
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            self.continuation = cont
-        }
-    }
-
-    /// Unblocks a parked (or future) ``load``, letting the init task proceed to fire `.ready`.
-    func release() {
-        released = true
-        continuation?.resume()
-        continuation = nil
-    }
-}
-
-/// Drives the subscribe → release-gated-load → `ready()` → drain → unsubscribe dance inside a
+/// Drives the subscribe → release-gated-fetch → `ready()` → drain → unsubscribe dance inside a
 /// caller-supplied confirmation, so the two suites that assert `.ready` delivery
 /// (`ready()` fires exactly once; `on/off` forwards to the bus) do not duplicate the block.
 /// `readyCalls` lets a caller await `ready()` more than once to prove the event still latches
@@ -107,27 +111,56 @@ private actor GateConfigLoader: ConfigLoader {
 /// actually asserts the delivery count.
 ///
 /// Subscribes via `sut.on(.ready)` (exercising the SDK's bus forwarding) BEFORE releasing the
-/// ``GateConfigLoader``, so the init task fires `.ready` strictly after the subscriber is
-/// registered — making delivery deterministic regardless of scheduler interleaving. The SUT
-/// is built here (rather than passed in) so the gate loader is wired and the
+/// GATED ``MockConfigProvider``, so the init task fires `.ready` strictly after the subscriber
+/// is registered — making delivery deterministic regardless of scheduler interleaving. The
+/// provider is built with `cached: nil` so the ready signal is driven by the gated live fetch's
+/// `setConfig(live)` (not by the cache), and `live: someConfig` so the resolve is non-degraded.
+/// The SUT is built here (rather than passed in) so the gate is wired and the
 /// subscribe-before-fire ordering is owned in one place.
+///
+/// Why the gate exists (the deterministic-ordering fix carried over from the previous seam):
+/// the SDK races to fire the one-shot, latching `.ready` the instant it is constructed. A
+/// subscriber attached AFTER that fire never sees it (the locked ``ConfigStore`` contract), so
+/// without gating the subscribe-vs-fire order is non-deterministic under parallel execution
+/// (`Confirmation was confirmed 0 times` under suite load). Gating the LIVE FETCH makes the
+/// fire happen strictly after the subscription — a pure continuation handoff, no sleep, no
+/// wall-clock (NFR21/22) — WITHOUT weakening production: the SDK still fires once and latches;
+/// the test merely controls when the fetch (hence the fire) completes, the way the real network
+/// would.
 @MainActor
 private func confirmReadyDelivery(
     readyCalls: Int,
     fired: @escaping @Sendable () -> Void
 ) async throws {
-    let loader = GateConfigLoader()
+    let provider = MockConfigProvider.makeGated(cached: nil, live: try makeValidConfig())
     let sut = ConvertSDK(
         configuration: ConvertConfiguration(sdkKey: validSdkKey),
-        configLoader: loader
+        configProvider: provider
     )
     let token = await sut.on(.ready) { _ in fired() }
-    await loader.release()
+    await provider.release()
     for _ in 0..<readyCalls {
         try await sut.ready()
     }
     await drain()
     await sut.off(token)
+}
+
+/// Asserts that `ready()` RESOLVES (never throws, never hangs) for a SUT backed by an ungated
+/// ``MockConfigProvider`` with the given `(cached, live)` pair — the shared body for the three
+/// "ready resolves" outcome tests (degraded-no-network, from-cache, degraded-no-cache).
+/// Extracted so those tests do not copy-paste the provider-build + `#expect(throws: Never)` +
+/// `await ready()` block (SonarQube 3% new-duplicated-lines gate); each test stays a one-line
+/// call documenting its own `(cached, live)` scenario. Reaching the return is the proof the gate
+/// latched: `#expect(throws: Never.self)` fails if `ready()` throws, and a hang would never
+/// return. Non-`throws` — it forwards already-built configs; a caller that needs a non-`nil`
+/// config decodes it at the call site (`try makeValidConfig()`) before passing it in.
+@MainActor
+private func expectReadyResolves(cached: ProjectConfig?, live: ProjectConfig?) async {
+    let sut = makeSut(configProvider: MockConfigProvider.ungated(cached: cached, live: live))
+    await #expect(throws: Never.self) {
+        try await sut.ready()
+    }
 }
 
 // MARK: - init
@@ -142,8 +175,8 @@ struct ConvertSDKInitTests {
     /// proof of a non-async, non-blocking initializer.
     @MainActor
     @Test("init returns a usable handle synchronously, without blocking")
-    func initReturnsWithoutBlocking() {
-        let sut = makeSut()
+    func initReturnsWithoutBlocking() throws {
+        let sut = try makeSut()
         // Reaching a member of the just-constructed handle, with no `await` on the init,
         // demonstrates the initializer returned immediately.
         let context = sut.createContext()
@@ -162,12 +195,12 @@ struct ConvertSDKInitTests {
 
 @Suite("ready()")
 struct ConvertSDKReadyTests {
-    /// With a succeeding loader injected, `ready()` resolves (no throw, no hang) once the
-    /// mock config load completes and the ready gate latches.
+    /// With a cache-miss + live-success provider injected, `ready()` resolves (no throw, no
+    /// hang) once the live fetch yields a config and the ready gate latches non-degraded.
     @MainActor
     @Test("ready resolves after the mock config load completes")
     func readyResolvesAfterMockConfigLoad() async throws {
-        let sut = makeSut()
+        let sut = try makeSut()
         try await sut.ready()
     }
 
@@ -176,7 +209,7 @@ struct ConvertSDKReadyTests {
     @MainActor
     @Test("a second ready() call returns immediately")
     func secondReadyCallReturnsImmediately() async throws {
-        let sut = makeSut()
+        let sut = try makeSut()
         try await sut.ready()
         try await sut.ready()
     }
@@ -194,25 +227,49 @@ struct ConvertSDKReadyTests {
 
     /// An empty SDK key is rejected: `ready()` surfaces a `ConvertError` (the key is
     /// validated, not silently loaded). Empty-key/invalid-direct-data are the ONLY throwing
-    /// paths for `ready()`.
+    /// paths for `ready()`. This path runs BEFORE the config provider is consulted (the
+    /// validation branch `signalError`s and returns), so the injected provider is irrelevant —
+    /// the default happy-path provider is used and never reached.
     @MainActor
     @Test("ready() throws on an empty SDK key")
-    func readyThrowsOnEmptySdkKey() async {
-        let sut = makeSut(sdkKey: "")
+    func readyThrowsOnEmptySdkKey() async throws {
+        let sut = try makeSut(sdkKey: "")
         await #expect(throws: ConvertError.self) {
             try await sut.ready()
         }
     }
 
     /// A transient network failure during config load must NOT propagate from `ready()`:
-    /// the SDK resolves degraded. With the failing loader injected, `ready()` never throws.
+    /// the SDK resolves degraded. Under the new seam a "transient network failure with no
+    /// cache" is modeled by a provider returning `nil` for BOTH cache and live; the
+    /// unconditional final `setConfig(nil)` still latches ready degraded, so `ready()` never
+    /// throws. (Same intent as the previous `FailingMockConfigLoader`-backed test.)
     @MainActor
     @Test("ready() resolves degraded (never throws) on a transient network failure")
     func readyResolvesDegradedOnNetworkFailure() async {
-        let sut = makeSut(configLoader: FailingMockConfigLoader())
-        await #expect(throws: Never.self) {
-            try await sut.ready()
-        }
+        await expectReadyResolves(cached: nil, live: nil)
+    }
+
+    /// AC3 (task 6.6) — OFFLINE-WITH-CACHE: when the live fetch fails but a cached config is
+    /// present, the SDK resolves `ready()` FROM CACHE. With `(cached: aValidConfig, live: nil)`,
+    /// the init task's `setConfig(cached)` latches ready BEFORE the (nil) live fetch, so
+    /// `ready()` returns without throwing and without hanging — `#expect(throws: Never.self)`
+    /// returning IS the proof that the cache satisfied readiness offline.
+    @MainActor
+    @Test("ready() resolves from cache when the live fetch fails")
+    func readyResolvesFromCacheOnNetworkFailure() async throws {
+        await expectReadyResolves(cached: try makeValidConfig(), live: nil)
+    }
+
+    /// AC3 (task 6.6) — OFFLINE-NO-CACHE: with neither a cached config NOR a live config
+    /// (`cached: nil, live: nil`), the unconditional final `setConfig(nil)` still latches ready
+    /// DEGRADED (the ``ConfigStore`` `nil`-first-load contract), so `ready()` resolves without
+    /// throwing. This is the explicit no-cache twin of ``readyResolvesFromCacheOnNetworkFailure``,
+    /// guaranteeing the SDK never hangs when both sources are empty.
+    @MainActor
+    @Test("ready() resolves degraded when there is no cache and the live fetch fails")
+    func readyResolvesDegradedWhenNoCacheAndNetworkFails() async {
+        await expectReadyResolves(cached: nil, live: nil)
     }
 }
 
@@ -244,8 +301,8 @@ struct ConvertSDKCreateContextTests {
     /// BEFORE `ready()` resolves — context creation does not block on config load.
     @MainActor
     @Test("createContext before ready() returns a non-nil context")
-    func createContextBeforeReadyReturnsNonNil() {
-        let sut = makeSut()
+    func createContextBeforeReadyReturnsNonNil() throws {
+        let sut = try makeSut()
         let context = sut.createContext(visitorId: "v1")
         #expect(context as ConvertContext? != nil)
     }
@@ -278,8 +335,8 @@ struct ConvertSDKCompletionTests {
     /// overload is exercised exactly as shipped (its result still arrives on `MainActor`).
     @MainActor
     @Test("ready(completion:) invokes the completion on MainActor exactly once")
-    func completionCalledOnMainActor() async {
-        let sut = makeSut()
+    func completionCalledOnMainActor() async throws {
+        let sut = try makeSut()
         await confirmation("the completion is invoked once", expectedCount: 1) { done in
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 sut.ready(completion: { _ in

@@ -265,37 +265,96 @@ final class MockClock: Clock {
     }
 }
 
-// MARK: - MockConfigLoader
+// MARK: - MockConfigProvider
 
-/// Test double for ``ConfigLoader`` that always succeeds (Story 2.2 entry-point suites).
+/// Test double for ``ConfigProviding`` — the config-fetch seam ``ConvertSDK.init`` injects
+/// (the GREEN step adds `: ConfigProviding` to the real `ConfigFetchService`, which already
+/// has these two methods). This REPLACES the role the old `ConfigLoader` mocks
+/// (`MockConfigLoader` / `FailingMockConfigLoader` / `GateConfigLoader`) played for the
+/// previous seam: a unit test injects one of these so `ConvertSDK.init` never builds the real
+/// `ConfigFetchService` and never touches the network.
 ///
-/// Shape: `actor` — `load(sdkKey:)` is the sole `async` requirement, so actor isolation
-/// satisfies the port with no `Sendable` suppression (mirrors ``MockHTTPClient`` /
-/// ``MockEventSink``). It records every key it was asked to load, in order, so a test can
-/// assert the SDK forwarded the configured key; the call itself returns immediately. This
-/// is the loader the entry-point happy-path suites inject so `ready()` resolves without
-/// touching the network.
-actor MockConfigLoader: ConfigLoader {
-    /// Every `sdkKey` the loader was asked to load, in call order. Lets tests assert the
-    /// SDK forwarded the configured key to its loader.
-    private(set) var loadedKeys: [String] = []
+/// Shape: `actor` — ``ConfigProviding`` refines `Sendable` and BOTH requirements are `async`,
+/// so actor isolation satisfies the protocol with NO `Sendable` suppression (mirrors
+/// ``MockHTTPClient`` / ``MockEventSink`` / ``MockFileStore``).
+///
+/// ── Canned cache + live results ───────────────────────────────────────────────────────────
+/// Constructed with a `cached` and a `live` value, each `ProjectConfig?`. ``loadCachedConfig()``
+/// returns `cached`; ``fetchLiveConfig()`` returns `live`. The four combinations model the AC3
+/// matrix the entry-point suites assert:
+///   * `(cached: nil,   live: someConfig)` — cache miss, live succeeds → ready (non-degraded).
+///   * `(cached: nil,   live: nil)`        — cache miss + network failed → ready DEGRADED.
+///   * `(cached: someConfig, live: nil)`   — cache HIT, network failed   → ready from cache.
+///   * `(cached: someConfig, live: someConfig)` — both present.
+/// Because the SDK calls `store.setConfig(cached)` then unconditionally `store.setConfig(live)`,
+/// and ``ConfigStore/setConfig(_:)`` latches the ready signal on the first non-terminal call,
+/// every combination resolves `ready()` exactly once — even all-`nil` (degraded). The mock holds
+/// no process-global state, so suites using it are parallel-safe (no `URLProtocolStub` nesting).
+///
+/// ── Optional fetch gate (ordering tests) ──────────────────────────────────────────────────
+/// A gated instance (``makeGated(cached:live:)``) parks ``fetchLiveConfig()`` on a continuation
+/// until ``release()`` is called, mirroring the previous `GateConfigLoader` pattern. This lets a
+/// test register a `.ready` subscriber via `sut.on(.ready)` BEFORE the init task fires `.ready`
+/// (which happens only after the config provider resolves and `setConfig` runs), making
+/// `.ready` delivery deterministic under parallel execution. It is a pure continuation handoff —
+/// no sleep, no wall-clock wait (NFR21/22). ``loadCachedConfig()`` is NEVER gated; only the live
+/// fetch is, because in the all-`nil`-cache ordering tests the ready signal is driven by the live
+/// `setConfig` call, so gating the live fetch is what controls when `.ready` fires.
+actor MockConfigProvider: ConfigProviding {
+    private let cached: ProjectConfig?
+    private let live: ProjectConfig?
 
-    func load(sdkKey: String) async throws {
-        loadedKeys.append(sdkKey)
+    /// Whether ``fetchLiveConfig()`` should park until ``release()`` (the ordering-test gate).
+    private let gated: Bool
+    /// The parked `fetchLiveConfig` continuation, present only while a gated fetch is suspended.
+    private var continuation: CheckedContinuation<Void, Never>?
+    /// Whether ``release()`` has already fired, so a fetch arriving after the release does not
+    /// park (mirrors `GateConfigLoader`'s `released` latch).
+    private var released = false
+
+    /// Designated initializer. `gated` is internal; production-shaped construction goes through
+    /// the two named factories below so call sites read intent (`ungated` vs `makeGated`).
+    private init(cached: ProjectConfig?, live: ProjectConfig?, gated: Bool) {
+        self.cached = cached
+        self.live = live
+        self.gated = gated
     }
-}
 
-// MARK: - FailingMockConfigLoader
+    /// An UNGATED provider: ``fetchLiveConfig()`` returns `live` immediately. The common case —
+    /// the happy-path, degraded, and cache-hit suites all use this.
+    static func ungated(cached: ProjectConfig?, live: ProjectConfig?) -> MockConfigProvider {
+        MockConfigProvider(cached: cached, live: live, gated: false)
+    }
 
-/// Test double for ``ConfigLoader`` that simulates a transient network failure.
-///
-/// Shape: `actor` — same rationale as ``MockConfigLoader``. `load(sdkKey:)` always throws
-/// `URLError(.notConnectedToInternet)` to model the offline / transport-failure path. The
-/// SDK's config-load task is expected to CATCH this and still resolve `ready()` degraded
-/// (never rethrowing a transient network error); the entry-point degraded-path suite
-/// injects this loader to exercise that contract.
-actor FailingMockConfigLoader: ConfigLoader {
-    func load(sdkKey: String) async throws {
-        throw URLError(.notConnectedToInternet)
+    /// A GATED provider: ``fetchLiveConfig()`` parks until ``release()``, so the `.ready` fire
+    /// (driven by the live `setConfig`) happens strictly after a `.ready` subscriber is
+    /// registered. Used by the deterministic-ordering suites.
+    static func makeGated(cached: ProjectConfig?, live: ProjectConfig?) -> MockConfigProvider {
+        MockConfigProvider(cached: cached, live: live, gated: true)
+    }
+
+    /// Returns the configured cached value. NEVER parks — only the live fetch is gated.
+    func loadCachedConfig() async -> ProjectConfig? {
+        cached
+    }
+
+    /// Returns the configured live value, after the optional gate. When `gated` and not yet
+    /// released, parks on a continuation until ``release()`` resumes it; returns immediately
+    /// once released (or when ungated).
+    func fetchLiveConfig() async -> ProjectConfig? {
+        if gated, !released {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                self.continuation = cont
+            }
+        }
+        return live
+    }
+
+    /// Unblocks a parked (or future) ``fetchLiveConfig()``, letting the init task proceed to
+    /// `setConfig(live)` and thus fire `.ready`. Idempotent.
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }
