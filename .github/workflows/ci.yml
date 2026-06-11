@@ -32,7 +32,7 @@ jobs:
       - name: Coverage gates (core >=85% / platform >=70%) — NON-BLOCKING until Story 5.5
         continue-on-error: true   # TODO(story-5-5): harden to blocking gate
         run: |
-          if ! python3 Scripts/check-coverage.py --result TestResults.xcresult --core-target ConvertSDKCore --core-min 85 --platform-target ConvertSDK --platform-min 70; then
+          if ! python3 Scripts/check-coverage.py --result TestResults.xcresult --core-label ConvertSDKCore --core-min 85 --platform-target ConvertSDK --platform-min 70; then
             echo "::warning::Coverage gate not yet met (core>=85%/platform>=70%). Non-blocking until Story 5.5 hardens it to a blocking gate."
           fi
   parity-suite:

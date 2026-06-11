@@ -131,9 +131,13 @@ def main():
     )
     parser.add_argument("--result", required=True, help="path to the .xcresult bundle")
     parser.add_argument(
-        "--core-target",
+        "--core-label",
         default="ConvertSDKCore",
-        help="logical name of the core source library (informational label)",
+        help=(
+            "display label for the core gate line. Display-only: the xccov lookup is "
+            "always the ConvertSDKCoreTests bundle (SPM attributes ConvertSDKCore source "
+            "files there). Unlike --platform-target, this does NOT select the looked-up target."
+        ),
     )
     parser.add_argument(
         "--core-min", type=float, default=85.0, help="core gate percentage"
@@ -177,7 +181,7 @@ def main():
 
     print(
         _gate_line(
-            args.core_target, core_covered, core_executable, core_pct, args.core_min, core_met
+            args.core_label, core_covered, core_executable, core_pct, args.core_min, core_met
         )
     )
     print(
