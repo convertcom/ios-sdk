@@ -43,16 +43,24 @@ import Foundation
 /// Default SDK key used by `makeSut`; non-empty so the happy paths pass validation.
 private let validSdkKey = "test-key"
 
-/// A valid, minimal ``ProjectConfig`` decoded from a tiny wire payload, for the suites that
-/// only need a NON-`nil` config so `ready()` resolves non-degraded. Centralized here so the
-/// decode literal is never copy-pasted per test (SonarQube 3% new-duplicated-lines gate). The
-/// JSON mirrors `ConfigFetchServiceTests.validConfigJSON`; `ProjectConfig` decodes field-by-field
-/// and never throws on this shape, so `try` is satisfied without a fixture file.
-private func makeValidConfig() throws -> ProjectConfig {
+/// A valid ``ProjectConfig`` decoded from a tiny wire payload carrying the given `accountId`,
+/// for the suites that need a NON-`nil` config whose identity they can assert on (e.g. proving
+/// WHICH config — cached vs live — the snapshot holds). Centralized so the decode literal is
+/// never copy-pasted per test (SonarQube 3% new-duplicated-lines gate). `ProjectConfig` decodes
+/// field-by-field and never throws on this shape, so `try` is satisfied without a fixture file.
+private func makeConfig(accountId: String) throws -> ProjectConfig {
     try JSONDecoder().decode(
         ProjectConfig.self,
-        from: Data(#"{"account_id":"acc-1","project":{"id":"p-1"}}"#.utf8)
+        from: Data(#"{"account_id":"\#(accountId)","project":{"id":"p-1"}}"#.utf8)
     )
+}
+
+/// A valid, minimal ``ProjectConfig`` for the suites that only need a NON-`nil` config so
+/// `ready()` resolves non-degraded (its identity is irrelevant). Delegates to ``makeConfig(accountId:)``
+/// with a fixed `accountId` so the decode literal lives in exactly one place. The JSON mirrors
+/// `ConfigFetchServiceTests.validConfigJSON`.
+private func makeValidConfig() throws -> ProjectConfig {
+    try makeConfig(accountId: "acc-1")
 }
 
 /// Single construction site for the system-under-test, reused across every suite so the
@@ -261,15 +269,39 @@ struct ConvertSDKReadyTests {
         await expectReadyResolves(cached: try makeValidConfig(), live: nil)
     }
 
-    /// AC3 (task 6.6) — OFFLINE-NO-CACHE: with neither a cached config NOR a live config
-    /// (`cached: nil, live: nil`), the unconditional final `setConfig(nil)` still latches ready
-    /// DEGRADED (the ``ConfigStore`` `nil`-first-load contract), so `ready()` resolves without
-    /// throwing. This is the explicit no-cache twin of ``readyResolvesFromCacheOnNetworkFailure``,
-    /// guaranteeing the SDK never hangs when both sources are empty.
+    /// AC3 (FIX-R1-1) — OFFLINE-WITH-CACHE keeps the cached SNAPSHOT, not just the ready latch.
+    /// `ready()` resolving from cache (``readyResolvesFromCacheOnNetworkFailure``) only proves the
+    /// gate latched; bucketing reads `getSnapshot()`, so the cached config must SURVIVE the failed
+    /// live refresh. With `(cached: acc-cache, live: nil)`, after `ready()` the snapshot must still
+    /// be the cached config — a `nil` live result must NOT clobber it. Before the guarded-`setConfig`
+    /// fix this FAILS: the unconditional `setConfig(nil)` overwrites the snapshot to `nil`.
     @MainActor
-    @Test("ready() resolves degraded when there is no cache and the live fetch fails")
-    func readyResolvesDegradedWhenNoCacheAndNetworkFails() async {
-        await expectReadyResolves(cached: nil, live: nil)
+    @Test("a failed live refresh after a cache hit preserves the cached snapshot")
+    func cacheHitThenLiveFailPreservesSnapshot() async throws {
+        let sut = makeSut(
+            configProvider: MockConfigProvider.ungated(cached: try makeConfig(accountId: "acc-cache"), live: nil)
+        )
+        try await sut.ready()
+        #expect(await sut.configStore.getSnapshot()?.accountId == "acc-cache")
+    }
+
+    /// AC3 (FIX-R1-1) — companion to ``cacheHitThenLiveFailPreservesSnapshot``: a SUCCESSFUL live
+    /// fetch after a cache hit REFRESHES the snapshot to the fresh config (fresh wins). With
+    /// `(cached: acc-cache, live: acc-live)`, after `ready()` the snapshot is the live config. This
+    /// documents the refresh-wins half of the contract and passes both before and after the fix
+    /// (a non-`nil` live is always set), guarding against a fix that over-corrects into never
+    /// refreshing.
+    @MainActor
+    @Test("a successful live fetch after a cache hit refreshes the snapshot to the live config")
+    func liveSuccessAfterCacheUpdatesSnapshot() async throws {
+        let sut = makeSut(
+            configProvider: MockConfigProvider.ungated(
+                cached: try makeConfig(accountId: "acc-cache"),
+                live: try makeConfig(accountId: "acc-live")
+            )
+        )
+        try await sut.ready()
+        #expect(await sut.configStore.getSnapshot()?.accountId == "acc-live")
     }
 }
 

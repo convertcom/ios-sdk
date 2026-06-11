@@ -19,7 +19,10 @@ public final class ConvertSDK: Sendable {
     /// The bus on which `.ready` (and later system events) fire; shared with ``configStore``.
     private let eventBus: EventBus
     /// Owns the "config present" state and the one-shot ready gate.
-    private let configStore: ConfigStore
+    ///
+    /// internal (not private): the test target reaches configStore.getSnapshot() to assert
+    /// snapshot retention across the cache→live sequence.
+    internal let configStore: ConfigStore
     /// Pre-fetched config payload for the direct-data initializer; `nil` on the key path.
     private let directData: Data?
 
@@ -85,13 +88,28 @@ public final class ConvertSDK: Sendable {
             if let cached = await activeProvider.loadCachedConfig() {
                 await store.setConfig(cached)
             }
-            // Unconditional final fetch + setConfig: refreshes the snapshot when live succeeds,
-            // and — because `setConfig` latches ready on its FIRST non-terminal call — guarantees
-            // `ready()` resolves even with no cache. A `nil` live result on a cache miss resolves
-            // ready DEGRADED rather than hanging; a `nil` live result after a cache hit is a no-op
-            // for the ready signal (already latched) and leaves the cached snapshot in place.
+            // Final fetch, then a GUARDED setConfig. `ConfigStore.setConfig` overwrites the snapshot
+            // UNCONDITIONALLY before its ready-latch guard, so calling it with a `nil` live result
+            // after a cache hit would DESTROY the good cached snapshot (ready stays latched, but
+            // getSnapshot() goes nil — breaking the offline-with-cache contract AC3). The guard runs
+            // setConfig only when the live fetch produced a config, OR when there is no snapshot to
+            // protect. This yields three behaviors:
+            //   * live succeeds        → setConfig(live) refreshes the snapshot (fresh wins).
+            //   * live fails, had cache → skipped: the cached snapshot is preserved AND it is a
+            //     no-op for the ready signal (already latched by the cache's setConfig above).
+            //   * live fails, no cache  → setConfig(nil) runs (snapshot was nil): resolves ready
+            //     DEGRADED rather than hanging, the ``ConfigStore`` `nil`-first-load contract.
+            // (Option B: the guard lives here so `ConfigStore.setConfig`'s "snapshot = arg" contract
+            // stays pure.)
             let live = await activeProvider.fetchLiveConfig()
-            await store.setConfig(live)
+            // `await` cannot live inside the `||` right operand (it is an autoclosure that does
+            // not support concurrency under Swift 6), so the snapshot check is hoisted to its own
+            // binding: run setConfig when live produced a config, or when there is no snapshot to
+            // protect (the no-cache degraded path).
+            let hasSnapshot = await store.getSnapshot() != nil
+            if live != nil || !hasSnapshot {
+                await store.setConfig(live)
+            }
         }
     }
 
