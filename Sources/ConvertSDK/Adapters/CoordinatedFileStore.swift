@@ -74,10 +74,24 @@ public final actor CoordinatedFileStore {
         return result
     }
 
-    /// Removes the file at `url` if it exists. Total / no-throw: a file-not-found
-    /// error is swallowed by `try?`, so deleting an absent cache is a successful no-op.
+    /// Removes the file at `url` if it exists, under file coordination.
+    ///
+    /// Coordinates the deletion via `NSFileCoordinator` (`.forDeleting`) so it shares
+    /// the same OS-file-lock seam as `write`/`read` (R1/NFR14): when the cache later
+    /// lives in an App Group, an extension's coordinated write can never race this
+    /// removal. Total / no-throw: the inner `removeItem` stays `try?`, so a
+    /// file-not-found error is swallowed and deleting an absent cache is a successful
+    /// no-op. Unlike `write`/`read`, a coordination failure is also swallowed — the
+    /// contract is "remove if present; never throw".
     public func delete(at url: URL) {
-        try? FileManager.default.removeItem(at: url)
+        let coordinator = NSFileCoordinator()
+        var coordinatorError: NSError?
+        coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &coordinatorError) { deletingURL in
+            try? FileManager.default.removeItem(at: deletingURL)
+        }
+        // coordinatorError intentionally ignored — delete is no-throw (a coordination
+        // failure or a missing file is swallowed; the contract is "remove if present").
+        _ = coordinatorError
     }
 
     /// Builds the on-disk cache path for `sdkKey` — a pure URL builder with no actor
