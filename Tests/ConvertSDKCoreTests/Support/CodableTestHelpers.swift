@@ -25,4 +25,24 @@ enum CodableTestHelpers {
         guard let data = try? sortedKeysEncoder.encode(value) else { return nil }
         return String(data: data, encoding: .utf8)
     }
+
+    /// Canonicalises arbitrary JSON `Data` to sorted-key form so two payloads can be
+    /// compared independently of source object-member order. Used by the LCD-sentinel
+    /// round-trip tests, whose fidelity guarantee is canonical-equivalence (semantic +
+    /// sorted-key-stable, zero data loss) — proven by running both the original bytes and
+    /// the re-encoded sentinel through this same transform. `.fragmentsAllowed` lets a bare
+    /// scalar/array at the top level canonicalise too.
+    static func canonical(_ data: Data) throws -> Data {
+        let object = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+        return try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys, .fragmentsAllowed]
+        )
+    }
+
+    /// Canonicalises arbitrary JSON text to sorted-key form (UTF-8 bridge over
+    /// `canonical(_ data:)`).
+    static func canonical(_ json: String) throws -> Data {
+        try canonical(Data(json.utf8))
+    }
 }

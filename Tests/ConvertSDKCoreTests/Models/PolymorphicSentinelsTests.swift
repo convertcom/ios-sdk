@@ -19,29 +19,6 @@ import Testing
 /// discriminator-absent shape the SDK must survive in production.
 @Suite("PolymorphicSentinels")
 struct PolymorphicSentinelsTests {
-    /// Canonicalises arbitrary JSON text to sorted-key form so two payloads can be
-    /// compared independently of source key order. The sentinel round-trip guarantee is
-    /// canonical-equivalence (semantic + sorted-key-stable), proven by running both the
-    /// original bytes and the re-encoded sentinel through this same transform.
-    static func canonical(_ json: String) throws -> Data {
-        let object = try JSONSerialization.jsonObject(
-            with: Data(json.utf8),
-            options: [.fragmentsAllowed]
-        )
-        return try JSONSerialization.data(
-            withJSONObject: object,
-            options: [.sortedKeys, .fragmentsAllowed]
-        )
-    }
-
-    static func canonical(_ data: Data) throws -> Data {
-        let object = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
-        return try JSONSerialization.data(
-            withJSONObject: object,
-            options: [.sortedKeys, .fragmentsAllowed]
-        )
-    }
-
     static func decodeGoal(_ json: String) throws -> SentinelWrapped<Components.Schemas.ConfigGoal> {
         try JSONDecoder().decode(
             SentinelWrapped<Components.Schemas.ConfigGoal>.self,
@@ -106,7 +83,7 @@ struct PolymorphicSentinelsTests {
         }
         let reEncoded = try JSONEncoder().encode(wrapped)
         #expect(
-            try Self.canonical(reEncoded) == Self.canonical(original),
+            try CodableTestHelpers.canonical(reEncoded) == CodableTestHelpers.canonical(original),
             "sentinel re-encode is not canonical-equivalent to the original payload"
         )
     }
@@ -120,6 +97,6 @@ struct PolymorphicSentinelsTests {
             return
         }
         let reEncoded = try JSONEncoder().encode(wrapped)
-        #expect(try Self.canonical(reEncoded) == Self.canonical(original))
+        #expect(try CodableTestHelpers.canonical(reEncoded) == CodableTestHelpers.canonical(original))
     }
 }

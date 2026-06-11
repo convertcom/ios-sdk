@@ -42,16 +42,6 @@ struct ConfigDecodeTests {
         return try Data(contentsOf: url)
     }
 
-    /// Canonicalises JSON bytes to sorted-key form so two payloads compare independently of
-    /// source member order — the sentinel round-trip guarantee is canonical-equivalence
-    /// (sorted-key-stable, content-preserving), NOT literal byte-identity (object key order
-    /// is unrecoverable through Swift `Codable`). Both sides of a round-trip assertion run
-    /// through this same transform.
-    static func canonical(_ data: Data) throws -> Data {
-        let object = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
-        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .fragmentsAllowed])
-    }
-
     /// Decodes `data` as `SentinelWrapped<Known>` with the runtime decoder and asserts it
     /// landed on the `.sentinel` arm without throwing. Generic over `Known` so the headline
     /// real-fixture test and the constructed forward-compat test reuse one decode+match chain.
@@ -119,7 +109,7 @@ struct ConfigDecodeTests {
         }
         let reEncoded = try JSONEncoder().encode(wrapped)
         #expect(
-            try Self.canonical(reEncoded) == Self.canonical(data),
+            try CodableTestHelpers.canonical(reEncoded) == CodableTestHelpers.canonical(data),
             "sentinel re-encode of the real GA LCD fragment is not canonical-equivalent to the capture"
         )
     }
