@@ -19,6 +19,14 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - name: Swift toolchain version
         run: swift --version
+      - name: Install PyYAML in a venv (runner images ship no third-party Python packages)
+        # run.sh's discriminator-manifest derivation imports yaml; macos-26's
+        # Python 3.14 has no PyYAML and PEP 668 can block system pip installs —
+        # a throwaway venv + the PYTHON env var run.sh honors is the clean path.
+        run: |
+          python3 -m venv /tmp/pyyaml-venv
+          /tmp/pyyaml-venv/bin/pip install --quiet pyyaml
+          echo "PYTHON=/tmp/pyyaml-venv/bin/python" >> "$GITHUB_ENV"
       - name: Regenerate config types (run.sh — generate + filter + Option-D rewrite + deprecation strip)
         # CI runs run.sh end-to-end (ratified AC2), NOT the raw generator: this
         # regenerates ConfigSchemas.swift + discriminator-manifest.json. The first
