@@ -12,6 +12,7 @@ Scripts/generate-config-types/run.sh
 
 or, in CI, the `generate-config-types.yml` workflow (manual `workflow_dispatch` or on a
 change to `Scripts/generate-config-types/openapi.yaml`), which regenerates and opens a PR.
+Trigger it manually with `gh workflow run generate-config-types.yml`.
 
 The generator is **swift-openapi-generator**, pinned **exact `1.12.2`**, **types-only**
 (`generate: [types]`), invoked from the **isolated** manifest at
