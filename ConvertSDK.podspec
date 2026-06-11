@@ -12,7 +12,7 @@ Pod::Spec.new do |s|
   s.tvos.deployment_target = '15.0'
   s.swift_versions   = ['6.0']
   s.source_files     = 'Sources/ConvertSDK/**/*.swift'
-  s.dependency 'ConvertSDKCore', '1.0.0'
+  s.dependency 'ConvertSDKCore', s.version.to_s
   s.resource_bundles = {
     'ConvertSDKPrivacy' => ['Sources/ConvertSDK/Resources/PrivacyInfo.xcprivacy']
   }
