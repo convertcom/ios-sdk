@@ -36,10 +36,17 @@ public actor EventBus {
     }
 
     /// Dispatches `payload` to every callback registered for `event`.
-    /// STUB: currently a no-op — real dispatch lands in the GREEN phase.
+    ///
+    /// Non-blocking: each callback is delivered as an independent `MainActor` task
+    /// (fire-and-forget), so callers on any actor/thread may call `fire` and it returns
+    /// immediately without awaiting the callbacks. Subscriber invocation order is
+    /// unspecified. When no callbacks are registered for `event`, this is a no-op.
     internal func fire(_ event: SystemEvent, payload: EventPayloadValue) {
-        // TODO: replaced by GREEN phase — dispatch to subscribers on MainActor.
-        _ = event
-        _ = payload
+        guard let callbacks = subscribers[event] else { return }
+        for callback in callbacks.values {
+            Task { @MainActor in
+                callback(payload)
+            }
+        }
     }
 }

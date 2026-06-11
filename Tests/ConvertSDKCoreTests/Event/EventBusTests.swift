@@ -42,9 +42,17 @@ struct EventBusTests {
     }
 
     /// Lets already-dispatched `MainActor` callbacks run before a confirmation body exits.
-    /// `Task.yield()` is a pure cooperative suspension point — no timing threshold (NFR21).
+    ///
+    /// `fire` delivers each callback as a `Task { @MainActor in … }`, so the drain must
+    /// await the `MainActor`'s serial executor — not the cooperative pool. `await
+    /// MainActor.run { }` enqueues a barrier job behind the already-hopped callback jobs;
+    /// because the `MainActor` executor is serial/FIFO, the barrier completes only after
+    /// every prior callback has run. `Task.yield()` does NOT suffice — it yields the
+    /// cooperative thread and never awaits the separate `MainActor` executor, so the
+    /// callbacks would not have run when `confirmation` checks its count. This is a pure
+    /// executor barrier, not a wall-clock wait — no timing threshold (NFR21).
     private func drain() async {
-        await Task.yield()
+        await MainActor.run { }
     }
 
     // MARK: Scenario 1 — on + fire delivers the callback with the correct payload
