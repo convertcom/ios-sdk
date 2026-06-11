@@ -20,9 +20,6 @@ public final class ConvertSDK: Sendable {
     private let eventBus: EventBus
     /// Owns the "config present" state and the one-shot ready gate.
     private let configStore: ConfigStore
-    /// Loads the project configuration. A no-op ``StubConfigLoader`` for the public key
-    /// initializer until Story 2.3; a mock in tests.
-    private let configLoader: ConfigLoader
     /// Pre-fetched config payload for the direct-data initializer; `nil` on the key path.
     private let directData: Data?
 
@@ -33,30 +30,33 @@ public final class ConvertSDK: Sendable {
 
     /// Dependency-injecting initializer (the test seam). Stores its dependencies, creates the
     /// ``ConfigStore`` over the shared ``EventBus``, then launches the detached config-load
-    /// task. Non-throwing and non-blocking — validation and loading happen in the task, and
-    /// surface through `ready()`.
+    /// task. Non-throwing and non-blocking — validation and the real config fetch happen in the
+    /// task, and surface through `ready()`.
     /// - Parameters:
     ///   - configuration: The SDK configuration (its `sdkKey` is validated by the load task).
-    ///   - configLoader: The loader used to fetch config (a no-op stub in production until
-    ///     Story 2.3; a mock in tests).
+    ///   - configProvider: The config-fetch seam. `nil` (the default — the production path)
+    ///     builds the real ``ConfigFetchService``; tests inject a mock so the load never touches
+    ///     the network.
     ///   - eventBus: The bus shared with the ``ConfigStore``; defaults to a fresh bus.
     ///   - directData: A pre-fetched config payload for the direct-data path; `nil` (the
     ///     default) selects the key path. When present, the load task validates the data
-    ///     instead of the key.
+    ///     instead of fetching.
     internal init(
         configuration: ConvertConfiguration,
-        configLoader: ConfigLoader,
+        configProvider: (any ConfigProviding)? = nil,
         eventBus: EventBus = EventBus(),
         directData: Data? = nil
     ) {
         self.configuration = configuration
-        self.configLoader = configLoader
         self.eventBus = eventBus
         self.directData = directData
         let store = ConfigStore(eventBus: eventBus)
         self.configStore = store
 
-        let sdkKey = configuration.sdkKey
+        // Capture the injected provider (if any) for the detached load task. When `nil`, the
+        // real `ConfigFetchService` is built inside the task (off the construction path, so init
+        // stays non-blocking).
+        let provider = configProvider
         Task {
             if let directData {
                 // Direct-data path: validate the payload (empty/invalid → ready() throws).
@@ -64,46 +64,63 @@ public final class ConvertSDK: Sendable {
                 return
             }
             // Key path: an empty/whitespace key fails the gate (ready() throws); a valid key
-            // proceeds to the load attempt. Validation is bridged through the store because
+            // proceeds to the fetch. Validation is bridged through the store because
             // `ConfigValidation` is internal to ConvertSDKCore (invisible to this target).
             if let validationError = await store.validationError(for: configuration) {
                 await store.signalError(validationError)
                 return
             }
-            do {
-                try await configLoader.load(sdkKey: sdkKey)
-            } catch {
-                // Transient network/transport failure → resolve ready() DEGRADED: fall through
-                // to setConfig so the SDK is usable; never rethrow a transient load error.
+            // Resolve the active provider: the injected one (tests) or a freshly-built real
+            // `ConfigFetchService` (production). The fetch service composes the URLSession
+            // transport, the coordinated on-disk cache, and a `NoopLogger` (the production
+            // default until a real OSLog sink ships; redaction is enforced inside the service).
+            let activeProvider: any ConfigProviding = provider ?? ConfigFetchService(
+                httpClient: URLSessionHTTPClient(sdkVersion: SDKVersion.current),
+                fileStore: CoordinatedFileStore(),
+                configuration: configuration,
+                logger: NoopLogger()
+            )
+            // Offline-with-cache: a cached config latches ready BEFORE the live fetch, so the SDK
+            // is usable immediately when the network is down but a cache exists.
+            if let cached = await activeProvider.loadCachedConfig() {
+                await store.setConfig(cached)
             }
-            // TRANSITIONAL degraded-ready bridge for Story 2.3: the real config fetch
-            // (ConfigFetchService) is wired in here by a LATER task ([SDK-2]). Until then the
-            // (no-op StubConfigLoader) load yields no typed `ProjectConfig`, so the load path
-            // resolves ready() DEGRADED (snapshot nil) — preserving non-blocking-init +
-            // degraded-ready semantics. [SDK-2] replaces `nil` with the fetched config.
-            await store.setConfig(nil)
+            // Unconditional final fetch + setConfig: refreshes the snapshot when live succeeds,
+            // and — because `setConfig` latches ready on its FIRST non-terminal call — guarantees
+            // `ready()` resolves even with no cache. A `nil` live result on a cache miss resolves
+            // ready DEGRADED rather than hanging; a `nil` live result after a cache hit is a no-op
+            // for the ready signal (already latched) and leaves the cached snapshot in place.
+            let live = await activeProvider.fetchLiveConfig()
+            await store.setConfig(live)
         }
     }
 
-    /// Creates the SDK from a configuration, using the production loader. Non-throwing and
-    /// non-blocking; validation/loading surface through `ready()`. Story 2.3 swaps the no-op
-    /// ``StubConfigLoader`` for the real `URLSession`-backed adapter.
+    /// Creates the SDK from a configuration, using the real config fetch. Non-throwing and
+    /// non-blocking; validation and the live fetch surface through `ready()`. Passing no
+    /// `configProvider` to the internal init makes it build the real ``ConfigFetchService``
+    /// (cache-load → live-fetch), so this path reads the on-disk cache then refreshes over the
+    /// network, resolving `ready()` degraded only when both are unavailable.
     /// - Parameter configuration: The SDK configuration.
     public convenience init(configuration: ConvertConfiguration) {
-        self.init(configuration: configuration, configLoader: StubConfigLoader())
+        // Pass `configProvider: nil` explicitly: it disambiguates this call to the internal
+        // designated initializer (whose other parameters default) rather than re-entering this
+        // same convenience initializer — and `nil` selects the production real `ConfigFetchService`.
+        self.init(configuration: configuration, configProvider: nil)
     }
 
     /// Creates the SDK from a pre-fetched config payload (the direct-data path). Non-throwing
     /// and non-blocking: empty/invalid `configData` makes `ready()` throw
     /// ``ConvertError/invalidConfiguration(_:)``; the SDK key is not used on this path, so a
-    /// placeholder configuration is synthesized and validation routes to the data.
+    /// placeholder configuration is synthesized and validation routes to the data. The
+    /// direct-data path bypasses the config provider entirely (it validates `directData`), so no
+    /// provider is supplied.
     /// - Parameter configData: The pre-fetched project config bytes.
     public convenience init(configData: Data) {
         // The key is irrelevant on the direct-data path (the load task validates `directData`,
         // not the key), so a placeholder key carries the configuration. A blank key here would
         // be wrong — it is never validated on this path; using a sentinel keeps that explicit.
         let placeholder = ConvertConfiguration(sdkKey: "direct-data")
-        self.init(configuration: placeholder, configLoader: StubConfigLoader(), directData: configData)
+        self.init(configuration: placeholder, directData: configData)
     }
 
     /// Suspends until config is available. Resolves on a successful (or degraded) load; throws

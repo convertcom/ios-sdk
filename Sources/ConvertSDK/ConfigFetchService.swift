@@ -27,7 +27,11 @@ import Foundation
 /// decode failure, or a cache-write failure degrades to `nil` (or, for the write, a
 /// logged WARN that still returns the decoded config). A missing cache file is an
 /// ordinary miss (silent `nil`); only corrupt cache CONTENT triggers a WARN + delete.
-public struct ConfigFetchService: Sendable {
+///
+/// Conforms to ``ConfigProviding`` (which refines `Sendable`): its existing
+/// ``loadCachedConfig()`` / ``fetchLiveConfig()`` satisfy the seam `ConvertSDK.init` injects,
+/// so the SDK builds one of these as its production config provider.
+public struct ConfigFetchService: ConfigProviding {
     /// Transport used to fetch the live config payload.
     public let httpClient: any HTTPClient
     /// Coordinated on-disk store the cache is read from / written to.
