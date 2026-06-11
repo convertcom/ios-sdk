@@ -1,0 +1,171 @@
+# =============================================================================
+# Release — Signed Tag -> GitHub Release  (Story 1.5, AC1-AC8)
+# =============================================================================
+#
+# DEVIATION-WITH-JUSTIFICATION — release-creation mechanism (AC1.3 vs AC3)
+# -----------------------------------------------------------------------------
+# AC1.3 (the audited acceptance text) asks for the GitHub Release to be driven by
+# semantic-release with the @semantic-release/git plugin removed. We EMPIRICALLY
+# evaluated that path and it CANNOT satisfy AC1.3's own hard invariant — "no push
+# to protected main" — while also creating a Release for a PRE-PUSHED tag. We
+# therefore use the AC3-sanctioned native path (`gh release create … --generate-notes`,
+# named verbatim in Task 1.7 and listed in AC3 bullet 2). The isolated
+# semantic-release manifest in Scripts/release/ is KEPT (it is the AC5.3
+# isolated-tooling artifact and documents the attempted path) but is intentionally
+# NOT invoked by this workflow. Evidence, gathered locally on 2026-06-11:
+#
+#   semantic-release 24.2.9 source (Scripts/release/node_modules/semantic-release/index.js):
+#     • L88   verifyAuth(repositoryUrl, branch) runs UNCONDITIONALLY before publish.
+#     • L101  throw getError("EGITNOPERMISSION") on auth failure — it HARD-REQUIRES
+#             push-to-branch credentials (the exact android-semrelease-git-push / GH013
+#             failure class AC1.3 exists to make structurally impossible).
+#     • L185-187  it COMPUTES its own version + gitTag + name (makeTag(tagFormat,…)) —
+#             it is a tag CREATOR, not a consumer of a pre-pushed tag (collision).
+#     • L208-211 (non-dry-run, core, plugin-independent): tag() + addNote() +
+#             push(repositoryUrl) + pushNotes(repositoryUrl). Removing
+#             @semantic-release/git does NOT remove these CORE push calls.
+#     • L204-205 in --dry-run it SKIPS tag creation -> creates NO Release.
+#   Local dry-runs (GITHUB_TOKEN=dummy npx semantic-release --dry-run --no-ci):
+#     • With branches:[main]  -> "a new version won't be published" (branch gate); NO Release.
+#     • Forced past the gate   -> ERELEASEBRANCHES "These branches must exist on the
+#                                  remote repository" — and CI runs on a detached TAG
+#                                  checkout, not a remote branch. Another structural block.
+#   So semantic-release can EITHER create the Release but push the tag + require
+#   main-push auth (violates AC1.3), OR honor AC1.3 in --dry-run but create no Release.
+#   It cannot do both. The driver's alternative — calling @semantic-release/github's
+#   publish standalone — was REJECTED: that plugin ships `bin: none`, exports only
+#   ./index.js, and its lib/publish.js is an INTERNAL ESM module whose signature
+#   `publish(pluginConfig, context, { Octokit })` requires a hand-fabricated
+#   semantic-release context (cwd/options.repositoryUrl/branch/nextRelease.gitTag/
+#   logger + an injected Octokit). That is an unsupported internal-API hack with no
+#   semver guarantee — shipping it would violate evidence-backed-decisions Rule 2.
+#
+# `gh release create … --generate-notes` HOLDS every structural invariant AC3 binds
+# regardless of path: no push/commit to any branch, Conventional-Commits notes in the
+# Release body (GitHub-native, grouped by feat:/fix:/… prefix), no CHANGELOG.md commit,
+# release title = tag name, version from the tag, no version-bump commit. (AC1.3, AC3)
+#
+# Podspec versioning: OPTION A (Story 1.5 Task 2.4 / Dev Notes "Tag Is Source of
+# Truth"). The committed podspecs carry a static s.version that the developer bumps
+# on main BEFORE pushing the tag — no sed/awk patch in CI. The GitHub Release version
+# always derives from the tag; the podspec s.version is relevant only to pod trunk push.
+# =============================================================================
+name: Release
+
+on:
+  push:
+    tags:
+      # Strict SemVer-only glob: rejects v1, vtest, v1.0, and pre-release tags
+      # (e.g. v1.0.0-beta.1). Only X.Y.Z numeric tags trigger a release. (AC1.1, AC8.5)
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+    # NO branches: key and NO workflow_dispatch — release runs EXCLUSIVELY on a tag
+    # push so a branch merge can never trigger a spurious release. (AC1.1, AC8.5)
+
+permissions:
+  contents: write   # create the GitHub Release object (AC1.5)
+  id-token: write   # OIDC-based signing, if used (AC1.5) — no broader scope granted
+
+jobs:
+  release:
+    name: Dry-run gate -> GitHub Release -> optional CocoaPods push
+    runs-on: macos-26   # same runner as ci.yml (AC1.4)
+    steps:
+      - name: Checkout
+        # Same SHA pin used across ci.yml + generate-config-types.yml (AC7).
+        # fetch-depth: 0 fetches full history/tags so --generate-notes can compute
+        # the commit range since the previous tag for Conventional-Commits notes. (AC1.3, AC3.2)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        # VERSION = the tag (e.g. v1.0.0); VERSION_NUMBER = tag minus the leading 'v'
+        # (e.g. 1.0.0) for podspec use. Version derives ONLY from the tag — never from
+        # a commit or a separate version file. (AC1.2)
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION_NUMBER="${VERSION#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VERSION_NUMBER=$VERSION_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Dry-run gate A — swift build (SDK)
+        # A publish must never ship a broken build (NFR20). This must succeed before
+        # any Release or CocoaPods push. (AC2.1)
+        run: swift build
+
+      - name: Dry-run gate B — demo smoke via temp consumer package
+        # Demo/ is EMPTY at Epic 1 (only .gitkeep); the real Demo/ConvertSDKDemo build
+        # lands in Epic 7. Until then the smoke test is a minimal external CONSUMER:
+        # a throwaway SPM package that depends on this SDK by absolute path and does
+        # `import ConvertSDK`, proving the tagged SDK resolves + compiles for a consumer.
+        # It lives under $RUNNER_TEMP (OUTSIDE the repo working tree) and references the
+        # SDK via $GITHUB_WORKSPACE, so it can never dirty the repo or pollute the root
+        # package graph (AC5/AC8). It is removed immediately after the build.
+        #
+        # Epic 7 replaces this temp-consumer smoke build with the real
+        # Demo/ConvertSDKDemo build (xcodebuild -scheme ConvertSDKDemo).
+        #
+        # Package identity note (verified empirically 2026-06-11): SwiftPM identifies a
+        # local .package(path:) dependency by the DIRECTORY NAME ("ios-sdk"), NOT by the
+        # manifest's name: field ("ConvertSDK"). A consumer that wrote package: "ConvertSDK"
+        # fails with: "unknown package 'ConvertSDK' … valid packages are: 'ios-sdk'". So the
+        # consumer references .product(name: "ConvertSDK", package: "ios-sdk") — the product
+        # NAME is the library product "ConvertSDK"; the package IDENTIFIER is the repo dir
+        # "ios-sdk". On the CI runner $GITHUB_WORKSPACE is the checkout dir (".../ios-sdk").
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="$RUNNER_TEMP/convertsdk-smoke"
+          rm -rf "$SMOKE_DIR"
+          mkdir -p "$SMOKE_DIR/Sources/Smoke"
+          cat > "$SMOKE_DIR/Package.swift" <<EOF
+          // swift-tools-version:6.0
+          import PackageDescription
+          let package = Package(
+            name: "Smoke",
+            platforms: [.iOS(.v15), .macOS(.v12), .tvOS(.v15)],
+            dependencies: [.package(path: "$GITHUB_WORKSPACE")],
+            targets: [
+              .executableTarget(
+                name: "Smoke",
+                dependencies: [.product(name: "ConvertSDK", package: "ios-sdk")]
+              )
+            ]
+          )
+          EOF
+          echo 'import ConvertSDK' > "$SMOKE_DIR/Sources/Smoke/main.swift"
+          swift build --package-path "$SMOKE_DIR"
+          rm -rf "$SMOKE_DIR"
+
+      - name: Create GitHub Release
+        # AC3-sanctioned native path (see DEVIATION block at top). Creates the Release
+        # object for the pushed tag with GitHub-native Conventional-Commits notes.
+        # NO git push / git commit / version-bump — the ONLY mutation is the Release.
+        # (AC1.3, AC3.1-AC3.5)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --generate-notes
+
+      - name: Publish to CocoaPods trunk
+        # Conditional courtesy channel — skipped in forks / environments without the
+        # secret (AC4.1). Runs AFTER the Release so a pod failure never blocks the
+        # Release (SPM is the primary channel; CocoaPods is courtesy). (AC4.4)
+        #
+        # Token env-var name COCOAPODS_TRUNK_TOKEN confirmed against the cocoapods-trunk
+        # plugin source (lib/pod/command/trunk.rb reads ENV['COCOAPODS_TRUNK_TOKEN'])
+        # and CocoaPods' own docs (guides.cocoapods.org/making/getting-setup-with-trunk).
+        # (AC4.2)
+        #
+        # Two podspecs (the SPM two-target split mirrored in CocoaPods, since one root
+        # podspec == one module): ConvertSDK.podspec depends on ConvertSDKCore.podspec,
+        # so ConvertSDKCore MUST be trunk-pushed FIRST. --allow-warnings is required so
+        # the push does not fail on documentation warnings. (AC4.3)
+        if: env.COCOAPODS_TRUNK_TOKEN != ''
+        env:
+          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
+        run: |
+          gem install cocoapods --no-document
+          pod trunk push ConvertSDKCore.podspec --allow-warnings
+          pod trunk push ConvertSDK.podspec --allow-warnings
