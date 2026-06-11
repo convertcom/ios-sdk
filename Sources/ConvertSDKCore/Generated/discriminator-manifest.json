@@ -1,0 +1,205 @@
+{
+  "_comment": "Config-reachable oneOf+discriminator schemas, DERIVED from the serving spec's discriminator blocks via the transitive $ref closure of the config root schemas. Do not hand-edit; regenerate via Scripts/generate-config-types/run.sh. Consumed by the LCD-sentinel decode layer (PolymorphicSentinels.swift).",
+  "config_root_schemas": [
+    "ConfigMinimalResponseData",
+    "ConfigOptionalResponseData",
+    "ConfigResponseData"
+  ],
+  "distinct_swift_property_names": [
+    "_type",
+    "detection_type",
+    "rule_type"
+  ],
+  "distinct_wire_property_names": [
+    "detection_type",
+    "rule_type",
+    "type"
+  ],
+  "schemas": [
+    {
+      "discriminator_values": [
+        "advanced",
+        "clicks_element",
+        "clicks_link",
+        "code_trigger",
+        "dom_interaction",
+        "ga_import",
+        "revenue",
+        "scroll_percentage",
+        "submits_form",
+        "visits_page"
+      ],
+      "schema": "ConfigGoal",
+      "swift_property_name": "_type",
+      "wire_property_name": "type"
+    },
+    {
+      "discriminator_values": [
+        "customCode",
+        "defaultCode",
+        "defaultCodeMultipage",
+        "defaultRedirect",
+        "fullStackFeature",
+        "richStructure"
+      ],
+      "schema": "ExperienceChangeServing",
+      "swift_property_name": "_type",
+      "wire_property_name": "type"
+    },
+    {
+      "discriminator_values": [
+        "ga3",
+        "ga4"
+      ],
+      "schema": "ExperienceIntegrationGAServing",
+      "swift_property_name": "_type",
+      "wire_property_name": "type"
+    },
+    {
+      "discriminator_values": [
+        "ga3",
+        "ga4"
+      ],
+      "schema": "GA_Settings",
+      "swift_property_name": "_type",
+      "wire_property_name": "type"
+    },
+    {
+      "discriminator_values": [
+        "callback",
+        "dom_element",
+        "manual",
+        "upon_run"
+      ],
+      "schema": "LocationTrigger",
+      "swift_property_name": "_type",
+      "wire_property_name": "type"
+    },
+    {
+      "discriminator_values": [
+        "min_max",
+        "none",
+        "percentile"
+      ],
+      "schema": "NumericOutlier",
+      "swift_property_name": "detection_type",
+      "wire_property_name": "detection_type"
+    },
+    {
+      "discriminator_values": [
+        "avg_time_page",
+        "browser_name",
+        "browser_version",
+        "bucketed_into_experience",
+        "bucketed_into_segment",
+        "campaign",
+        "city",
+        "cookie",
+        "country",
+        "days_since_last_visit",
+        "generic_bool_key_value",
+        "generic_numeric_key_value",
+        "generic_text_key_value",
+        "goal_triggered",
+        "is_desktop",
+        "is_mobile",
+        "is_tablet",
+        "js_condition",
+        "keyword",
+        "language",
+        "local_time_day_of_week",
+        "local_time_hour_of_day",
+        "local_time_minute_of_hour",
+        "medium",
+        "os",
+        "page_tag_category_id",
+        "page_tag_category_name",
+        "page_tag_custom_1",
+        "page_tag_custom_2",
+        "page_tag_custom_3",
+        "page_tag_custom_4",
+        "page_tag_customer_id",
+        "page_tag_page_type",
+        "page_tag_product_name",
+        "page_tag_product_price",
+        "page_tag_product_sku",
+        "pages_visited_count",
+        "project_time_day_of_week",
+        "project_time_hour_of_day",
+        "project_time_minute_of_hour",
+        "query_string",
+        "region",
+        "source_name",
+        "url",
+        "url_with_query",
+        "user_agent",
+        "visit_duration",
+        "visitor_type",
+        "visits_count",
+        "weather_condition"
+      ],
+      "schema": "RuleElement",
+      "swift_property_name": "rule_type",
+      "wire_property_name": "rule_type"
+    },
+    {
+      "discriminator_values": [
+        "avg_time_page",
+        "browser_name",
+        "browser_version",
+        "bucketed_into_experience",
+        "bucketed_into_segment",
+        "campaign",
+        "city",
+        "cookie",
+        "country",
+        "days_since_last_visit",
+        "generic_bool_key_value",
+        "generic_numeric_key_value",
+        "generic_text_key_value",
+        "goal_triggered",
+        "is_desktop",
+        "is_mobile",
+        "is_tablet",
+        "js_condition",
+        "keyword",
+        "language",
+        "local_time_day_of_week",
+        "local_time_hour_of_day",
+        "local_time_minute_of_hour",
+        "medium",
+        "os",
+        "page_tag_category_id",
+        "page_tag_category_name",
+        "page_tag_custom_1",
+        "page_tag_custom_2",
+        "page_tag_custom_3",
+        "page_tag_custom_4",
+        "page_tag_customer_id",
+        "page_tag_page_type",
+        "page_tag_product_name",
+        "page_tag_product_price",
+        "page_tag_product_sku",
+        "pages_visited_count",
+        "project_time_day_of_week",
+        "project_time_hour_of_day",
+        "project_time_minute_of_hour",
+        "query_string",
+        "region",
+        "source_name",
+        "url",
+        "url_with_query",
+        "user_agent",
+        "visit_duration",
+        "visitor_data_exists",
+        "visitor_id",
+        "visitor_type",
+        "visits_count",
+        "weather_condition"
+      ],
+      "schema": "RuleElementAudience",
+      "swift_property_name": "rule_type",
+      "wire_property_name": "rule_type"
+    }
+  ]
+}
