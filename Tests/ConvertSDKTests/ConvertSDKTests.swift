@@ -286,17 +286,27 @@ struct ConvertSDKReadyTests {
     }
 
     /// AC3 (FIX-R1-1) — companion to ``cacheHitThenLiveFailPreservesSnapshot``: a SUCCESSFUL live
-    /// fetch after a cache hit REFRESHES the snapshot to the fresh config (fresh wins). With
-    /// `(cached: acc-cache, live: acc-live)`, after `ready()` the snapshot is the live config. This
-    /// documents the refresh-wins half of the contract and passes both before and after the fix
-    /// (a non-`nil` live is always set), guarding against a fix that over-corrects into never
-    /// refreshing.
+    /// fetch applies its config to the snapshot (the guard's `live != nil → setConfig(live)` branch).
+    /// With `(cached: nil, live: acc-live)`, the cache branch is skipped, so `ready()` resolves on the
+    /// live `setConfig` ITSELF — making the post-`ready()` snapshot DETERMINISTICALLY the live config,
+    /// with no race.
+    ///
+    /// Why not `(cached: acc-cache, live: acc-live)`? On a cache HIT, `ready()` latches on the FIRST
+    /// `setConfig(cached)`, BEFORE the second `setConfig(live)` runs — so reading `getSnapshot()` right
+    /// after `ready()` races the live refresh (it is the post-cache, pre-live window). The
+    /// cache-then-live REFRESH-WINS overwrite is real production behavior, but it has NO deterministic
+    /// completion signal in Story 2.3: the natural "config changed" event (`CONFIG_UPDATED`, which the
+    /// second `setConfig` would fire) is Story 2.4 scope. Asserting refresh-wins via `ready()` is
+    /// therefore inherently racy here; this test instead proves the live-applies-to-snapshot guarantee
+    /// without the cache-hit race (Story 2.4 will assert refresh-wins deterministically via
+    /// `CONFIG_UPDATED`). The no-cache form still guards against a fix that over-corrects into never
+    /// applying a live config.
     @MainActor
-    @Test("a successful live fetch after a cache hit refreshes the snapshot to the live config")
-    func liveSuccessAfterCacheUpdatesSnapshot() async throws {
+    @Test("a successful live fetch sets the snapshot to the live config")
+    func liveSuccessSetsSnapshot() async throws {
         let sut = makeSut(
             configProvider: MockConfigProvider.ungated(
-                cached: try makeConfig(accountId: "acc-cache"),
+                cached: nil,
                 live: try makeConfig(accountId: "acc-live")
             )
         )
