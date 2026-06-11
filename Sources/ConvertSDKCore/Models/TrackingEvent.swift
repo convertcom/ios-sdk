@@ -37,6 +37,21 @@ public struct TrackingEvent: Codable, Sendable {
         self.visitors = visitors
     }
 
+    /// Decodes a tracking event while re-asserting the hardcoded invariants.
+    ///
+    /// `enrichData` and `source` are NOT read from the wire — they are forced to `false` and
+    /// `"ios-sdk"` regardless of what the payload contains (AOD-1 / APB5). The synthesized
+    /// decoder would otherwise let a persisted/crafted queue file (decoded via
+    /// `EventQueueStore.load()`, Story 5.x) override these, silently breaking the invariant.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.accountId = try container.decode(String.self, forKey: .accountId)
+        self.projectId = try container.decode(String.self, forKey: .projectId)
+        self.visitors = try container.decode([Visitor].self, forKey: .visitors)
+        self.enrichData = false
+        self.source = "ios-sdk"
+    }
+
     /// Explicit camelCase wire keys.
     private enum CodingKeys: String, CodingKey {
         case accountId

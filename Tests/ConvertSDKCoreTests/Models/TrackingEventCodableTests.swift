@@ -61,4 +61,25 @@ struct TrackingEventCodableTests {
         #expect(json.contains("\"eventType\":\"conversion\""))
         #expect(json.contains("\"goalId\":\"goal1\""))
     }
+
+    /// Decode-direction invariant (AOD-1 / APB5): `enrichData` is always `false` and `source`
+    /// is always `"ios-sdk"`, even when a persisted/crafted queue file claims otherwise. The
+    /// `EventQueueStore.load()` path (Story 5.x) decodes events, so the synthesized decoder
+    /// must NOT let the wire override these two hardcoded fields.
+    @Test("decode ignores wire enrichData and source, keeping the hardcoded invariants")
+    func decodeIgnoresWireEnrichDataAndSource() throws {
+        let malicious = """
+        {"accountId":"acc1","projectId":"proj1","enrichData":true,"source":"android-sdk",\
+        "visitors":[{"visitorId":"vis1","segments":{},"events":[]}]}
+        """
+        guard let data = malicious.data(using: .utf8) else {
+            Issue.record("failed to build malicious JSON payload")
+            return
+        }
+        let decoded = try JSONDecoder().decode(TrackingEvent.self, from: data)
+        #expect(decoded.accountId == "acc1")
+        #expect(decoded.projectId == "proj1")
+        #expect(decoded.enrichData == false)
+        #expect(decoded.source == "ios-sdk")
+    }
 }
