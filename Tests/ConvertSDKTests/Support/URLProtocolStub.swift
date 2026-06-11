@@ -12,8 +12,9 @@
 // A request whose URL has neither a stub nor a failure registered falls back to a
 // 404 response with an empty body (a real HTTP response, NOT a transport error), so
 // an un-stubbed call surfaces as a server-style miss rather than a thrown `URLError`.
-// Every intercepted request is recorded in `lastRequest` so a test can assert what
-// the client actually sent (e.g. the outbound `User-Agent` header).
+// Every intercepted request is recorded in `capturedRequests`, keyed on its absolute
+// URL string, so a test can assert what the client actually sent to a given endpoint
+// (e.g. the outbound `User-Agent` header) — read it back with `recordedRequest(for:)`.
 //
 // ── Concurrency shape (AC9) ───────────────────────────────────────────────────
 // `URLProtocol` is an `NSObject` subclass, so `URLProtocolStub` CANNOT be an
@@ -21,7 +22,7 @@
 // is inherently PROCESS-GLOBAL: `URLProtocol` is instantiated by the loading
 // system, not by the test, so that state must be CLASS-LEVEL `static` mutable
 // storage. Three pieces share this shape — the response registry `handlers`, the
-// failure registry `failures`, and the captured `lastRequest`.
+// failure registry `failures`, and the captured-request registry `capturedRequests`.
 //
 // That static storage needs `nonisolated(unsafe)`, applied to exactly those three
 // declarations and nothing else. It is unavoidable here because:
@@ -69,12 +70,21 @@ final class URLProtocolStub: URLProtocol {
     /// Guarded by ``lock`` exactly like ``handlers`` (see the file header).
     private nonisolated(unsafe) static var failures: [String: URLError] = [:]
 
-    /// The most recent request intercepted by ``startLoading()``, recorded so a test
-    /// can assert what the client actually sent (e.g. the outbound `User-Agent`
-    /// header, which Foundation surfaces on the intercepted request when the caller
-    /// sets it explicitly via `setValue(_:forHTTPHeaderField:)`). Guarded by ``lock``
-    /// exactly like ``handlers`` (see the file header). Cleared by ``reset()``.
-    private nonisolated(unsafe) static var lastRequest: URLRequest?
+    /// Process-global registry of intercepted requests, keyed on `url.absoluteString`,
+    /// recorded so a test can assert what the client actually sent to a given endpoint
+    /// (e.g. the outbound `User-Agent` header, which Foundation surfaces on the
+    /// intercepted request when the caller sets it explicitly via
+    /// `setValue(_:forHTTPHeaderField:)`). Guarded by ``lock`` exactly like
+    /// ``handlers`` (see the file header). Cleared by ``reset()``.
+    ///
+    /// Keyed — not a single slot — for the SAME reason ``handlers`` and ``failures``
+    /// are keyed: swift-testing runs different `@Suite`s in PARALLEL, and `.serialized`
+    /// only orders cases WITHIN a suite, not across suites. A single shared slot would
+    /// be clobbered by a concurrently-running suite that intercepts a DIFFERENT URL
+    /// between this suite's request and its read-back, producing a cross-suite flake.
+    /// Keying by URL gives each suite the same immunity ``handlers``/``failures``
+    /// already have: it reads back only the request for the URL it itself drove.
+    private nonisolated(unsafe) static var capturedRequests: [String: URLRequest] = [:]
 
     // MARK: - Registration
 
@@ -102,11 +112,13 @@ final class URLProtocolStub: URLProtocol {
         lock.withLock { failures[url.absoluteString] = error }
     }
 
-    /// The most recent intercepted request, or `nil` if none has been recorded
-    /// since the last ``reset()``. Read under ``lock``. Lets a test assert the
-    /// outbound request the client built (headers, method, URL).
-    static func recordedRequest() -> URLRequest? {
-        lock.withLock { lastRequest }
+    /// The intercepted request whose URL matches `url`, or `nil` if none has been
+    /// recorded for that URL since the last ``reset()``. Read under ``lock``. Lets a
+    /// test assert the outbound request the client built (headers, method, URL) for a
+    /// specific endpoint. Keyed by `url.absoluteString` so a concurrently-running
+    /// suite hitting a different URL cannot corrupt this suite's read-back.
+    static func recordedRequest(for url: URL) -> URLRequest? {
+        lock.withLock { capturedRequests[url.absoluteString] }
     }
 
     /// Clears every registry (responses and failures) and the captured request,
@@ -115,7 +127,7 @@ final class URLProtocolStub: URLProtocol {
         lock.withLock {
             handlers.removeAll()
             failures.removeAll()
-            lastRequest = nil
+            capturedRequests.removeAll()
         }
     }
 
@@ -138,15 +150,17 @@ final class URLProtocolStub: URLProtocol {
         let capturedRequest = request
 
         guard let url = request.url else {
-            Self.lock.withLock { Self.lastRequest = capturedRequest }
+            // No URL to key the capture by; nothing asserts the nil-URL request, so
+            // skip keyed capture and just fail the load (badURL) as before.
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
         }
 
-        // One critical section: capture the request and resolve both registries so
-        // the lock is taken once and the failure/stub decision is consistent.
+        // One critical section: capture the request (keyed by URL) and resolve both
+        // registries so the lock is taken once and the failure/stub decision is
+        // consistent.
         let (failure, matched): (URLError?, StubResponse?) = Self.lock.withLock {
-            Self.lastRequest = capturedRequest
+            Self.capturedRequests[url.absoluteString] = capturedRequest
             return (Self.failures[url.absoluteString], Self.handlers[url.absoluteString])
         }
 
