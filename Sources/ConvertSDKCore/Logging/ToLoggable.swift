@@ -52,10 +52,18 @@ private func maskSDKKeys(in value: String) -> String {
     return result
 }
 
-/// Renders a single SDK-key token as `sk_…<last4>` (or `sk_…` if it is shorter than 4 chars).
+/// Renders a single SDK-key token as `sk_…<last4-of-key-material>`, or fully-redacted `sk_…`
+/// when the key material (everything after the `sk_` prefix) is 4 characters or fewer.
+///
+/// The suffix is taken from the key material — NOT the full token — so the `sk_` prefix can
+/// never count toward the exposed window (which would leak the `_` separator and shrink the
+/// real redaction for short keys).
 private func maskedKey(for token: String) -> String {
-    let last4 = String(token.suffix(4))
-    return "sk_" + redactionEllipsis + last4
+    let material = String(token.dropFirst(3)) // drop the "sk_" prefix
+    guard material.count > 4 else {
+        return "sk_" + redactionEllipsis
+    }
+    return "sk_" + redactionEllipsis + String(material.suffix(4))
 }
 
 /// Replaces the value of secret-bearing query params (`sdkKeySecret`, `sdkKey`) with `…`.
