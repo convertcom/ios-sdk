@@ -37,6 +37,12 @@ let package = Package(
             name: "ConvertSDKCoreTests",
             dependencies: ["ConvertSDKCore"],
             path: "Tests/ConvertSDKCoreTests",
+            // The Fixtures/ directory holds REAL CDN config captures consumed by
+            // ConfigDecodeTests via `Bundle.module`. `.copy` of the whole directory
+            // bundles its `.json` contents verbatim (no SwiftPM resource processing /
+            // re-encoding) so the byte-level fidelity of the captures is preserved for
+            // the round-trip assertions; the leftover `.gitkeep` rides along harmlessly.
+            resources: [.copy("Fixtures")],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
