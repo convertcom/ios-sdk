@@ -9,7 +9,7 @@ import Foundation
 ///
 /// This is the seam `ConvertSDK.init` injects so a unit test never touches the network: tests
 /// pass a mock, production passes the real `ConfigFetchService` (which conforms to this in the
-/// `ConvertSDK` target). It supersedes the earlier ``ConfigLoader`` seam — instead of a
+/// `ConvertSDK` target). It supersedes an earlier `ConfigLoader` seam — instead of a
 /// `Void`-returning "config is available" signal, both requirements return a typed
 /// ``ProjectConfig?`` so the SDK can hand the actual config to the ``ConfigStore``.
 ///
