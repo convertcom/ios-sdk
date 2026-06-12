@@ -169,11 +169,21 @@ public final class ConvertSDK: Sendable {
         self.keyValueStore = keyValueStore
         self.decisionStore = decisionStore
         self.logger = logger
+        // The durable pending-event-queue store (Story 5.2): the coordinated, atomic file adapter at
+        // the production Application Support path. Built HERE in the composition root over the SDK's
+        // REAL `logger` (the injected/production logger this init received — AC10: never a hardcoded
+        // `NoopLogger()`), then threaded into `resolveEventSink` so its corruption WARNs surface on the
+        // SAME logging path the rest of the SDK uses. The injected-mock branch of `resolveEventSink`
+        // ignores it (a test sink has its own storage), which is fine.
+        let eventQueueStore = CoordinatedFileEventQueueStore(
+            fileURL: CoordinatedFileEventQueueStore.queueFileURL(),
+            logger: logger
+        )
         // Resolve the ONE EventSink shared by the conversion seam AND the bucketing path: an injected
         // mock flows into both; production builds the real `EventQueue` (see `resolveEventSink`).
         // Held in a LOCAL so it flows into BOTH `self.eventSink` and `makeDefault` below.
         let resolvedSink = ConvertSDK.resolveEventSink(
-            injected: eventSink, configuration: configuration, eventBus: eventBus
+            injected: eventSink, configuration: configuration, eventBus: eventBus, store: eventQueueStore
         )
         self.eventSink = resolvedSink
         // Wire the ONE ExperienceManager every context delegates `runExperience` to, over the CANONICAL
@@ -215,6 +225,14 @@ public final class ConvertSDK: Sendable {
             // decisions restored. Awaited INSIDE the detached `Task`, so init stays non-blocking; the
             // store degrades to empty (it never throws) on a first-launch miss or corrupt bytes.
             await decisionStore.loadFromDisk()
+            // Cold-start recovery (Story 5.2 / AC5 / FR37): drain any events the previous process persisted
+            // to disk back into the in-memory buffer and arm the release timer, so they deliver on the next
+            // flush cycle. Runs on BOTH the key path and the directData path (before the directData return),
+            // since a persisted queue must be recovered regardless of how config is sourced. The downcast is
+            // the production EventQueue (the injected test sink is a MockEventSink and is correctly skipped).
+            if let eventQueue = resolvedSink as? EventQueue {
+                await eventQueue.start()
+            }
             if let directData {
                 // Direct-data path: validate the payload (empty/invalid → ready() throws).
                 await store.validateAndSetConfig(data: directData)
@@ -313,11 +331,15 @@ public final class ConvertSDK: Sendable {
     ///   - configuration: The SDK configuration carrying the batch size, release interval, track
     ///     endpoint, SDK key, and the `network.tracking` gate.
     ///   - eventBus: The SDK's shared bus the queue fires ``SystemEvent/apiQueueReleased`` on.
+    ///   - store: The durable ``EventQueueStore`` built in `init` over the SDK's real logger and
+    ///     injected into the production ``EventQueue``; unused on the injected-mock path (it returns
+    ///     first).
     /// - Returns: The injected sink, or a freshly-built real ``EventQueue``.
     private static func resolveEventSink(
         injected: (any EventSink)?,
         configuration: ConvertConfiguration,
-        eventBus: EventBus
+        eventBus: EventBus,
+        store: any EventQueueStore
     ) -> any EventSink {
         if let injected {
             return injected
@@ -327,15 +349,11 @@ public final class ConvertSDK: Sendable {
             trackEndpoint: configuration.apiTrackEndpoint,
             sdkKey: configuration.sdkKey
         )
-        // The durable pending-event-queue store (Story 5.2): the coordinated, atomic file adapter at
-        // the production Application Support path. `EventQueue`'s `store:` is non-defaulted, so the
-        // composition root always injects it — the on-disk fallback, disk-first drain merge, and
-        // cold-start recovery are never silently skipped. `NoopLogger()` matches the production logging
-        // path used for `decisionStore` in this same root (until a real OSLog logger is wired).
-        let store = CoordinatedFileEventQueueStore(
-            fileURL: CoordinatedFileEventQueueStore.queueFileURL(),
-            logger: NoopLogger()
-        )
+        // The durable pending-event-queue store (Story 5.2) is BUILT in `init` (over the SDK's real
+        // logger) and threaded in here, so `EventQueue`'s non-defaulted `store:` is always injected —
+        // the on-disk fallback, disk-first drain merge, and cold-start recovery are never silently
+        // skipped. The injected-mock branch above returned before this, so `store` is only consumed
+        // on the production path.
         return EventQueue(
             accountId: "",
             projectId: "",
