@@ -161,4 +161,47 @@ enum ProjectConfigFixtures {
         let audience = audienceJSON(id: audienceId, key: "\(audienceId)-key", countryEquals: countryEquals)
         return try makeConfig(experiencesJSON: "[\(experience)]", audiencesJSON: "[\(audience)]")
     }
+
+    /// A `ProjectConfig` holding `count` experiences in DETERMINISTIC config order, keyed
+    /// `"exp-1"`…`"exp-{count}"` with ids `"id-1"`…`"id-{count}"`, variation ids `"var-1"`…
+    /// `"var-{count}"`, and variation keys `"control-1"`…`"control-{count}"`. Each is a sole
+    /// full-traffic (100%) variation so an eligible experience always buckets.
+    ///
+    /// By default every experience is no-audience (unrestricted) and therefore eligible — the
+    /// bulk-selection happy path. When `gatedFailCountry` is non-`nil`, ONLY the FIRST experience
+    /// (`"exp-1"` / `"id-1"`) is gated on a `country == gatedFailCountry` audience; the rest stay
+    /// unrestricted. Calling the bulk selector with `attributes["country"]` set to anything OTHER
+    /// than `gatedFailCountry` then fails exactly that one experience's gate, so the result holds
+    /// `count - 1` variations — the audience-fail-exclusion scenario.
+    ///
+    /// Composes `experienceJSON` once per index (and `audienceJSON` once for the gated leaf),
+    /// splicing the array fragments through a single `makeConfig` call — the envelope and the
+    /// single-experience builder's internals are never re-inlined (SonarQube 3% gate; CPD is
+    /// token-based, so reuse — not renaming — is what keeps this under the threshold).
+    ///
+    /// - Parameters:
+    ///   - count: How many experiences to emit (≥ 1 for a meaningful config).
+    ///   - gatedFailCountry: When set, `"exp-1"` is gated on `country == <value>`; the rest are
+    ///     unrestricted. `nil` (the default) leaves every experience eligible.
+    static func multiExperienceConfig(count: Int, gatedFailCountry: String? = nil) throws -> ProjectConfig {
+        let gateAudienceId = "aud-gate-1"
+        let experiences = (1...count).map { index in
+            experienceJSON(
+                id: "id-\(index)",
+                key: "exp-\(index)",
+                variationId: "var-\(index)",
+                variationKey: "control-\(index)",
+                alloc: 100,
+                audiences: (index == 1 && gatedFailCountry != nil) ? [gateAudienceId] : []
+            )
+        }
+        let experiencesJSON = "[" + experiences.joined(separator: ",") + "]"
+        guard let gatedFailCountry else {
+            return try makeConfig(experiencesJSON: experiencesJSON)
+        }
+        let audience = audienceJSON(
+            id: gateAudienceId, key: "\(gateAudienceId)-key", countryEquals: gatedFailCountry
+        )
+        return try makeConfig(experiencesJSON: experiencesJSON, audiencesJSON: "[\(audience)]")
+    }
 }

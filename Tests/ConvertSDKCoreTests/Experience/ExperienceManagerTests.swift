@@ -1,40 +1,36 @@
 // Tests/ConvertSDKCoreTests/Experience/ExperienceManagerTests.swift
-// RED-phase suite for `ExperienceManager` (Epic 3 / Story 4 — sticky variation assignment +
-// running a single experience). Covers AC2 (unknown key / audience+location gating), AC3 (sticky
-// short-circuit), AC8 (`enableTracking` controls the bucketing enqueue), AC9 (a NEW decision fires
-// the `.bucketing` system event on the `EventBus`).
+// RED-phase suite for `ExperienceManager`. Covers Story 4 (single-experience `selectVariation`:
+// AC2 unknown-key / audience+location gating, AC3 sticky short-circuit, AC8 `enableTracking` gates
+// the bucketing enqueue, AC9 a NEW decision fires the `.bucketing` EventBus event) AND Story 5
+// (bulk `selectVariations` over every config experience with per-call tracking control: empty → [],
+// per-experience gate failure excluded without aborting the loop, config-order preservation, and the
+// shared `enableTracking` flag threaded into each per-experience bucket).
 //
 // ── Expected RED state ───────────────────────────────────────────────────────────────────
-// `ExperienceManager` does NOT exist yet (`Sources/ConvertSDKCore/Experience/ExperienceManager.swift`
-// is unwritten), so this file is EXPECTED to fail to COMPILE with "cannot find 'ExperienceManager'
-// in scope". That is the correct RED signal — the expectations below DEFINE the pipeline contract
-// the GREEN implementer must satisfy. Every collaborator (`RuleManager`, `BucketingManager`,
-// `DecisionStore`, `EventBus`, the `ProjectConfig` fixtures) already exists, so the ONLY compile
-// errors must be the `ExperienceManager`-absence ones.
+// The bulk `selectVariations` member does NOT exist yet on `ExperienceManager`, so this file is
+// EXPECTED to fail to COMPILE with "value of type 'ExperienceManager' has no member 'selectVariations'"
+// (the singular `selectVariation` and every collaborator — `RuleManager`, `BucketingManager`,
+// `DecisionStore`, `EventBus`, the `ProjectConfig` fixtures — already exist, so that missing-member
+// error is the ONLY one expected).
 //
 // ── Pipeline contract pinned here (JS-parity for the in-scope subset) ─────────────────────
-//   1. `fullExperience(forKey:)` miss → nil.
-//   2. storeKey = "<accountId>-<projectId>-<visitorId>".
-//   3. STICKY: a non-nil `decisionStore.stickyVariationId` short-circuits — the matching variation
-//      is rebuilt and returned with NO bucketing enqueue and NO `.bucketing` EventBus fire.
-//   4. AUDIENCE gate: an EMPTY resolved audience set is UNRESTRICTED (passes); a non-empty set is
-//      flattened + evaluated against `attributes`, and a fail returns nil.
-//   5. LOCATION gate: same over locations against `locationProperties` (empty ⇒ pass).
-//   6. BUCKET via `bucketingManager.bucket(...)` — THIS performs the single enqueue when tracking is
-//      enabled; a nil bucket returns nil.
-//   7. PERSIST the new decision via `decisionStore.saveDecision`.
-//   8. FIRE `.bucketing` on the `EventBus` — only on a NEW decision.
+// Single experience: `fullExperience(forKey:)` miss → nil; storeKey "<accountId>-<projectId>-<visitorId>";
+// a sticky hit short-circuits (no enqueue / no fire); empty audience & location sets are unrestricted
+// (a non-empty set is evaluated and a fail → nil); the bucket performs the single enqueue when tracking
+// is enabled, persists the decision, and fires `.bucketing` only on a NEW decision.
+// Bulk: iterate `rawExperiences` in order, call the single path per `.key`, collect non-nil results
+// (a nil is excluded, the loop never aborts), thread `enableTracking` straight through; empty/nil → [].
 //
 // ── Test-hygiene invariants ──────────────────────────────────────────────────────────────
 //   * EventBus delivery is asynchronous (`fire` dispatches each callback as a `MainActor` task), so
-//     every fired-or-not assertion drains via `await MainActor.run { }` — NEVER `Task.yield()`.
-//     `drain()` mirrors `EventBusTests.drain()` verbatim (the canonical executor barrier).
-//   * `MainActor`-task callbacks are `@Sendable`; the fire count + payload are captured into a
-//     `LockedBox` (the project's `Sendable` lock cell from `MockCorePorts.swift`) so the closure has
-//     no `inout`/actor-capture issues under Swift 6 strict concurrency.
+//     every fired-or-not assertion drains via `await MainActor.run { }` (`drain()`) — NEVER
+//     `Task.yield()`. The fire count + payload are captured into a `LockedBox` (the project's
+//     `Sendable` lock cell from `MockCorePorts.swift`) so the `@Sendable` callback has no
+//     `inout`/actor-capture issue under Swift 6 strict concurrency.
 //   * SonarQube 3% `new_duplicated_lines_density`: every manager goes through `makeExperienceManager`,
-//     every config through the shared `ProjectConfigFixtures`, and the subscribe+drain+count pattern
-//     through `bucketingFireCount(...)` — no ≥10-line block is copy-pasted across cases.
+//     every config through the shared `ProjectConfigFixtures`, the single/bulk call contracts through
+//     `select`/`selectAll`, and the subscribe-and-capture wiring through `subscribeBucketing` — no
+//     ≥10-line block is copy-pasted across cases.
 
 import Foundation
 import Testing
@@ -47,7 +43,7 @@ struct ExperienceManagerTests {
 
     /// The account/project/visitor triple every scenario buckets under. Centralized so the
     /// `"<accountId>-<projectId>-<visitorId>"` storeKey is assembled in exactly one place
-    /// (`seedStoreKey`) and the `selectVariation` call sites stay free of re-spelled literals.
+    /// (``Ids/storeKey``) and the call sites stay free of re-spelled literals.
     private enum Ids {
         static let account = "a"
         static let project = "p"
@@ -58,9 +54,8 @@ struct ExperienceManagerTests {
 
     // MARK: - EventBus capture (a `Sendable` cell the `@Sendable` callback writes under a lock)
 
-    /// What a `.bucketing` EventBus subscriber records: how many times it fired and the last payload
-    /// it saw. Held in a `LockedBox` so the `@Sendable` `MainActor` callback can mutate it without an
-    /// `inout` capture (a named struct, not a tuple, satisfies `large_tuple`).
+    /// What a `.bucketing` EventBus subscriber records: fire count + last payload. A named struct (not
+    /// a tuple — `large_tuple`) so a `LockedBox` can hold it for the `@Sendable` callback to mutate.
     private struct BucketingCapture {
         var fireCount = 0
         var lastPayload: BucketingPayload?
@@ -68,11 +63,10 @@ struct ExperienceManagerTests {
 
     // MARK: - Subject factory (SonarQube 3% new-duplicated-lines gate)
 
-    /// Builds the subject with REAL collaborators wired to the passed (or default) test doubles, so
-    /// no test re-wires the five dependencies inline. The `eventSink` is handed to the
-    /// `BucketingManager` (which owns the enqueue) and is the SAME `MockEventSink` the test inspects;
-    /// `decisionStore` and `eventBus` are injected so a test can pre-seed sticky state and subscribe a
-    /// fire counter respectively.
+    /// Builds the subject with REAL collaborators wired to the passed (or default) doubles, so no test
+    /// re-wires the dependencies inline. The injected `eventSink` is handed to the `BucketingManager`
+    /// (which owns the enqueue) and is the SAME `MockEventSink` the test later inspects; `decisionStore`
+    /// pre-seeds sticky state and `eventBus` carries the `.bucketing` fire counter.
     private func makeExperienceManager(
         decisionStore: DecisionStore = DecisionStore(logger: MockLogger(), fileStore: MockFileStore()),
         eventSink: MockEventSink = MockEventSink(),
@@ -87,9 +81,9 @@ struct ExperienceManagerTests {
         )
     }
 
-    /// Invokes `selectVariation` with the shared ids and the per-scenario knobs, so the long argument
-    /// list is written once. `attributes` drives the audience gate; `locationProperties` the location
-    /// gate; `enableTracking` the bucketing enqueue.
+    /// Invokes the single-experience `selectVariation` with the shared ids and per-scenario knobs, so
+    /// the long argument list is written once (`attributes` → audience gate, `locationProperties` →
+    /// location gate, `enableTracking` → enqueue).
     private func select(
         _ subject: ExperienceManager,
         key: String,
@@ -110,22 +104,39 @@ struct ExperienceManagerTests {
         )
     }
 
+    /// Invokes the BULK `selectVariations` with the shared ids and per-scenario knobs (the bulk twin of
+    /// ``select(_:key:in:attributes:locationProperties:enableTracking:)``). The id triple matches
+    /// ``Ids`` so a sticky decision pre-seeded under ``Ids/storeKey`` is honoured by the iteration.
+    private func selectAll(
+        _ subject: ExperienceManager,
+        in config: ProjectConfig,
+        attributes: [String: String] = [:],
+        locationProperties: [String: String] = [:],
+        enableTracking: Bool = true
+    ) async -> [Variation] {
+        await subject.selectVariations(
+            in: config,
+            visitorId: Ids.visitor,
+            accountId: Ids.account,
+            projectId: Ids.project,
+            attributes: attributes,
+            locationProperties: locationProperties,
+            enableTracking: enableTracking
+        )
+    }
+
     /// Lets already-dispatched `MainActor` callbacks run before assertions read the capture.
-    ///
-    /// `EventBus.fire` delivers each callback as a `Task { @MainActor in … }`, so the drain must
-    /// await the `MainActor`'s serial executor — not the cooperative pool. `await MainActor.run { }`
-    /// enqueues a barrier job behind the already-hopped callback jobs; because the `MainActor`
-    /// executor is serial/FIFO, the barrier completes only after every prior callback has run.
-    /// `Task.yield()` does NOT suffice — it yields the cooperative thread and never awaits the
-    /// separate `MainActor` executor. Pure executor barrier, no wall-clock wait. Mirrors
-    /// `EventBusTests.drain()` verbatim.
+    /// `EventBus.fire` delivers each callback as a `Task { @MainActor in … }`, so `await MainActor.run`
+    /// enqueues a barrier behind them on the serial/FIFO `MainActor` executor — it completes only after
+    /// every prior callback has run. `Task.yield()` does NOT suffice (cooperative pool, not that
+    /// executor). Pure executor barrier, no wall-clock wait; mirrors `EventBusTests.drain()` verbatim.
     private func drain() async {
         await MainActor.run { }
     }
 
-    /// Subscribes a `.bucketing` counter on `eventBus`, returning the `LockedBox` the callback writes.
-    /// The caller fires the pipeline, `await drain()`s, then reads `.get.fireCount` / `.get.lastPayload`.
-    /// Centralized so no test re-spells the subscribe-and-capture wiring.
+    /// Subscribes a `.bucketing` counter on `eventBus`, returning the `LockedBox` the callback writes —
+    /// the caller fires, `await drain()`s, then reads `.get.fireCount` / `.get.lastPayload`. Centralized
+    /// so no test re-spells the subscribe-and-capture wiring.
     private func subscribeBucketing(on eventBus: EventBus) async -> LockedBox<BucketingCapture> {
         let box = LockedBox(BucketingCapture())
         _ = await eventBus.on(.bucketing) { payload in
@@ -139,8 +150,6 @@ struct ExperienceManagerTests {
         return box
     }
 
-    // MARK: - AC2: an unknown experience key returns nil
-
     /// `selectVariation(forKey:)` for a key absent from the config returns nil (the
     /// `fullExperience(forKey:)` miss short-circuits before any gate or bucket).
     @Test("AC2 — an unknown experience key returns nil")
@@ -153,11 +162,8 @@ struct ExperienceManagerTests {
         #expect(variation == nil)
     }
 
-    // MARK: - AC3: a sticky decision short-circuits (no bucket, no enqueue, no fire)
-
-    /// A pre-seeded sticky decision for the visitor restores its variation directly: the result is the
-    /// sticky variation, NO new bucketing event is enqueued (the bucket path is skipped), and the
-    /// `.bucketing` EventBus subscriber does NOT fire (a sticky hit is not a NEW decision).
+    /// A pre-seeded sticky decision restores its variation directly: the bucket path is skipped, so NO
+    /// event is enqueued and the `.bucketing` subscriber does NOT fire (a sticky hit is not a NEW one).
     @Test("AC3 — a sticky decision short-circuits with no enqueue and no EventBus fire")
     func stickyDecisionShortCircuits() async throws {
         let config = try ProjectConfigFixtures.singleExperienceConfig(
@@ -181,11 +187,8 @@ struct ExperienceManagerTests {
         #expect(fired.get.fireCount == 0, "a sticky hit must not fire the .bucketing system event")
     }
 
-    // MARK: - AC2: an empty-audience experience runs (empty audience set = unrestricted)
-
-    /// THE parity-critical case: an experience with NO audiences (empty `audiences` list) is
-    /// UNRESTRICTED — the audience gate is bypassed, so a 100%-traffic experience buckets and returns
-    /// a variation for ARBITRARY attributes (it is NOT rejected for "no matching audience").
+    /// THE parity-critical case: an experience with NO audiences is UNRESTRICTED — the gate is bypassed,
+    /// so a 100%-traffic experience buckets for ARBITRARY attributes (NOT rejected for "no match").
     @Test("AC2 — an empty-audience experience runs (empty audience set is unrestricted, not rejected)")
     func emptyAudienceExperienceRuns() async throws {
         let config = try ProjectConfigFixtures.singleExperienceConfig(key: "open-exp")
@@ -197,8 +200,6 @@ struct ExperienceManagerTests {
 
         #expect(variation?.id == "var-1", "an empty-audience experience must bucket, not be rejected")
     }
-
-    // MARK: - AC2: an audience-gate failure returns nil and enqueues nothing
 
     /// An experience gated on a `country == "US"` audience, called with `["country": "UK"]`, fails the
     /// gate → nil. Because the gate fails BEFORE the bucket step, nothing is enqueued.
@@ -219,8 +220,6 @@ struct ExperienceManagerTests {
         #expect(events.isEmpty, "no bucketing event may be enqueued when the audience gate fails")
     }
 
-    // MARK: - AC2: an audience-gate pass buckets
-
     /// The same `country == "US"`-gated experience, called with `["country": "US"]`, passes the gate
     /// and — being 100% traffic — buckets to a variation.
     @Test("AC2 — an audience-gate pass buckets to a variation")
@@ -236,8 +235,6 @@ struct ExperienceManagerTests {
 
         #expect(variation?.id == "var-1", "a passing audience gate must bucket")
     }
-
-    // MARK: - AC8: enableTracking == false returns a variation but enqueues NOTHING
 
     /// A 100%-traffic no-audience experience selected with `enableTracking: false` still returns a
     /// variation, but `BucketingManager` (which owns the enqueue) emits NO event — proving the flag
@@ -255,8 +252,6 @@ struct ExperienceManagerTests {
         #expect(events.isEmpty, "enableTracking:false must suppress the bucketing enqueue")
     }
 
-    // MARK: - AC8: enableTracking == true enqueues exactly one bucketing event
-
     /// The same experience with `enableTracking: true` enqueues EXACTLY ONE entry, tagged
     /// `"bucketing"` — the single enqueue `BucketingManager` performs (the EM never double-enqueues).
     @Test("AC8 — enableTracking:true enqueues exactly one bucketing event")
@@ -272,11 +267,8 @@ struct ExperienceManagerTests {
         #expect(events.first?.eventType == "bucketing", "the enqueued entry must be a bucketing event")
     }
 
-    // MARK: - AC9: a NEW decision fires the `.bucketing` system event with the right payload
-
-    /// A NEW decision (100%-traffic no-audience experience, `enableTracking: true`) fires the
-    /// `.bucketing` EventBus event EXACTLY ONCE, carrying the resolved experienceId, variationId, and
-    /// visitorId. The async delivery is drained via the `MainActor` barrier before the capture is read.
+    /// A NEW decision (`enableTracking: true`) fires `.bucketing` EXACTLY ONCE, carrying the resolved
+    /// experienceId / variationId / visitorId (drained via the `MainActor` barrier before the read).
     @Test("AC9 — a new decision fires the .bucketing system event once with the resolved ids")
     func newDecisionFiresBucketingSystemEvent() async throws {
         let config = try ProjectConfigFixtures.singleExperienceConfig(key: "open-exp")
@@ -297,15 +289,9 @@ struct ExperienceManagerTests {
 
     // MARK: - AC8 + AC9: enableTracking:false suppresses the enqueue but STILL fires .bucketing
 
-    /// The complement of ``enableTrackingFalseSuppressesEvent`` (which pins only the suppressed-enqueue
-    /// side) and ``newDecisionFiresBucketingSystemEvent`` (which pins the fire under `enableTracking:
-    /// true`): on a NEW decision, `enableTracking: false` gates ONLY the `EventSink` enqueue (AC8) — it
-    /// does NOT gate the `.bucketing` EventBus system event, which fires on EVERY new decision (AC9;
-    /// the sole negative case is a sticky hit, covered by ``stickyDecisionShortCircuits``). Asserting
-    /// BOTH sides on the same run pins that contract so a future change cannot silently couple the
-    /// system-event fire to the tracking flag. Subscribes the `.bucketing` counter AND inspects the
-    /// SAME `MockEventSink` the `BucketingManager` enqueues through; the async fire is drained via the
-    /// `MainActor` barrier before the capture is read.
+    /// On a NEW decision `enableTracking: false` gates ONLY the `EventSink` enqueue (AC8), NOT the
+    /// `.bucketing` EventBus fire (AC9 — every new decision fires; the sole non-firing case is a
+    /// sticky hit). Pinning BOTH sides on one run stops a future change coupling the fire to the flag.
     @Test("AC8/AC9 — enableTracking:false still fires the .bucketing system event but suppresses enqueue")
     func enableTrackingFalseStillFiresBucketingSystemEvent() async throws {
         let config = try ProjectConfigFixtures.singleExperienceConfig(key: "open-exp")
@@ -324,5 +310,89 @@ struct ExperienceManagerTests {
         )
         let events = await sink.recordedEvents()
         #expect(events.isEmpty, "enableTracking:false must still suppress the bucketing enqueue")
+    }
+
+    // MARK: - Bulk `selectVariations` (Story 5 — run all experiences, per-call tracking control)
+    //
+    // Each test goes through ``selectAll`` (the shared bulk-arg wrapper) and a ``ProjectConfigFixtures``
+    // builder, so no body re-inlines the call contract or a config envelope (SonarQube 3% gate). The
+    // `@Test` display name + inline `#expect` messages carry the per-case contract.
+
+    /// An empty config (nil/empty `rawExperiences`) yields `[]` — nothing to iterate.
+    @Test("Bulk — selectVariations over a config with no experiences returns []")
+    func selectVariationsEmptyConfigReturnsEmpty() async throws {
+        let config = try ProjectConfigFixtures.makeConfig(experiencesJSON: "[]")
+        let variations = await selectAll(makeExperienceManager(), in: config)
+        #expect(variations.isEmpty, "no experiences must yield no variations")
+    }
+
+    /// Of 3 experiences only `"exp-1"` is gated on `country == "US"`; called with `["country":"UK"]`
+    /// it fails (nil) and is EXCLUDED while the loop continues — exactly the 2 ungated ones survive,
+    /// in config order (exclusion must not reorder).
+    @Test("Bulk — a per-experience audience-gate failure is excluded; the loop continues")
+    func selectVariationsExcludesAudienceGatedFailure() async throws {
+        let config = try ProjectConfigFixtures.multiExperienceConfig(count: 3, gatedFailCountry: "US")
+        let variations = await selectAll(makeExperienceManager(), in: config, attributes: ["country": "UK"])
+        #expect(variations.count == 2, "the gate-failing experience is excluded; the other two remain")
+        #expect(
+            variations.map { $0.experienceKey } == ["exp-2", "exp-3"],
+            "exclusion must not reorder — the surviving experiences stay in config order"
+        )
+    }
+
+    /// Over 3 eligible experiences the collected variations preserve `rawExperiences` order.
+    @Test("Bulk — selectVariations preserves config order")
+    func selectVariationsPreservesConfigOrder() async throws {
+        let config = try ProjectConfigFixtures.multiExperienceConfig(count: 3)
+        let variations = await selectAll(makeExperienceManager(), in: config)
+        #expect(
+            variations.map { $0.experienceKey } == ["exp-1", "exp-2", "exp-3"],
+            "results must be collected in config order"
+        )
+    }
+
+    /// `enableTracking: false` is threaded into EVERY per-experience bucket: both variations come
+    /// back but the sink records ZERO events.
+    @Test("Bulk — enableTracking:false returns the variations but enqueues nothing")
+    func selectVariationsTrackingFalseEnqueuesNothing() async throws {
+        let config = try ProjectConfigFixtures.multiExperienceConfig(count: 2)
+        let sink = MockEventSink()
+        let variations = await selectAll(makeExperienceManager(eventSink: sink), in: config, enableTracking: false)
+        #expect(variations.count == 2, "both eligible experiences are still selected when tracking is off")
+        let events = await sink.recordedEvents()
+        #expect(events.isEmpty, "enableTracking:false must suppress every per-experience enqueue")
+    }
+
+    /// 2 NEW-decision eligible experiences with `enableTracking: true` enqueue one bucketing event
+    /// each — 2 entries, all tagged `"bucketing"`.
+    @Test("Bulk — enableTracking:true enqueues one bucketing event per new decision")
+    func selectVariationsTrackingTrueEnqueuesPerNewDecision() async throws {
+        let config = try ProjectConfigFixtures.multiExperienceConfig(count: 2)
+        let sink = MockEventSink()
+        _ = await selectAll(makeExperienceManager(eventSink: sink), in: config, enableTracking: true)
+        let events = await sink.recordedEvents()
+        #expect(events.count == 2, "one bucketing event must be enqueued per new decision")
+        #expect(
+            events.allSatisfy { $0.eventType == "bucketing" },
+            "every enqueued entry must be a bucketing event"
+        )
+    }
+
+    /// `"exp-1"` (experienceId `"id-1"`, variationId `"var-1"` — the fixture's deterministic ids) is
+    /// pre-seeded sticky and `"exp-2"` is new; with `enableTracking: true` only the new decision
+    /// enqueues — exactly 1 event (the sticky hit short-circuits without re-enqueueing).
+    @Test("Bulk — a pre-seeded sticky experience does not re-enqueue; only the new decision does")
+    func selectVariationsStickyDoesNotReEnqueue() async throws {
+        let config = try ProjectConfigFixtures.multiExperienceConfig(count: 2)
+        let store = DecisionStore(logger: MockLogger(), fileStore: MockFileStore())
+        await store.saveDecision(variationId: "var-1", experienceId: "id-1", storeKey: Ids.storeKey)
+        let sink = MockEventSink()
+        let subject = makeExperienceManager(decisionStore: store, eventSink: sink)
+
+        let variations = await selectAll(subject, in: config, enableTracking: true)
+
+        #expect(variations.count == 2, "the sticky hit and the new decision both yield a variation")
+        let events = await sink.recordedEvents()
+        #expect(events.count == 1, "the sticky hit must not re-enqueue; only the new decision does")
     }
 }
