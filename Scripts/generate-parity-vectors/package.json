@@ -1,0 +1,10 @@
+{
+  "name": "generate-parity-vectors",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generates hash-parity-vectors.json from the PUBLISHED @convertcom/js-sdk-bucketing package for cross-SDK parity testing. Dev/CI tool only — never part of the Swift package graph (NFR18).",
+  "dependencies": {
+    "@convertcom/js-sdk-bucketing": "3.1.3"
+  }
+}
