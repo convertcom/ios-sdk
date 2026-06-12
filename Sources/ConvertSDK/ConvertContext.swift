@@ -58,6 +58,27 @@ public final class ConvertContext: Sendable {
     /// storing it as a `let` keeps this class an all-`let` `Sendable final class` with no suppression.
     private let featureManager: FeatureManager
 
+    /// The SDK's ``EventSink`` this context enqueues the CONVERSION entry through in
+    /// ``trackConversion(_:goalData:)`` (Story 4.2, AR14 — events are produced at the ``EventSink``
+    /// port, never at a concrete `EventQueue`). Injected from ``ConvertSDK`` (its `eventSink`, default
+    /// ``NoopEventSink`` in production). The ``EventSink`` port refines `Sendable`, so this `let` keeps
+    /// the class an all-`let` `Sendable final class` with no suppression.
+    private let eventSink: any EventSink
+
+    /// The SDK's shared ``EventBus`` this context fires ``SystemEvent/conversion`` on in
+    /// ``trackConversion(_:goalData:)`` (Story 4.2, AC9), so a `sdk.on(.conversion)` subscriber is
+    /// notified. The SAME bus the owning ``ConvertSDK`` exposes through `on`/`off`, so a conversion
+    /// fired here reaches the SDK's subscribers. ``EventBus`` is an `actor` (`Sendable`), so this `let`
+    /// keeps the class an all-`let` `Sendable final class` with no suppression.
+    private let eventBus: EventBus
+
+    /// The SDK's ``Logger`` this context emits its ``trackConversion(_:goalData:)`` drop-path WARNs to
+    /// (AOD-6 — the SDK-not-ready and goal-not-found degradations log + drop, never throw). Injected
+    /// from ``ConvertSDK`` (its `logger`, default ``NoopLogger`` in production). The ``Logger`` port
+    /// refines `Sendable`, so this `let` keeps the class an all-`let` `Sendable final class` with no
+    /// suppression.
+    private let logger: any Logger
+
     /// The visitor attributes as a loosely-typed `[String: Any]` map, reconstructed on each access
     /// from the internal ``ConvertValue`` storage via ``ConvertValue/anyValue`` — so a value supplied
     /// as `["age": 30]` reads back as `attributes["age"] as? Int == 30`. A COMPUTED property (no stored
@@ -89,13 +110,22 @@ public final class ConvertContext: Sendable {
     ///     `runExperience` to (Story 3.4), shared across every context the SDK creates.
     ///   - featureManager: The SDK's single wired ``FeatureManager`` this context delegates
     ///     `runFeature` / `runFeatures` to (Story 4.1), shared across every context the SDK creates.
+    ///   - eventSink: The SDK's ``EventSink`` the CONVERSION seam enqueues through in
+    ///     ``trackConversion(_:goalData:)`` (Story 4.2 / AR14); default ``NoopEventSink`` in production.
+    ///   - eventBus: The SDK's shared ``EventBus`` ``trackConversion(_:goalData:)`` fires
+    ///     ``SystemEvent/conversion`` on (Story 4.2 / AC9), so `sdk.on(.conversion)` subscribers fire.
+    ///   - logger: The SDK's ``Logger`` ``trackConversion(_:goalData:)`` emits its drop-path WARNs to
+    ///     (Story 4.2 / AOD-6); default ``NoopLogger`` in production.
     internal init(
         sdk: ConvertSDK,
         visitorId: String,
         attributes: [String: ConvertValue],
         decisionStore: DecisionStore,
         experienceManager: ExperienceManager,
-        featureManager: FeatureManager
+        featureManager: FeatureManager,
+        eventSink: any EventSink,
+        eventBus: EventBus,
+        logger: any Logger
     ) {
         self.sdk = sdk
         self.visitorId = visitorId
@@ -103,6 +133,9 @@ public final class ConvertContext: Sendable {
         self.attributesStorage = attributes
         self.experienceManager = experienceManager
         self.featureManager = featureManager
+        self.eventSink = eventSink
+        self.eventBus = eventBus
+        self.logger = logger
     }
 
     /// Whether event delivery is enabled for this context's SDK (FR6 static `network.tracking`).
@@ -270,12 +303,80 @@ public final class ConvertContext: Sendable {
         )
     }
 
-    /// Tracks a conversion for `goalKey` with optional ``GoalData``. Stub: no-op until Epic 4
-    /// wires the tracking pipeline.
+    /// Tracks a conversion for `goalKey`, optionally carrying per-goal ``GoalData`` metrics.
+    ///
+    /// `async` but NEVER throws (AOD-6 — the public conversion API never surfaces a thrown error). The
+    /// two degraded inputs each emit a WARN and DROP, enqueuing nothing:
+    ///   * NO usable config snapshot (pre-ready, or a degraded load that resolved with no config) →
+    ///     WARN "SDK not ready…" + return, BEFORE any goal lookup — the conversion twin of
+    ///     ``runExperience(_:enableTracking:)`` short-circuiting to `nil` on an absent snapshot.
+    ///   * `goalKey` ABSENT from the config (``ProjectConfig/goal(forKey:)`` miss) → WARN "…not found
+    ///     in config, dropping." + return. The WARN `message` is ONLY the descriptive tail — the
+    ///     adapter composes the `[WARN] ConvertContext.trackConversion: …` prefix from `type`/`method`
+    ///     (UX-DR19), so the call passes neither the level tag nor the type/method in the message.
+    ///
+    /// On the happy path it builds a ``ConversionEventData``:
+    ///   * `goalId` ← the resolved goal's wire `id` (the goalKey → goalId mapping; `?? ""` because
+    ///     ``Components/Schemas/ConfigGoalBase/id`` is `String?`).
+    ///   * `goalData` ← `goalData?.toEntries()` — the `[GoalDataKey: GoalDataValue]` map flattened to
+    ///     the array-of-`{key, value}` wire form, or `nil` (omitted from the wire) when no metrics were
+    ///     supplied.
+    ///   * `bucketingData` ← the visitor's CURRENT sticky decisions
+    ///     (``DecisionStore/bucketingDecisions(forStoreKey:)`` under the same
+    ///     `"<accountId>-<projectId>-<visitorId>"` key the experience path computes), or `nil` when the
+    ///     visitor has no decision (FR27 — the conversion carries the bucketing context; the empty map
+    ///     is collapsed to `nil` so the wire OMITS the key rather than emitting `{}`, the
+    ///     anti-Android-regression guard).
+    ///
+    /// then ENQUEUES it as a SINGLE ``TrackingEventEntry/conversion(_:)`` (`eventType == "conversion"`)
+    /// through the injected ``EventSink`` port — NOT a concrete `EventQueue` (AR14: events are produced
+    /// at the inward-facing port; the real queue arrives in Epic 5 and is a one-site swap of the default
+    /// ``NoopEventSink``) — and FIRES ``SystemEvent/conversion`` on the shared ``EventBus`` with a
+    /// ``ConversionPayload`` (AC9). No NEW `SystemEvent` case is introduced; `.conversion` already
+    /// exists.
+    ///
+    /// The global `network.tracking` gate (FR6) is deliberately NOT applied here: it is an Epic 5
+    /// concern, and ``runExperience(_:enableTracking:)`` does not apply it either — the conversion path
+    /// mirrors the experience path rather than diverging. (``trackingEnabled()`` remains the scaffolded
+    /// hook for when that gate lands.)
+    /// - Parameters:
+    ///   - goalKey: The goal `key` to look up in the config and convert on.
+    ///   - goalData: Optional per-goal metrics (e.g. revenue `amount`, `transactionId`); when omitted
+    ///     the event's `goalData` is absent.
     public func trackConversion(_ goalKey: String, goalData: GoalData? = nil) async {
-        // [WARN] ConvertContext.trackConversion: not yet implemented (Epic 4).
-        // tracking toggle guard (FR6): guard trackingEnabled() else { return }
-        //   — wired when Epics 3-4 add eventSink.enqueue
+        guard let config = await sdk.configStore.getSnapshot() else {
+            logger.log(
+                level: .warn,
+                type: "ConvertContext",
+                method: "trackConversion",
+                message: "SDK not ready, dropping conversion for goal '\(goalKey)'."
+            )
+            return
+        }
+        guard let goal = config.goal(forKey: goalKey) else {
+            logger.log(
+                level: .warn,
+                type: "ConvertContext",
+                method: "trackConversion",
+                message: "goal '\(goalKey)' not found in config, dropping."
+            )
+            return
+        }
+        let accountId = config.accountId ?? ""
+        let projectId = config.project?.id ?? ""
+        let storeKey = "\(accountId)-\(projectId)-\(visitorId)"
+        let decisions = await decisionStore.bucketingDecisions(forStoreKey: storeKey)
+        let bucketingData = decisions.isEmpty ? nil : decisions
+        let data = ConversionEventData(
+            goalId: goal.id ?? "",
+            goalData: goalData?.toEntries(),
+            bucketingData: bucketingData
+        )
+        await eventSink.enqueue(.conversion(data))
+        await eventBus.fire(
+            .conversion,
+            payload: .conversion(ConversionPayload(goalId: goal.id ?? "", visitorId: visitorId))
+        )
     }
 
     /// Sets the default visitor ``Segments``. Stub: no-op until Epic 4 wires segmentation.

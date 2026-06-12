@@ -50,6 +50,23 @@ public final class ConvertSDK: Sendable {
     /// class `Sendable` with no suppression. Injectable so a test can assert the shared-identity contract.
     private let decisionStore: DecisionStore
 
+    /// The ``EventSink`` every ``ConvertContext`` from this handle enqueues CONVERSION entries through
+    /// (Story 4.2). Defaults to ``NoopEventSink`` (the production stand-in until Epic 5's `EventQueue`
+    /// is wired); a test injects a `MockEventSink` to observe the enqueue. This is the CONVERSION seam
+    /// ONLY — the bucketing path keeps its own ``NoopEventSink`` built inside
+    /// ``ExperienceManager/makeDefault(decisionStore:eventBus:logger:)`` and is untouched. The
+    /// ``EventSink`` port refines `Sendable`, so this `let` keeps the class an all-`let`
+    /// `Sendable final class` with no suppression.
+    private let eventSink: any EventSink
+
+    /// The ``Logger`` this SDK's ``createContext`` hands to ``ConvertContext`` (so a context's
+    /// `trackConversion` drop paths emit observable WARNs) AND uses for the visitor-ID resolver /
+    /// attribute coercion. Defaults to ``NoopLogger`` (the production logging path until a real OSLog
+    /// sink ships — the same default the config-load `Task` uses); a test injects a `MockLogger` to
+    /// observe the lines. The ``Logger`` port refines `Sendable`, so this `let` keeps the class an
+    /// all-`let` `Sendable final class` with no suppression.
+    private let logger: any Logger
+
     /// The single, fully-wired ``ExperienceManager`` every ``ConvertContext`` from this handle delegates
     /// `runExperience` to (Story 3.4). Built ONCE in `init` via
     /// ``ExperienceManager/makeDefault(decisionStore:eventBus:logger:)`` over the SDK's CANONICAL
@@ -103,6 +120,14 @@ public final class ConvertSDK: Sendable {
     ///     the visitor-identity suite injects a mock to assert write behaviour.
     ///   - keyValueStore: The `UserDefaults`-backed visitor-ID mirror handed to
     ///     ``VisitorContextManager``. Defaults to ``UserDefaultsKeyValueStore`` (production).
+    ///   - eventSink: The ``EventSink`` every context enqueues CONVERSION entries through (Story 4.2).
+    ///     Defaults to ``NoopEventSink`` (production); the conversion-tracking suite injects a
+    ///     `MockEventSink` to observe the enqueue. The bucketing path is unaffected (it has its own
+    ///     internal sink inside ``ExperienceManager/makeDefault(decisionStore:eventBus:logger:)``).
+    ///   - logger: The ``Logger`` handed to every context (so `trackConversion` drop-path WARNs are
+    ///     observable) and used by ``createContext`` for visitor-ID resolution / attribute coercion.
+    ///     Defaults to ``NoopLogger`` (the production logging path); the conversion-tracking suite
+    ///     injects a `MockLogger`.
     ///   - decisionStore: The ONE canonical ``DecisionStore`` injected into every context this SDK
     ///     creates. Defaults to a fresh empty store; a test injects its own to assert shared identity.
     internal init(
@@ -113,6 +138,8 @@ public final class ConvertSDK: Sendable {
         clock: any Clock = SystemClock(),
         secureStore: any SecureStore = KeychainSecureStore(),
         keyValueStore: any KeyValueStore = UserDefaultsKeyValueStore(),
+        eventSink: any EventSink = NoopEventSink(),
+        logger: any Logger = NoopLogger(),
         decisionStore: DecisionStore = DecisionStore(logger: NoopLogger(), fileStore: ApplicationSupportFileStore())
     ) {
         self.configuration = configuration
@@ -121,6 +148,8 @@ public final class ConvertSDK: Sendable {
         self.secureStore = secureStore
         self.keyValueStore = keyValueStore
         self.decisionStore = decisionStore
+        self.eventSink = eventSink
+        self.logger = logger
         // Wire the ONE ExperienceManager every context delegates `runExperience` to, over the
         // CANONICAL decisionStore (sticky parity) and the SHARED eventBus (so `.bucketing`
         // subscribers fire). `makeDefault` is the single public factory — it builds the internal
@@ -139,21 +168,20 @@ public final class ConvertSDK: Sendable {
         let store = ConfigStore(eventBus: eventBus)
         self.configStore = store
 
-        // Capture the injected provider (if any) for the detached load task. When `nil`, the
-        // real `ConfigFetchService` is built inside the task (off the construction path, so init
-        // stays non-blocking).
-        let provider = configProvider
-        // Capture the box and the clock as locals so the detached `Task` closure picks up THESE
-        // (not `self`) — keeping the closure off `self` for everything but the already-captured
-        // `store`. `schedulerBox` is a `Sendable` actor and `clock` is `Sendable`, so both cross
-        // into the `Task` with no data-race warning. The scheduler is built INSIDE the Task (after
-        // the first config lands), so `clock` need not be a stored property — this local is its
-        // only reach.
+        // The injected `configProvider` parameter is captured directly by the detached load `Task`
+        // (it is `Sendable`); when `nil`, the real `ConfigFetchService` is built inside the task (off
+        // the construction path, so init stays non-blocking).
+        // Capture the scheduler box as a local so the detached `Task` closure picks up THIS (not
+        // `self`) — keeping the closure off `self` for everything but the already-captured `store`.
+        // `schedulerBox` is a `Sendable` actor, so it crosses into the `Task` with no data-race
+        // warning. (The `clock` and `configProvider` PARAMETERS are themselves `Sendable` and are
+        // captured directly — a `let x = x` rename would add nothing, so none is taken; only the
+        // `self.`-property captures below need a shadowing local. The scheduler that consumes `clock`
+        // is built INSIDE the Task after the first config lands, so `clock` need not be stored.)
         let schedulerBox = self.schedulerBox
-        let clock = clock
         // Capture the decision store as a local so the `Task` closure picks up THIS (not `self`),
-        // matching the `store`/`schedulerBox`/`clock` capture discipline that keeps the closure off
-        // `self`. `DecisionStore` is an `actor` (Sendable), so it crosses into the `Task` data-race-clean.
+        // matching the `store`/`schedulerBox` capture discipline that keeps the closure off `self`.
+        // `DecisionStore` is an `actor` (Sendable), so it crosses into the `Task` data-race-clean.
         let decisionStore = self.decisionStore
         Task {
             // Hydrate persisted sticky decisions from disk FIRST (AC5/FR50/FR51), independent of
@@ -178,7 +206,7 @@ public final class ConvertSDK: Sendable {
             // `ConfigFetchService` (production). The fetch service composes the URLSession
             // transport, the coordinated on-disk cache, and a `NoopLogger` (the production
             // default until a real OSLog sink ships; redaction is enforced inside the service).
-            let activeProvider: any ConfigProviding = provider ?? ConfigFetchService(
+            let activeProvider: any ConfigProviding = configProvider ?? ConfigFetchService(
                 httpClient: URLSessionHTTPClient(sdkVersion: SDKVersion.current),
                 fileStore: CoordinatedFileStore(),
                 configuration: configuration,
@@ -310,10 +338,11 @@ public final class ConvertSDK: Sendable {
     ///   - visitorId: Optional caller-supplied visitor identifier; when non-empty it is used verbatim.
     ///   - attributes: Optional visitor attributes for segmentation; non-scalar values are dropped.
     public func createContext(visitorId: String? = nil, attributes: [String: Any]? = nil) -> ConvertContext {
-        // NoopLogger matches the SDK's production logging path (the real OSLog sink is not wired yet —
-        // see the config-load Task above, which also uses it). Built once and shared by the visitor-ID
-        // resolver AND the attribute coercion below.
-        let logger = NoopLogger()
+        // The SDK's injected `logger` (default ``NoopLogger`` — the production logging path until a real
+        // OSLog sink ships; the conversion-tracking suite injects a `MockLogger`). Shared by the
+        // visitor-ID resolver, the attribute coercion below, AND handed to the `ConvertContext` so its
+        // `trackConversion` drop-path WARNs surface on the same sink.
+        let logger = self.logger
         // Resolve via the pure-logic manager: explicit ID verbatim, else persisted store value, else a
         // freshly generated + persisted UUID.
         let resolvedId = VisitorContextManager.resolveVisitorId(
@@ -348,7 +377,10 @@ public final class ConvertSDK: Sendable {
             attributes: coercedAttributes,
             decisionStore: decisionStore,
             experienceManager: experienceManager,
-            featureManager: featureManager
+            featureManager: featureManager,
+            eventSink: eventSink,
+            eventBus: eventBus,
+            logger: logger
         )
     }
 }
