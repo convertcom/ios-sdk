@@ -159,10 +159,13 @@ public final class ConvertContext: Sendable {
 
     /// Whether event delivery is enabled for this context's SDK (FR6 static `network.tracking`).
     ///
-    /// The real gate a future `eventSink.enqueue` call site checks: when `false`, bucketing/decisioning
-    /// still runs and returns decisions, but produced tracking events are NOT enqueued (suppression is a
-    /// CALLER concern here, not an `EventQueue` concern). The enqueue sites arrive in Epics 3-4; this hook
-    /// is scaffolded now so the toggle is already in place when they do (Story 2.4 Task 4 / AC8).
+    /// The caller-side gate the enqueue sites honour: when `false`, bucketing/decisioning still runs and
+    /// returns decisions, but produced tracking events are NOT enqueued (suppression is a CALLER concern
+    /// here, not an `EventQueue` concern). Story 2.4 scaffolded this hook; Story 5.4 made it load-bearing —
+    /// ``trackConversion(_:goalData:forceMultipleTransactions:)`` reads ``ConvertSDK/networkTrackingEnabled``
+    /// directly to gate its two conversion enqueues, and ``runExperience(_:enableTracking:)`` /
+    /// ``runExperiences(enableTracking:)`` combine it with the per-call flag threaded into the bucketing
+    /// path. This accessor remains the public-intent expression of that same flag.
     internal func trackingEnabled() -> Bool {
         sdk.networkTrackingEnabled
     }
@@ -198,6 +201,11 @@ public final class ConvertContext: Sendable {
         // manager rebuilds internally; explicit createContext attributes still win on collision.
         let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
         let attributes = mergedAttributes(stringAttributes(), with: segments)
+        // Thread the COMBINED gate (FR6 global `network.tracking` AND the per-call `enableTracking`) into
+        // the manager: the variation is still selected/persisted/fired, but `BucketingManager` skips the
+        // bucketing enqueue when EITHER flag is false — so a globally-disabled SDK enqueues nothing at the
+        // sink even though decisioning is unchanged (Story 5.4 / AC1, AC3). The public `enableTracking`
+        // parameter and its default are unchanged; only the value threaded down is combined.
         return await experienceManager.selectVariation(
             forKey: key,
             in: config,
@@ -206,7 +214,7 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: [:],
-            enableTracking: enableTracking
+            enableTracking: sdk.networkTrackingEnabled && enableTracking
         )
     }
 
@@ -264,12 +272,12 @@ public final class ConvertContext: Sendable {
     /// audience / location / bucket / persist / event) and returns only the eligible variations. A thin
     /// bulk twin of ``runExperience(_:enableTracking:)``.
     ///
-    /// `enableTracking` is threaded straight through to the bulk path (per-call FR19), exactly as
-    /// ``runExperience(_:enableTracking:)`` threads it — the global `network.tracking` gate is NOT
-    /// applied here (it is an Epic 5 concern; `runExperience` does not apply it either, and run-all
-    /// must mirror run-single, not diverge). `accountId` / `projectId` come from the snapshot
-    /// (defaulting to `""` when absent), and `locationProperties` is empty on native — identical to
-    /// the single-experience path. Never throws.
+    /// `enableTracking` is combined with the SDK's global `network.tracking` flag and the result threaded
+    /// to the bulk path, exactly as ``runExperience(_:enableTracking:)`` threads it (run-all mirrors
+    /// run-single, not diverge): the per-experience bucketing enqueue is suppressed when EITHER flag is
+    /// false (Story 5.4 / FR6), while each variation is still selected, persisted, and fired. `accountId` /
+    /// `projectId` come from the snapshot (defaulting to `""` when absent), and `locationProperties` is
+    /// empty on native — identical to the single-experience path. Never throws.
     /// - Parameter enableTracking: When `false`, variations are still computed but the per-experience
     ///   bucketing enqueue is suppressed (passed through to the bulk path); defaults to `true`.
     /// - Returns: The bucketed ``Variation`` for each eligible experience in config order, or `[]`
@@ -282,6 +290,10 @@ public final class ConvertContext: Sendable {
         // diverge) — each experience's audience gate sees the visitor's persisted segments.
         let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
         let attributes = mergedAttributes(stringAttributes(), with: segments)
+        // Thread the COMBINED gate (global `network.tracking` AND per-call `enableTracking`) into the bulk
+        // path, exactly as the single-experience path does (run-all mirrors run-single, not diverge): each
+        // per-experience bucketing enqueue is suppressed when EITHER flag is false, while every variation is
+        // still selected/persisted/fired (Story 5.4 / AC1, AC3).
         return await experienceManager.selectVariations(
             in: config,
             visitorId: visitorId,
@@ -289,7 +301,7 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: [:],
-            enableTracking: enableTracking
+            enableTracking: sdk.networkTrackingEnabled && enableTracking
         )
     }
 
@@ -309,6 +321,16 @@ public final class ConvertContext: Sendable {
     /// Unlike the experience API, this method takes NO `enableTracking` parameter (Android parity, F-171):
     /// the feature path is not per-call tracking-gated; feature evaluation delegates to ``FeatureManager``,
     /// which lets the underlying experience bucketing track per its own contract.
+    ///
+    /// SCOPE ASYMMETRY (Story 5.4, deliberate): unlike ``runExperience(_:enableTracking:)`` /
+    /// ``runExperiences(enableTracking:)`` (which combine the global `network.tracking` flag into the
+    /// bucketing path) and ``trackConversion(_:goalData:forceMultipleTransactions:)`` (which gates its
+    /// enqueues on it), the feature path is NOT caller-gated by `network.tracking` in this story — Story
+    /// 5.4's AC1 names only `runExperience`/`runExperiences`/`trackConversion`. A feature whose carrying
+    /// experience buckets here still produces a bucketing enqueue at the ``EventSink``; when
+    /// `network.tracking` is off, the PRODUCTION ``EventQueue`` drops that entry at its own static gate
+    /// (`trackingEnabled`), so no event reaches the network — the suppression happens one seam later than
+    /// on the experience/conversion paths, not at this caller.
     /// - Parameter key: The feature `key` to look up and resolve.
     /// - Returns: The resolved ``Feature`` — `.enabled` with typed variables, or `.disabled` on a
     ///   missing snapshot / miss.
@@ -392,8 +414,11 @@ public final class ConvertContext: Sendable {
     ///     `goalData` is present AND (first trigger OR `forceMultipleTransactions`), recording a deliberate
     ///     repeat purchase as a second transaction without re-emitting the conversion.
     ///
-    /// The global `network.tracking` gate (FR6) is deliberately NOT applied here — an Epic 5 concern, and
-    /// ``runExperience(_:enableTracking:)`` does not apply it either (``trackingEnabled()`` is the hook).
+    /// The global `network.tracking` gate (FR6) IS applied here (Story 5.4): when off, neither the
+    /// conversion event nor the transaction event is enqueued at the ``EventSink`` (one DEBUG line records
+    /// the suppression), while the dedup mark still persists and the ``SystemEvent/conversion`` bus signal
+    /// still fires on first trigger (JS parity — only delivery is gated). The conversion path has no
+    /// per-call `enableTracking` (FR23), so it gates on the global flag alone.
     /// - Parameters:
     ///   - goalKey: The goal `key` to look up in the config and convert on.
     ///   - goalData: Optional per-goal metrics (e.g. revenue `amount`, `transactionId`); drives the
@@ -401,7 +426,16 @@ public final class ConvertContext: Sendable {
     ///   - forceMultipleTransactions: When `true`, the TRANSACTION event is emitted for `goalData` even on
     ///     an ALREADY-triggered goal (the conversion + bus signal stay suppressed). Defaults to `false`
     ///     (plain repeat call is a WARN-only no-op); has no effect without `goalData`.
-    public func trackConversion(
+    ///
+    /// The body exceeds the 50-line `function_body_length` default by ONE line because the Story 5.4
+    /// `network.tracking` gate added the suppression-log block + the two enqueue guards on top of the
+    /// already-dense two-degrade-guard / dedup / conversion-gate / transaction-gate pipeline (each carrying
+    /// its mandated FR/AR/AC rationale inline). Splitting the gate out would scatter the dedup ↔ bus-fire ↔
+    /// enqueue ordering that the inline comments document as load-bearing. Targeted disable on this one
+    /// method (precedent: `ConvertSDK.init` / `ExperienceManager.selectVariation` in this codebase) rather
+    /// than raising the project-wide threshold; the directive is on the `func` line so the `///` doc stays
+    /// flush against the declaration (avoids `orphaned_doc_comment`).
+    public func trackConversion( // swiftlint:disable:this function_body_length
         _ goalKey: String,
         goalData: GoalData? = nil,
         forceMultipleTransactions: Bool = false
@@ -431,13 +465,32 @@ public final class ConvertContext: Sendable {
         let bucketingData = decisions.isEmpty ? nil : decisions
         let goalId = goal.id ?? ""
         // Atomic check-and-mark: `true` ⇒ first trigger (proceed), `false` ⇒ already triggered (suppress
-        // the conversion, but NOT a forced txn).
+        // the conversion, but NOT a forced txn). Written BEFORE the network gate below, so the dedup state
+        // persists even with tracking off (Story 5.4 / AC5).
         let firstTrigger = await decisionStore.markGoalTriggeredIfNeeded(goalId: goalId, forVisitorKey: storeKey)
-        // CONVERSION gate — first trigger enqueues the conversion event and fires `.conversion` once. A
-        // repeat trigger WARNs and (crucially) does NOT `return`: control falls through to the txn gate.
+        // Global `network.tracking` gate (FR6): a non-suspending read of the SDK flag. When OFF, NO entry
+        // enters the `EventSink` on EITHER gate below — but the dedup mark above STILL persists and the
+        // local `.conversion` bus signal STILL fires on first trigger (JS parity: `context.ts` fires
+        // `SystemEvents.CONVERSION` on trigger independent of the network gate — only delivery to the queue
+        // is suppressed). Exactly ONE DEBUG line records the suppression for this call (Story 5.4 / AC6);
+        // the message is a fixed descriptive tail carrying NO SDK key / secret (NFR6).
+        let networkTrackingOn = sdk.networkTrackingEnabled
+        if !networkTrackingOn {
+            logger.log(
+                level: .debug,
+                type: "ConvertContext",
+                method: "trackConversion",
+                message: "event suppressed — networkTracking=false"
+            )
+        }
+        // CONVERSION gate — first trigger enqueues the conversion event (only when tracking is on) and
+        // fires `.conversion` once REGARDLESS of the network gate. A repeat trigger WARNs and (crucially)
+        // does NOT `return`: control falls through to the txn gate.
         if firstTrigger {
-            let event = ConversionEventData(goalId: goalId, goalData: nil, bucketingData: bucketingData)
-            await eventSink.enqueue(.conversion(event), for: visitorId, segments: nil)
+            if networkTrackingOn {
+                let event = ConversionEventData(goalId: goalId, goalData: nil, bucketingData: bucketingData)
+                await eventSink.enqueue(.conversion(event), for: visitorId, segments: nil)
+            }
             let payload = ConversionPayload(goalId: goalId, visitorId: visitorId)
             await eventBus.fire(.conversion, payload: .conversion(payload))
         } else {
@@ -449,8 +502,9 @@ public final class ConvertContext: Sendable {
             )
         }
         // TRANSACTION gate (independent) — emits the goalData event on the first trigger OR when
-        // `forceMultipleTransactions` overrides dedup for a deliberate repeat purchase.
-        if let data = goalData, firstTrigger || forceMultipleTransactions {
+        // `forceMultipleTransactions` overrides dedup for a deliberate repeat purchase, but only when
+        // network tracking is on (the suppression was already logged once above).
+        if networkTrackingOn, let data = goalData, firstTrigger || forceMultipleTransactions {
             let event = ConversionEventData(goalId: goalId, goalData: data.toEntries(), bucketingData: bucketingData)
             await eventSink.enqueue(.conversion(event), for: visitorId, segments: nil)
         }
