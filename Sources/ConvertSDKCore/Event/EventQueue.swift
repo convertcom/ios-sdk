@@ -56,6 +56,12 @@ public actor EventQueue: EventSink {
     private let trackingEnabled: Bool
     /// The injected time source the interval timer sleeps on (NFR21 determinism in tests).
     private let clock: any Clock
+    /// The durable pending-event-queue persistence (Story 5.2 on-disk persistence + exactly-once).
+    /// A failed flush persists its batch here, ``drain()`` loads it disk-first and clears it, and a
+    /// cold-start ``start()`` re-expands it into the buffer — so events survive process death and are
+    /// delivered exactly once. Production always injects the coordinated file-backed adapter; the
+    /// pure-logic queue stays unaware of the file location or serialization (the adapter owns those).
+    private let store: any EventQueueStore
 
     /// The pending entries awaiting delivery, in enqueue order. The sole shared mutable state.
     private var buffer: [BufferedEntry] = []
@@ -76,6 +82,9 @@ public actor EventQueue: EventSink {
     ///   - eventBus: The shared bus the queue fires ``SystemEvent/apiQueueReleased`` on.
     ///   - trackingEnabled: When `false`, every enqueue is dropped (AC9); defaults to `true`.
     ///   - clock: The injected time source the timer sleeps on; defaults to ``SystemClock``.
+    ///   - store: The durable pending-event-queue persistence (Story 5.2). NON-defaulted —
+    ///     production always injects the coordinated file-backed adapter so the on-disk fallback,
+    ///     disk-first drain merge, and cold-start recovery are never silently skipped.
     public init(
         accountId: String,
         projectId: String,
@@ -84,7 +93,8 @@ public actor EventQueue: EventSink {
         uploader: any EventUploader,
         eventBus: EventBus,
         trackingEnabled: Bool = true,
-        clock: any Clock = SystemClock()
+        clock: any Clock = SystemClock(),
+        store: any EventQueueStore
     ) {
         self.accountId = accountId
         self.projectId = projectId
@@ -94,6 +104,7 @@ public actor EventQueue: EventSink {
         self.eventBus = eventBus
         self.trackingEnabled = trackingEnabled
         self.clock = clock
+        self.store = store
         // The interval timer is armed lazily on the first `enqueue` (see `ensureTimerStarted`), not
         // here: Swift 6 forbids accessing the mutable actor-isolated `timerTask` from this nonisolated
         // initializer. Deferring to the first actor-isolated enqueue keeps the loop's start fully
@@ -146,19 +157,76 @@ public actor EventQueue: EventSink {
         }
     }
 
+    // MARK: - Cold-start recovery
+
+    /// Recovers any persisted queue at cold start: re-expands the on-disk envelopes back into the
+    /// in-memory buffer, clears the disk, and arms the interval timer (AC5, Story 5.2).
+    ///
+    /// Each persisted ``TrackingEvent``'s `visitors[]`/`events[]` are flattened back into
+    /// ``BufferedEntry`` rows so the existing ``assemble(_:)``/``flush()`` path handles them
+    /// identically to freshly-enqueued entries. The disk is cleared AFTER loading into the buffer —
+    /// the events now live ONLY in memory, so the first disk-first ``drain()`` will NOT re-load (and
+    /// thus NOT double-deliver) them (exactly-once). The interval timer is armed so the recovered
+    /// events are delivered by the next flush cycle even if NO new enqueue ever arrives (AC5).
+    ///
+    /// `store.load()`/`store.clear()` are wrapped in `try?`: a store error degrades to "nothing to
+    /// recover" rather than throwing out of `start()`.
+    public func start() async {
+        let persisted = (try? await store.load()) ?? []
+        // Re-expand each envelope's visitors[]/events back into BufferedEntry rows so the existing
+        // assemble()/flush() path handles them identically to freshly-enqueued entries.
+        for event in persisted {
+            for visitor in event.visitors {
+                for entry in visitor.events {
+                    buffer.append(
+                        BufferedEntry(entry: entry, visitorId: visitor.visitorId, segments: visitor.segments)
+                    )
+                }
+            }
+        }
+        // Clear disk AFTER loading into the buffer: the events now live ONLY in memory, so the first
+        // disk-first drain() will NOT re-load (and thus NOT double-deliver) them (exactly-once). Guarded
+        // on non-empty so a clean first launch (nothing persisted) skips a needless clear.
+        if !persisted.isEmpty {
+            try? await store.clear()
+        }
+        // Arm the interval timer so recovered events are delivered even if NO new enqueue ever arrives
+        // (AC5: the next flush cycle — size-trigger or interval-timer — naturally delivers them).
+        ensureTimerStarted()
+    }
+
     // MARK: - Drain
 
-    /// Assembles the buffered entries into the canonical envelope and empties the buffer in ONE
-    /// actor step (AC1).
+    /// Merges the persisted (on-disk) queue with the in-memory buffer — DISK-FIRST — and clears BOTH
+    /// surfaces in ONE actor step (AC1 / AC3, Story 5.2).
     ///
-    /// Entries are grouped per visitor in first-seen order; `nil` segments became the empty map at
-    /// enqueue. Returns a single-element `[TrackingEvent]` (there is one account/project, so one
-    /// envelope) whose `visitors` carry their grouped events. A second call returns `[]` — the read
-    /// and clear happen with no suspension between them, so no entry is ever drained twice.
+    /// The persisted queue is loaded as the FIRST `await`, so the on-disk snapshot is taken before
+    /// anything is cleared. Actor isolation guarantees no other `drain()`/`enqueue()` runs to
+    /// completion interleaved with this one; any `enqueue` that lands while `load()` is suspended is
+    /// correctly captured by reading `buffer` AFTER the await (it joins this merge via `drainEntries`).
+    /// The in-memory entries are then grouped per visitor in first-seen order (`nil` segments became
+    /// the empty map at enqueue) and the disk is cleared, so the events live only in the returned
+    /// value. Disk events precede memory events (oldest delivered first). A second call returns `[]` —
+    /// the disk is now empty and the buffer cleared, so no entry is ever drained twice (exactly-once).
     ///
-    /// - Returns: One assembled ``TrackingEvent`` wrapping the drained entries, or `[]` when empty.
-    public func drain() -> [TrackingEvent] {
-        assemble(drainEntries())
+    /// `store.load()`/`store.clear()` are wrapped in `try?`: a store error degrades to an empty
+    /// snapshot rather than throwing out of `drain()` (the adapter already returns `[]` on corruption;
+    /// `clear` could in theory throw, which is swallowed so a partial drain never surfaces an error).
+    ///
+    /// - Returns: The disk-first merge of the persisted queue and the assembled buffer, or `[]` when
+    ///   both surfaces are empty.
+    public func drain() async -> [TrackingEvent] {
+        // store.load() is the FIRST await: the on-disk snapshot is taken before any clear, and any
+        // enqueue arriving while it is suspended is captured below by reading `buffer` AFTER the await.
+        let diskEvents = (try? await store.load()) ?? []
+        // drainEntries() reads+clears the buffer in one (sync) step AFTER the load await, then assemble
+        // groups them into envelope(s); so an enqueue that landed during the load joins this merge.
+        let inMemory = assemble(drainEntries())
+        // Disk is now empty — the events live only in `inMemory` (re-delivered on a later drain if the
+        // upload they feed fails). Swallowed so a clear error never throws out of a partial drain.
+        try? await store.clear()
+        // DISK-FIRST: the persisted (older) envelopes are delivered ahead of the freshly-buffered ones.
+        return diskEvents + inMemory
     }
 
     // MARK: - Private
@@ -205,30 +273,43 @@ public actor EventQueue: EventSink {
         return [TrackingEvent(accountId: accountId, projectId: projectId, visitors: visitors)]
     }
 
-    /// Drains the buffer and ships the assembled batch through the ``uploader``.
+    /// Drains the DISK-FIRST merge (persisted queue + in-memory buffer) and ships it through the
+    /// ``uploader`` — the exactly-once delivery path (AC1 / AC8 / AC9, Story 5.2).
+    ///
+    /// Delivery goes through ``drain()`` (not the bare buffer): `drain()` loads the persisted queue
+    /// disk-first, merges it ahead of the assembled buffer, and clears BOTH surfaces in one actor step.
+    /// So a restart's flush re-delivers any batch a prior failure persisted to disk TOGETHER with the
+    /// freshly-buffered entries — the crash-persisted events are delivered by the natural flush cycle,
+    /// exactly once (AC9), not stranded on disk until an explicit external drain.
     ///
     /// On success, fires ``SystemEvent/apiQueueReleased`` with the delivered event count (AC8). On
-    /// failure, restores the drained entries to the FRONT of the buffer so their original order is
-    /// preserved and a later flush re-delivers them (AC1 re-enqueue-on-failure). A flush of an empty
-    /// buffer is a no-op (no upload, no event).
+    /// failure, PERSISTS the merged batch back to disk through the ``store`` (AC1 durable fallback) —
+    /// `drain()` already cleared both surfaces, so re-persisting makes disk the single source of truth
+    /// for the failed batch (never half-in-memory/half-on-disk), and a later flush/drain re-delivers
+    /// it disk-first. A flush with nothing on disk or in memory is a no-op (no upload, no event).
     private func flush() async {
-        let drained = drainEntries()
-        guard !drained.isEmpty else { return }
-        let envelope = assemble(drained)
+        let envelopes = await drain()
+        guard !envelopes.isEmpty else { return }
         do {
-            try await uploader.upload(envelope)
-            // Delivered event count == the number of buffered entries shipped (AC8). The buffer
-            // holds one entry per produced event, so `drained.count` is the event count. `EventBus`
-            // is an `actor`, so the `package` `fire(_:payload:)` is actor-isolated and awaited here
-            // (matching `ExperienceManager`'s `await eventBus.fire(...)` caller).
+            try await uploader.upload(envelopes)
+            // Delivered event count == every event across every visitor of every merged envelope (AC8) —
+            // the true count shipped, which folds in any disk-recovered events alongside the buffered
+            // ones. `EventBus` is an `actor`, so the `package` `fire(_:payload:)` is actor-isolated and
+            // awaited here (matching `ExperienceManager`'s `await eventBus.fire(...)` caller).
+            let eventCount = envelopes.reduce(0) { partial, event in
+                partial + event.visitors.reduce(0) { $0 + $1.events.count }
+            }
             await eventBus.fire(
                 .apiQueueReleased,
-                payload: .apiQueueReleased(ApiQueueReleasedPayload(eventCount: drained.count))
+                payload: .apiQueueReleased(ApiQueueReleasedPayload(eventCount: eventCount))
             )
         } catch {
-            // Restore the drained entries ahead of any that arrived during the upload, preserving
-            // their original relative order for re-delivery.
-            buffer = drained + buffer
+            // Durable fallback (AC1): `drain()` already cleared disk AND buffer, so re-persist the
+            // merged batch to make disk the single source of truth for the failed events — never
+            // simultaneously half-in-memory/half-on-disk. A later flush/drain re-delivers it disk-first.
+            // `try?`: a persist error degrades to a dropped batch rather than throwing out of the
+            // unstructured flush Task (matches the no-throw store philosophy).
+            try? await store.persist(envelopes)
         }
     }
 

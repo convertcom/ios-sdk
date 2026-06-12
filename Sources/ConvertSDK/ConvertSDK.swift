@@ -327,6 +327,15 @@ public final class ConvertSDK: Sendable {
             trackEndpoint: configuration.apiTrackEndpoint,
             sdkKey: configuration.sdkKey
         )
+        // The durable pending-event-queue store (Story 5.2): the coordinated, atomic file adapter at
+        // the production Application Support path. `EventQueue`'s `store:` is non-defaulted, so the
+        // composition root always injects it — the on-disk fallback, disk-first drain merge, and
+        // cold-start recovery are never silently skipped. `NoopLogger()` matches the production logging
+        // path used for `decisionStore` in this same root (until a real OSLog logger is wired).
+        let store = CoordinatedFileEventQueueStore(
+            fileURL: CoordinatedFileEventQueueStore.queueFileURL(),
+            logger: NoopLogger()
+        )
         return EventQueue(
             accountId: "",
             projectId: "",
@@ -334,7 +343,8 @@ public final class ConvertSDK: Sendable {
             releaseIntervalMs: configuration.eventsReleaseIntervalMs,
             uploader: uploader,
             eventBus: eventBus,
-            trackingEnabled: configuration.networkTracking
+            trackingEnabled: configuration.networkTracking,
+            store: store
         )
     }
 
