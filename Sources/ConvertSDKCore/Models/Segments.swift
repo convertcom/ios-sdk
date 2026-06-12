@@ -13,19 +13,19 @@ import Foundation
 /// `encodeIfPresent` behavior).
 public struct Segments: Codable, Sendable, Equatable {
     /// Visitor country.
-    public let country: String?
+    public var country: String?
     /// Visitor browser.
-    public let browser: String?
+    public var browser: String?
     /// Visitor device.
-    public let devices: String?
+    public var devices: String?
     /// Acquisition source.
-    public let source: String?
+    public var source: String?
     /// Acquisition campaign.
-    public let campaign: String?
+    public var campaign: String?
     /// Visitor type (e.g. new vs returning).
-    public let visitorType: String?
+    public var visitorType: String?
     /// Free-form custom segment identifiers.
-    public let customSegments: [String]?
+    public var customSegments: [String]?
 
     /// Memberwise initializer; every parameter defaults to `nil` so callers omit fields.
     public init(
