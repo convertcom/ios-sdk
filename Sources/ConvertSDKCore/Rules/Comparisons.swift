@@ -156,8 +156,15 @@ internal enum Comparisons {
     /// where `"".split("|")` → `[""]` and `"a|b|".split("|")` → `["a","b",""]`.
     /// `components(separatedBy:)` matches JS exactly for empty, leading, trailing, and
     /// middle-empty pipes. Pinned by the empty-segment vectors in ComparisonsTests.swift.
+    ///
+    /// A `nil` value (an ABSENT visitor key) returns false up front, to match JS
+    /// `String(undefined).split('|')` = `["undefined"]`, which never matches the allow-list.
+    /// This is distinct from an explicit EMPTY-STRING value: `""` is non-nil, so it still flows
+    /// through `components(separatedBy:)` → `[""]` and CAN match an empty allow-list segment
+    /// (e.g. `isIn("", "a|b|")` → true). Both cases are pinned by vectors in ComparisonsTests.swift.
     private static func isIn(_ value: String?, _ testAgainst: String?) -> Bool {
-        let candidates = (value ?? "").components(separatedBy: "|")          // NOT lowercased (JS parity)
+        guard let value else { return false }  // absent key → false (JS parity; see doc comment above)
+        let candidates = value.components(separatedBy: "|")          // NOT lowercased (JS parity)
         let allowed = (testAgainst ?? "").lowercased().components(separatedBy: "|")
         return candidates.contains { allowed.contains($0) }
     }

@@ -116,6 +116,8 @@ struct ComparisonsTests {
                      expected: true, description: "isIn empty value matches empty trailing segment (JS split parity)"),
         OperatorCase(matchType: "isIn", value: "", testAgainst: "a|b", negated: false,
                      expected: false, description: "isIn empty value no match when no empty segment"),
+        OperatorCase(matchType: "isIn", value: nil, testAgainst: "a|b|", negated: false,
+                     expected: false, description: "isIn nil value (absent key) never matches an empty segment (JS)"),
 
         // --- startsWith / endsWith: case-INSENSITIVE ---
         OperatorCase(matchType: "startsWith", value: "Hello", testAgainst: "HE", negated: false,
