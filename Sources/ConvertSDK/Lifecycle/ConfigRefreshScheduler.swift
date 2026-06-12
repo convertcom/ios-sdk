@@ -173,7 +173,11 @@ public actor ConfigRefreshScheduler {
             queue: nil
         ) { [weak self] _ in
             Task { [weak self] in
-                await self?.attemptRefreshIfDue(skipTTL: false)
+                // ON-DEMAND refresh: `bypassLPM: true` so a foreground transition fires even under
+                // Low Power Mode (AC5 — LPM pauses only PERIODIC polling, not on-demand refresh).
+                // `skipTTL: false` keeps the lazy TTL active, so a foreground bounce inside the TTL
+                // window is still skipped (AC4 still applies under LPM).
+                await self?.attemptRefreshIfDue(skipTTL: false, bypassLPM: true)
             }
         }
         // `.NSProcessInfoPowerStateDidChange` is the Foundation-level, cross-platform name
@@ -234,17 +238,30 @@ public actor ConfigRefreshScheduler {
 
     /// Runs a refresh attempt subject to the Low-Power-Mode gate and the lazy TTL.
     ///
-    /// Order: (1) if Low Power Mode is on, skip with a `.debug` line — fetching is paused under
-    /// LPM (AC5), but the interval loop keeps running so it can still detect LPM exit. (2) Unless
-    /// `skipTTL`, if a previous fetch landed within `refreshIntervalMs` ago (per ``Clock/now``),
-    /// skip with a `.debug` line (AC4); the comparison is strict `<`, so the boundary value
-    /// (`elapsed == interval`) PROCEEDS. (3) Otherwise perform the refresh.
+    /// Order: (1) unless `bypassLPM`, if Low Power Mode is on, skip with a `.debug` line —
+    /// PERIODIC (interval) fetching is paused under LPM (AC5), but the interval loop keeps running
+    /// so it can still detect LPM exit. (2) Unless `skipTTL`, if a previous fetch landed within
+    /// `refreshIntervalMs` ago (per ``Clock/now``), skip with a `.debug` line (AC4); the comparison
+    /// is strict `<`, so the boundary value (`elapsed == interval`) PROCEEDS. (3) Otherwise perform
+    /// the refresh.
     ///
-    /// - Parameter skipTTL: When `true`, bypass the TTL gate (the LPM-exit path passes this so
-    ///   the catch-up refresh is not suppressed by a recent stamp). The LPM gate is NEVER
-    ///   bypassed — an attempt while still in LPM always skips.
-    private func attemptRefreshIfDue(skipTTL: Bool = false) async {
-        guard !powerModeProvider() else {
+    /// ── LPM gate vs the two trigger classes (AC5) ───────────────────────────────────────────
+    /// The LPM gate suppresses only PERIODIC attempts — the interval loop calls this with BOTH
+    /// defaults (`bypassLPM: false`), so interval polling stays paused under LPM. ON-DEMAND
+    /// attempts (the foreground observer) pass `bypassLPM: true` so they FIRE even under LPM:
+    /// AC5 says refresh-on-foreground (AC3) "still applies even under LPM — LPM does not prevent
+    /// on-demand refresh, only periodic polling". Bypassing the LPM gate does NOT touch the TTL
+    /// gate, so a foreground attempt under LPM still honors the lazy TTL (AC4 — `skipTTL: false`):
+    /// a foreground bounce inside the TTL window is still skipped, LPM or not.
+    ///
+    /// - Parameters:
+    ///   - skipTTL: When `true`, bypass the TTL gate (the LPM-exit path passes this so the
+    ///     catch-up refresh is not suppressed by a recent stamp). Orthogonal to `bypassLPM`.
+    ///   - bypassLPM: When `true`, bypass the Low-Power-Mode gate so an ON-DEMAND (foreground)
+    ///     attempt fires even while LPM is active (AC5). The interval loop leaves this `false`,
+    ///     so PERIODIC polling stays paused under LPM. Does NOT affect the TTL gate.
+    private func attemptRefreshIfDue(skipTTL: Bool = false, bypassLPM: Bool = false) async {
+        guard bypassLPM || !powerModeProvider() else {
             logger.log(
                 level: .debug,
                 type: "ConfigRefreshScheduler",
@@ -306,6 +323,10 @@ public actor ConfigRefreshScheduler {
             method: "powerState",
             message: "Low Power Mode exited — resuming polling"
         )
-        await attemptRefreshIfDue(skipTTL: true)
+        // This is an ON-DEMAND (LPM-exit) catch-up, not periodic polling. LPM is already confirmed
+        // OFF by the guard above, so the LPM gate would pass regardless; `bypassLPM: true` is passed
+        // for clarity/consistency with the foreground on-demand path (both bypass the LPM gate). The
+        // catch-up still passes `skipTTL: true` so a recent pre-LPM stamp does not suppress it.
+        await attemptRefreshIfDue(skipTTL: true, bypassLPM: true)
     }
 }

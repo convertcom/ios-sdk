@@ -185,6 +185,43 @@ struct ConfigRefreshSchedulerTests {
 
         await sut.scheduler.cancel()
     }
+
+    /// AC5: refresh-on-foreground (AC3) "still applies even under LPM — a foreground transition
+    /// still triggers an immediate attempt (LPM does not prevent on-demand refresh, only periodic
+    /// polling)". The SUT starts WITH Low Power Mode ON; a foreground notification must therefore
+    /// still fetch — proving the ON-DEMAND path bypasses the LPM gate that suppresses PERIODIC
+    /// (interval) polling (`lpmPausesIntervalRefresh` covers the periodic-suppressed half).
+    /// `waitForFetchCount(1)` is a genuine happens-before on that fetch landing (the detached
+    /// observer `Task` the `NotificationCenter` block spawns), so this is deterministic — under the
+    /// PRE-FIX code the LPM gate would skip the attempt, the count would never reach 1, and this
+    /// would FAIL (the awaited fetch never arriving), which is the RED that confirms the bug.
+    @Test("a foreground transition refreshes even under Low Power Mode (AC5: LPM pauses only periodic polling)")
+    func foregroundRefreshFiresEvenUnderLowPowerMode() async throws {
+        let sut = try await makeSchedulerSut(powerMode: true)   // LPM ON
+        await sut.scheduler.start()
+
+        triggerForeground(center: sut.center)
+        await sut.fetch.waitForFetchCount(1)                     // foreground fetched DESPITE LPM
+        #expect(await sut.fetch.fetchLiveConfigCallCount == 1)
+
+        // AC5 also keeps the lazy TTL active under LPM (`skipTTL: false` on the foreground path): a
+        // SECOND foreground bounce inside the TTL window is still skipped even under LPM. Awaiting
+        // the TTL-skip `.debug` line (`messageContains: "last fetch"`, which pins it to the TTL skip
+        // — the LPM skip says "Low Power Mode") proves the second attempt RAN, bypassed the LPM gate,
+        // and was gated by the TTL — not by LPM — so the count stays 1. Reuses `advanceClock`
+        // (instance helper) and `MockLogger.waitForEntry`, so no setup/assertion block is copied.
+        advanceClock(sut.clock, byMs: Self.withinTtlMs)
+        triggerForeground(center: sut.center)
+        await sut.logger.waitForEntry(
+            level: .debug,
+            type: "ConfigRefreshScheduler",
+            method: "checkRefresh",
+            messageContains: "last fetch"
+        )
+        #expect(await sut.fetch.fetchLiveConfigCallCount == 1)
+
+        await sut.scheduler.cancel()
+    }
     #endif
 
     // MARK: Scenario 4 — Low Power Mode pauses interval polling
