@@ -94,7 +94,7 @@ public final class ConvertSDK: Sendable {
         clock: any Clock = SystemClock(),
         secureStore: any SecureStore = KeychainSecureStore(),
         keyValueStore: any KeyValueStore = UserDefaultsKeyValueStore(),
-        decisionStore: DecisionStore = DecisionStore()
+        decisionStore: DecisionStore = DecisionStore(logger: NoopLogger(), fileStore: EphemeralFileStore())
     ) {
         self.configuration = configuration
         self.eventBus = eventBus
