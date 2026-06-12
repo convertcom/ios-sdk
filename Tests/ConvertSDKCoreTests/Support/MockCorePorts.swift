@@ -238,6 +238,61 @@ actor MockEventSink: EventSink {
     }
 }
 
+// MARK: - MockFileStore
+
+/// Test double for ``FileStore`` (the atomic file-I/O port the `DecisionStore` persists
+/// through). Re-declared here (not shared from `ConvertSDKTests`) for the same
+/// target-visibility reason as ``MockLogger`` / ``MockEventSink`` above — `ConvertSDKCoreTests`
+/// cannot see the `ConvertSDKTests` copy in `MockPorts.swift`. Mirrors that copy's API
+/// (`init(files:)`, `read` throwing `CocoaError(.fileReadNoSuchFile)` on a miss, `write`,
+/// `seed(_:at:)`, `contents(at:)`) and adds ONE knob below.
+///
+/// Shape: `actor` — `read`/`write` are `async throws`, so actor isolation satisfies the port
+/// with NO `Sendable` suppression (no ``LockedBox`` needed, unlike the synchronous mocks).
+///
+/// ── `corruptAllReads` knob ──────────────────────────────────────────────────────────────
+/// When set, EVERY ``read(from:)`` returns this blob regardless of the requested URL. The
+/// corruption-recovery test needs the store to read invalid JSON, but the on-disk URL the
+/// `DecisionStore` computes internally is opaque to the test — so seeding by a known URL is
+/// brittle. This knob makes the corrupt-bytes read robust to whatever path the store requests.
+/// `nil` (the default) leaves `read` driven by the in-memory `files` map, exactly like the
+/// `MockPorts.swift` copy.
+actor MockFileStore: FileStore {
+    private var files: [String: Data]
+    private let corruptAllReads: Data?
+
+    init(files: [URL: Data] = [:], corruptAllReads: Data? = nil) {
+        self.files = Dictionary(
+            uniqueKeysWithValues: files.map { ($0.key.absoluteString, $0.value) }
+        )
+        self.corruptAllReads = corruptAllReads
+    }
+
+    func read(from url: URL) async throws -> Data {
+        if let corruptAllReads {
+            return corruptAllReads
+        }
+        guard let data = files[url.absoluteString] else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
+        return data
+    }
+
+    func write(_ data: Data, to url: URL) async throws {
+        files[url.absoluteString] = data
+    }
+
+    /// Pre-seeds (or overwrites) the data stored at `url`.
+    func seed(_ data: Data, at url: URL) {
+        files[url.absoluteString] = data
+    }
+
+    /// Returns the data currently stored at `url`, or `nil` if absent.
+    func contents(at url: URL) -> Data? {
+        files[url.absoluteString]
+    }
+}
+
 // MARK: - makeManager factory
 
 /// The mocks a visitor-context scenario drives, returned as a named struct (not a tuple) so
