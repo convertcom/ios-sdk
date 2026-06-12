@@ -129,7 +129,11 @@ enum ProjectConfigFixtures {
     // token-based, so reuse — not renaming — is what keeps the diff under the threshold).
 
     /// One `ConfigExperience` JSON object whose sole variation carries a `fullStackFeature` change
-    /// (the feature-binding shape `{type:"fullStackFeature","data":{feature_id,variables_data}}`).
+    /// (the feature-binding shape `{id:<Int>,type:"fullStackFeature","data":{feature_id,variables_data}}`).
+    /// NOTE the change `id` is an INTEGER (`ExperienceChangeIdReadOnly.id` is "the unique numerical
+    /// identifier") — a quoted-string id makes the FULL `ConfigExperience` decode throw `typeMismatch`,
+    /// which silently degrades the whole experience out of `rawExperiences` (verified against the
+    /// generated schema + `cdn-config-baseline.json`, where every change id is an integer).
     /// `alloc` is the variation's 0–100 traffic percentage — `100` ⇒ a sole full-traffic variation
     /// that always buckets (feature ENABLED), `0` ⇒ a variation that never buckets (feature stays
     /// disabled for an otherwise-present carrier). No audiences/locations (the gates are bypassed),
@@ -151,7 +155,7 @@ enum ProjectConfigFixtures {
         "audiences":[],"locations":[],\
         "variations":[{"id":"feat-var","key":"feat-var-key",\
         "traffic_allocation":\(alloc),\
-        "changes":[{"id":"chg-1","type":"fullStackFeature",\
+        "changes":[{"id":1,"type":"fullStackFeature",\
         "data":{"feature_id":\(featureIdInt),"variables_data":\(variablesDataJSON)}}]}]}
         """
     }
