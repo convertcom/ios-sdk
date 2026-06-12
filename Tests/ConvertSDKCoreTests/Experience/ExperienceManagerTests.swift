@@ -294,4 +294,35 @@ struct ExperienceManagerTests {
         #expect(capture.lastPayload?.variationId == "var-1", "payload must carry the variationId")
         #expect(capture.lastPayload?.visitorId == Ids.visitor, "payload must carry the visitorId")
     }
+
+    // MARK: - AC8 + AC9: enableTracking:false suppresses the enqueue but STILL fires .bucketing
+
+    /// The complement of ``enableTrackingFalseSuppressesEvent`` (which pins only the suppressed-enqueue
+    /// side) and ``newDecisionFiresBucketingSystemEvent`` (which pins the fire under `enableTracking:
+    /// true`): on a NEW decision, `enableTracking: false` gates ONLY the `EventSink` enqueue (AC8) — it
+    /// does NOT gate the `.bucketing` EventBus system event, which fires on EVERY new decision (AC9;
+    /// the sole negative case is a sticky hit, covered by ``stickyDecisionShortCircuits``). Asserting
+    /// BOTH sides on the same run pins that contract so a future change cannot silently couple the
+    /// system-event fire to the tracking flag. Subscribes the `.bucketing` counter AND inspects the
+    /// SAME `MockEventSink` the `BucketingManager` enqueues through; the async fire is drained via the
+    /// `MainActor` barrier before the capture is read.
+    @Test("AC8/AC9 — enableTracking:false still fires the .bucketing system event but suppresses enqueue")
+    func enableTrackingFalseStillFiresBucketingSystemEvent() async throws {
+        let config = try ProjectConfigFixtures.singleExperienceConfig(key: "open-exp")
+        let sink = MockEventSink()
+        let bus = EventBus()
+        let subject = makeExperienceManager(eventSink: sink, eventBus: bus)
+        let fired = await subscribeBucketing(on: bus)
+
+        let variation = await select(subject, key: "open-exp", in: config, enableTracking: false)
+        await drain()
+
+        #expect(variation?.id == "var-1", "a variation is still selected when tracking is off")
+        #expect(
+            fired.get.fireCount == 1,
+            "enableTracking:false must NOT gate the .bucketing system event — it still fires once"
+        )
+        let events = await sink.recordedEvents()
+        #expect(events.isEmpty, "enableTracking:false must still suppress the bucketing enqueue")
+    }
 }

@@ -88,6 +88,16 @@ internal enum RuleAdapter {
         case let .country(rule):
             return condition(fromCountry: rule)
         default:
+            // INTENTIONAL fail-closed degrade (bd-d4p deferred-coverage boundary): every leaf family
+            // NOT enumerated above (numeric / bool / cookie / segment / js_condition / weather / os /
+            // language / time-of-day / …) maps to an empty-`matchType` ``RuleCondition`` that
+            // ``Comparisons`` never matches — so an unmapped operator can only fail closed, never
+            // wrong-positive. No runtime log is emitted at THIS site by design: the unhandled cases are
+            // heterogeneous (each carries a DIFFERENT concrete rule struct — `GenericNumericMatchRule`,
+            // `GenericBoolMatchRule`, `CookieMatchRule`, … — that share NO protocol exposing
+            // `rule_type`), so recovering the discriminator string for a diagnostic would force binding
+            // all ~30 cases individually here, which is the ripple the degrade is meant to avoid. When
+            // bd-d4p lands a family, ADD its `case let .x(rule):` to the list above — do not log here.
             return degraded()
         }
     }
@@ -113,6 +123,12 @@ internal enum RuleAdapter {
         case let .country(rule):
             return condition(fromCountry: rule)
         default:
+            // INTENTIONAL fail-closed degrade (bd-d4p) — the `RuleElement` parallel of the audience
+            // `default:` above (`weather_condition` is one such unhandled family here). Same contract:
+            // an unmapped leaf gets an empty-`matchType` ``RuleCondition`` ``Comparisons`` never
+            // matches (fail-closed, never wrong-positive), and no runtime log is emitted at this site —
+            // see the audience switch's `default:` for why the heterogeneous leaf structs make
+            // discriminator recovery here not worth the ~30-case binding ripple.
             return degraded()
         }
     }
@@ -160,10 +176,12 @@ internal enum RuleAdapter {
         )
     }
 
-    /// A fail-closed condition for a leaf family not yet handled (bd-d4p deferred). The empty
+    /// A fail-closed condition for a leaf family not yet handled — the INTENTIONAL degrade at the
+    /// bd-d4p deferred-coverage boundary, emitted from both switches' `default:` arms. The empty
     /// `matchType` is absent from ``Comparisons/comparators``, so the condition evaluates to false —
     /// never a wrong-positive. `key` is left empty because no attribute lookup can succeed once the
-    /// operator is unmapped.
+    /// operator is unmapped. Extending coverage means adding the leaf's `case` to the switches above,
+    /// NOT changing this fail-closed default.
     private static func degraded() -> RuleCondition {
         RuleCondition(key: "", matchType: "", value: nil, negation: false)
     }

@@ -134,6 +134,15 @@ public struct ProjectConfig: Decodable, Sendable {
         if var rawArray = try? container.nestedUnkeyedContainer(forKey: .experiences) {
             var collected: [Components.Schemas.ConfigExperience] = []
             while !rawArray.isAtEnd {
+                // LOOP-TERMINATION INVARIANT: `DegradingExperience.init` NEVER throws (it `try?`s the
+                // real `ConfigExperience` decode internally), so `rawArray.decode(DegradingExperience
+                // .self)` ALWAYS succeeds and advances the unkeyed-container index by EXACTLY one per
+                // iteration — the `isAtEnd` guard is therefore guaranteed to flip after at most
+                // `count` iterations and the loop terminates. The outer `try?` is defensive/unreachable
+                // (the decode cannot throw). Do NOT remove the never-throws property of
+                // `DegradingExperience`: a throwing element decode here would leave the index un-
+                // advanced on a bad element, spinning this `while` FOREVER. (A drifted element still
+                // degrades out alone — `wrapped.experience` is `nil` — without nulling its siblings.)
                 if let wrapped = try? rawArray.decode(DegradingExperience.self),
                    let experience = wrapped.experience {
                     collected.append(experience)
@@ -259,7 +268,12 @@ private struct DegradingExperience: Decodable {
     let experience: Components.Schemas.ConfigExperience?
 
     init(from decoder: any Decoder) throws {
-        // Never rethrows: a failing `ConfigExperience` decode (e.g. unknown `type`) becomes `nil`.
+        // NEVER rethrows — load-bearing: a failing `ConfigExperience` decode (e.g. unknown `type`)
+        // becomes `nil` rather than propagating. This is the property the per-element retention loop
+        // in `ProjectConfig.init(from:)` relies on for termination: because this `init` cannot throw,
+        // `UnkeyedDecodingContainer.decode(DegradingExperience.self)` always advances the container
+        // index by exactly one. If this were ever made to rethrow, a bad element would leave the index
+        // un-advanced and spin that loop forever. Do NOT remove the `try?`.
         experience = try? Components.Schemas.ConfigExperience(from: decoder)
     }
 }
