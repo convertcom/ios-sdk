@@ -38,9 +38,9 @@ import Foundation
 public struct FeatureManager: Sendable {
     /// Delegate that owns the single-experience bucketing pipeline (sticky → audience → location →
     /// bucket → persist → `.bucketing` fire). The ONLY collaborator this type calls into.
-    let experienceManager: ExperienceManager
+    private let experienceManager: ExperienceManager
     /// Diagnostic sink for the population-layer warnings (feature-not-found, variable type mismatch).
-    let logger: Logger
+    private let logger: Logger
 
     /// Composes the feature evaluator over its bucketing delegate. `public` (mirroring
     /// ``ExperienceManager``'s public composition surface) so the separate `ConvertSDK` module's
