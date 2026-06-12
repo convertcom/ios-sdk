@@ -5,7 +5,7 @@
 import Foundation
 
 /// Lifecycle status of a bucketed feature.
-public enum FeatureStatus: String, Sendable {
+public enum FeatureStatus: String, Codable, Sendable, Equatable {
     case enabled
     case disabled
 }
@@ -14,16 +14,78 @@ public enum FeatureStatus: String, Sendable {
 ///
 /// JSON variables are carried as `Data` rather than a decoded `Any` so the case stays
 /// genuinely `Sendable` (no `@unchecked`); callers decode the bytes at the use site.
-public enum FeatureVariable: Sendable {
+///
+/// `Codable` is written by hand (see `CodingKeys`, `init(from:)`, `encode(to:)` below)
+/// because an enum with heterogeneous associated values has no synthesized form that
+/// round-trips. The wire shape is a keyed object with a `type` discriminator string
+/// (`"boolean"`/`"integer"`/`"float"`/`"string"`/`"json"` — the JS variable-type
+/// vocabulary) and a `value` carrying the associated payload. For `.json`, the `Data` is
+/// encoded via `Data`'s default `Codable` (a base64 `String`), which round-trips the exact
+/// bytes losslessly. `Equatable` synthesizes (every associated type is `Equatable`).
+public enum FeatureVariable: Codable, Sendable, Equatable {
     case boolean(Bool)
     case integer(Int)
     case float(Double)
     case string(String)
     case json(Data)
+
+    /// Explicit wire keys: a `type` discriminator and the `value` payload. Pinned by hand
+    /// (no key-strategy, no snake_case) so the form never drifts.
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case value
+    }
+
+    /// The discriminator strings, matching the JS variable-type vocabulary.
+    private enum TypeTag: String, Codable {
+        case boolean
+        case integer
+        case float
+        case string
+        case json
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let tag = try container.decode(TypeTag.self, forKey: .type)
+        switch tag {
+        case .boolean:
+            self = .boolean(try container.decode(Bool.self, forKey: .value))
+        case .integer:
+            self = .integer(try container.decode(Int.self, forKey: .value))
+        case .float:
+            self = .float(try container.decode(Double.self, forKey: .value))
+        case .string:
+            self = .string(try container.decode(String.self, forKey: .value))
+        case .json:
+            self = .json(try container.decode(Data.self, forKey: .value))
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .boolean(boolean):
+            try container.encode(TypeTag.boolean, forKey: .type)
+            try container.encode(boolean, forKey: .value)
+        case let .integer(integer):
+            try container.encode(TypeTag.integer, forKey: .type)
+            try container.encode(integer, forKey: .value)
+        case let .float(float):
+            try container.encode(TypeTag.float, forKey: .type)
+            try container.encode(float, forKey: .value)
+        case let .string(string):
+            try container.encode(TypeTag.string, forKey: .type)
+            try container.encode(string, forKey: .value)
+        case let .json(data):
+            try container.encode(TypeTag.json, forKey: .type)
+            try container.encode(data, forKey: .value)
+        }
+    }
 }
 
 /// A feature flag resolved for a visitor, carrying its status and typed variables.
-public struct BucketedFeature: Sendable {
+public struct BucketedFeature: Codable, Sendable, Equatable {
     /// Stable identifier of the feature.
     public let id: String
     /// Human-readable key of the feature.
@@ -39,6 +101,23 @@ public struct BucketedFeature: Sendable {
         self.key = key
         self.status = status
         self.variables = variables
+    }
+
+    /// Explicit wire keys (no snake_case, no derived spellings). The synthesized
+    /// `init(from:)`/`encode(to:)` use these pinned keys.
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case key
+        case status
+        case variables
+    }
+
+    /// Builds a disabled feature with an empty `id` and no variables.
+    ///
+    /// The canonical "feature off" value: any `variable(_:as:)` lookup returns `nil`
+    /// because `variables` is empty.
+    public static func disabled(key: String) -> BucketedFeature {
+        BucketedFeature(id: "", key: key, status: .disabled, variables: [:])
     }
 
     /// Non-throwing typed accessor for a feature variable (AOD-6 — never throws).
