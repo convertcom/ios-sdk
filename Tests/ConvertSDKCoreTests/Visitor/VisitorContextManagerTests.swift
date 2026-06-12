@@ -1,9 +1,10 @@
 // Tests/ConvertSDKCoreTests/Visitor/VisitorContextManagerTests.swift
-// RED-phase contract for `VisitorContextManager.resolveVisitorId(...)` (Epic 3 / Story 1).
+// Contract for `VisitorContextManager.resolveVisitorId(...)` (Epic 3 / Story 1).
 //
-// `@testable import` is used because `VisitorContextManager` and `StorageKeys` are `internal`
-// (matching the pattern in `Data/ConfigStoreTests.swift`). None of these production types
-// exist on disk yet, so this suite is EXPECTED to fail to compile (the correct RED outcome).
+// `@testable import ConvertSDKCore` is used to reach `StorageKeys` (`internal`) and the
+// `package`-scoped `VisitorContextManager` from this same-package test target (matching the
+// pattern in `Data/ConfigStoreTests.swift`). The production types exist on disk and this suite
+// compiles and passes.
 //
 // CONTRACT under test (the GREEN-phase implementer MUST satisfy these):
 //   * `provided` non-nil AND non-empty → returned AS-IS, with NO store reads and NO writes

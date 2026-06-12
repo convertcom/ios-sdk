@@ -265,19 +265,42 @@ public final class ConvertSDK: Sendable {
     ///   - visitorId: Optional caller-supplied visitor identifier; when non-empty it is used verbatim.
     ///   - attributes: Optional visitor attributes for segmentation; non-scalar values are dropped.
     public func createContext(visitorId: String? = nil, attributes: [String: Any]? = nil) -> ConvertContext {
+        // NoopLogger matches the SDK's production logging path (the real OSLog sink is not wired yet —
+        // see the config-load Task above, which also uses it). Built once and shared by the visitor-ID
+        // resolver AND the attribute coercion below.
+        let logger = NoopLogger()
         // Resolve via the pure-logic manager: explicit ID verbatim, else persisted store value, else a
-        // freshly generated + persisted UUID. NoopLogger matches the SDK's production logging path
-        // (the real OSLog sink is not wired yet — see the config-load Task above, which also uses it).
+        // freshly generated + persisted UUID.
         let resolvedId = VisitorContextManager.resolveVisitorId(
             provided: visitorId,
             secureStore: secureStore,
             keyValueStore: keyValueStore,
-            logger: NoopLogger()
+            logger: logger
         )
+        // Coerce the loosely-typed attributes into the closed `ConvertValue` set HERE (where the logger
+        // is in scope) rather than inside `ConvertContext`, so a dropped key can be logged at DEBUG —
+        // matching the SDK's "log, never crash" pattern. Per key, any value that is not one of the four
+        // supported scalars (nested dict/array/object/NSNull) is dropped — it is not a segment-matchable
+        // scalar — while supported siblings in the same map survive (per-key filter, never whole-map
+        // rejection). The public parameter stays `[String: Any]?` and `ConvertContext.attributes` stays
+        // `[String: Any]`, so the consumer surface is unchanged.
+        var coercedAttributes: [String: ConvertValue] = [:]
+        for (key, value) in attributes ?? [:] {
+            if let convertValue = ConvertValue(any: value) {
+                coercedAttributes[key] = convertValue
+            } else {
+                logger.log(
+                    level: .debug,
+                    type: "ConvertContext",
+                    method: "createContext",
+                    message: "attribute '\(key)' has unsupported type — dropped"
+                )
+            }
+        }
         return ConvertContext(
             sdk: self,
             visitorId: resolvedId,
-            attributes: attributes,
+            attributes: coercedAttributes,
             decisionStore: decisionStore
         )
     }

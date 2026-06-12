@@ -116,8 +116,6 @@ final class KeychainSecureStoreTests {
         // no-op rather than failing. Defensive cleanup runs in deinit regardless.
         guard try store.read(key: Self.key) == written else { return }
 
-        #expect(try store.read(key: Self.key) == written)
-
         try store.delete(key: Self.key)
 
         #expect(try store.read(key: Self.key) == nil)

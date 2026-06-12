@@ -56,35 +56,29 @@ public final class ConvertContext: Sendable {
     /// ``ConvertSDK/createContext(visitorId:attributes:)``, which resolves `visitorId` through
     /// ``VisitorContextManager`` and passes the SDK's canonical `decisionStore`.
     ///
-    /// The loosely-typed `attributes` are coerced into the closed ``ConvertValue`` set via
-    /// ``ConvertValue/init(any:)``; per-key, any value that is not one of the four supported scalars
-    /// (e.g. a nested dictionary or array) is SILENTLY DROPPED — it is not a segment-matchable scalar,
-    /// while supported siblings in the same map survive (the coercion filters per key, never rejects
-    /// the whole map).
+    /// `attributes` arrive ALREADY coerced into the closed ``ConvertValue`` set — the
+    /// `[String: Any]` → `[String: ConvertValue]` coercion (and the per-key DEBUG log for any
+    /// unsupported value that was dropped) happens UPSTREAM in
+    /// ``ConvertSDK/createContext(visitorId:attributes:)``, which holds the SDK's logger. Keeping the
+    /// coercion there leaves this context free of a logger dependency; the public
+    /// `createContext(attributes:)` parameter stays `[String: Any]?` and the ``attributes`` getter
+    /// stays `[String: Any]`, so the loosely-typed surface is unchanged for consumers.
     /// - Parameters:
     ///   - sdk: The creating SDK (held acyclically).
     ///   - visitorId: The already-resolved effective visitor identifier.
-    ///   - attributes: The caller-supplied attribute map, or `nil`; unsupported values are dropped.
+    ///   - attributes: The caller-supplied attributes, already coerced to ``ConvertValue`` (unsupported
+    ///     values were dropped, and logged at DEBUG, by ``ConvertSDK/createContext(visitorId:attributes:)``).
     ///   - decisionStore: The SDK's canonical decision store, shared across every context it creates.
     internal init(
         sdk: ConvertSDK,
         visitorId: String,
-        attributes: [String: Any]?,
+        attributes: [String: ConvertValue],
         decisionStore: DecisionStore
     ) {
         self.sdk = sdk
         self.visitorId = visitorId
         self.decisionStore = decisionStore
-        // Coerce [String: Any] -> [String: ConvertValue], dropping any value that is not one of the
-        // four supported scalars. Unsupported values (nested dict/array/object/NSNull) are silently
-        // omitted — they are not segment-matchable scalars, so they have no place in the stored map.
-        var storage: [String: ConvertValue] = [:]
-        for (key, value) in attributes ?? [:] {
-            if let convertValue = ConvertValue(any: value) {
-                storage[key] = convertValue
-            }
-        }
-        self.attributesStorage = storage
+        self.attributesStorage = attributes
     }
 
     /// Whether event delivery is enabled for this context's SDK (FR6 static `network.tracking`).

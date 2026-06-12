@@ -25,17 +25,20 @@ import Foundation
 ///      flow falls back to generating a fresh UUID — a storage fault must degrade gracefully, not
 ///      surface to the caller.
 ///
-/// `public` (not `internal`) because the resolver lives in ``ConvertSDKCore`` but its sole caller is
-/// ``ConvertSDK/createContext(visitorId:attributes:)`` in the SEPARATE `ConvertSDK` module. The
-/// `@_exported import ConvertSDKCore` re-export surfaces only `public` symbols across the module
-/// boundary, so the platform target cannot reach an `internal` resolver — the public access level is
-/// what lets `createContext` call `resolveVisitorId`. `StorageKeys` stays `internal`: it appears only
-/// inside this method's body (never in its signature), so it need not cross the boundary.
-public enum VisitorContextManager {
+/// `package` (not `internal` or `public`) because the resolver lives in ``ConvertSDKCore`` but its
+/// sole caller is ``ConvertSDK/createContext(visitorId:attributes:)`` in the SEPARATE `ConvertSDK`
+/// target of the SAME package. `package` is the precise access level for a symbol shared across
+/// targets within one package WITHOUT exposing it to SDK consumers: an `internal` resolver could not
+/// cross the target boundary, while `public` would leak it into the consumer ABI through the
+/// `@_exported import ConvertSDKCore` re-export. The architecture mandates the public surface be only
+/// `ConvertSDK`/`ConvertContext`/`ConvertConfiguration`/model-DTOs — everything else is
+/// internal/package. `StorageKeys` stays `internal`: it appears only inside this method's body (never
+/// in its signature), so it never crosses the target boundary.
+package enum VisitorContextManager {
     /// Returns the effective visitor ID per the precedence documented on the type. Total — it
     /// always returns a `String` and never throws; every storage write uses `try?` so a Keychain
     /// failure on the write path is swallowed exactly like a failure on the read path.
-    public static func resolveVisitorId(
+    package static func resolveVisitorId(
         provided: String?,
         secureStore: SecureStore,
         keyValueStore: KeyValueStore,
