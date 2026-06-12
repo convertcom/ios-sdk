@@ -14,6 +14,31 @@
 import Foundation
 import ConvertSDKCore
 
+/// The background-upload testability seam the ``LifecycleObserver`` depends on — mirroring how
+/// `ConfigRefreshScheduler` depends on `any ConfigProviding` rather than the concrete fetch service.
+/// The observer holds `any BackgroundUploadEnqueueing` and calls ``enqueueUpload(fileURL:request:)``
+/// on a background transition, so a test injects a recording double (`MockBackgroundSessionManager`)
+/// in place of the real `URLSession`-backed manager.
+///
+/// The requirement is declared `async` (even though the real ``BackgroundSessionManager`` body has
+/// no suspension — it just builds and `resume()`s an upload task) so an `actor` double can satisfy it
+/// and hand the observer's test an awaitable happens-before. A synchronous body trivially conforms to
+/// an `async` requirement; the observer calls it as `await sessionManager.enqueueUpload(...)`.
+///
+/// `package` (NOT `public`, NOT bare `internal`): the conforming test double
+/// (`MockBackgroundSessionManager`) lives in the `ConvertSDKTests` target and reaches this seam through
+/// a PLAIN `import ConvertSDK` (not `@testable`), so a bare-`internal` protocol would be invisible to
+/// it; `package` grants exactly that in-package cross-target visibility while keeping the seam OFF the
+/// SDK's public consumer surface — mirroring how `EventBus/fire` uses `package` for an identical
+/// in-package-only need.
+package protocol BackgroundUploadEnqueueing: AnyObject, Sendable {
+    /// Enqueues one durable background upload of the on-disk batch file streamed as the request body.
+    /// - Parameters:
+    ///   - fileURL: The on-disk batch file to stream as the request body.
+    ///   - request: The configured upload request (URL/method/headers).
+    func enqueueUpload(fileURL: URL, request: URLRequest) async
+}
+
 /// Configures, owns, and feeds the durable background `URLSession` that ships the queued tracking
 /// batch, and holds the integrator-forwarded background completion handler the delegate invokes once
 /// the session's work is acknowledged.
@@ -29,7 +54,7 @@ import ConvertSDKCore
 /// ``backgroundCompletionHandler`` is the single `nonisolated(unsafe)` field whose access pattern
 /// (write-once on the internal flow, read on the serial delegate queue) is documented at its
 /// declaration. This is the only suppression in the file.
-final class BackgroundSessionManager: @unchecked Sendable {
+final class BackgroundSessionManager: BackgroundUploadEnqueueing, @unchecked Sendable {
     /// The canonical, never-changing `URLSessionConfiguration.background(withIdentifier:)` identifier.
     /// This is the ONLY place the literal appears; the OS keys the resumable background session by it,
     /// so it must remain stable across launches and unique within the process.
@@ -115,7 +140,12 @@ final class BackgroundSessionManager: @unchecked Sendable {
     /// - Parameters:
     ///   - fileURL: The on-disk batch file to stream as the request body.
     ///   - request: The configured upload request (URL/method/headers).
-    func enqueueUpload(fileURL: URL, request: URLRequest) {
+    ///
+    /// `async` to satisfy the ``BackgroundUploadEnqueueing`` seam (whose `async` requirement lets an
+    /// `actor` double conform and gives the observer's test an awaitable happens-before). The body has
+    /// no suspension — building and `resume()`ing the upload task is synchronous — which validly
+    /// satisfies an `async` requirement.
+    func enqueueUpload(fileURL: URL, request: URLRequest) async {
         guard let session = backgroundSession else { return }
         let task = session.uploadTask(with: request, fromFile: fileURL)
         task.resume()

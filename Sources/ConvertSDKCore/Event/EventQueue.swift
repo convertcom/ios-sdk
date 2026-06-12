@@ -205,7 +205,13 @@ public actor EventQueue: EventSink {
     /// entirely). `try?`: a store error degrades to "left in memory" rather than throwing out of the
     /// lifecycle hook, matching the no-throw store philosophy used by `flush()`/`drain()`.
     /// [Source: architecture.md#Durable Background Delivery — persist file on background]
-    func persistBeforeBackground() async {
+    ///
+    /// `package` (NOT `internal`): the `LifecycleObserver` lives in the sibling `ConvertSDK` target
+    /// and must reach this on a background transition, but external SDK consumers must NOT be able to
+    /// force a buffer persist. `package` grants exactly the in-package cross-target visibility the
+    /// observer needs while keeping it off the SDK's public surface — mirroring ``EventBus/fire`` and
+    /// ``VisitorContextManager``, both already consumed cross-target by `ConvertSDK`.
+    package func persistBeforeBackground() async {
         guard !buffer.isEmpty else { return }
         try? await store.persist(assemble(buffer))
         buffer = []
@@ -303,7 +309,13 @@ public actor EventQueue: EventSink {
     /// `drain()` already cleared both surfaces, so re-persisting makes disk the single source of truth
     /// for the failed batch (never half-in-memory/half-on-disk), and a later flush/drain re-delivers
     /// it disk-first. A flush with nothing on disk or in memory is a no-op (no upload, no event).
-    private func flush() async {
+    ///
+    /// `package` (NOT `private`): the `LifecycleObserver` in the sibling `ConvertSDK` target drives
+    /// this on `didBecomeActive` for foreground recovery (Story 5.3 / AC6), so an undelivered batch a
+    /// prior session left on disk is delivered on return-to-foreground. `package` grants exactly the
+    /// in-package cross-target visibility the observer needs while keeping it off the SDK's public
+    /// surface — mirroring ``persistBeforeBackground()`` and ``EventBus/fire``.
+    package func flush() async {
         let envelopes = await drain()
         guard !envelopes.isEmpty else { return }
         do {
