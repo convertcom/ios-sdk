@@ -24,6 +24,14 @@
 // Every SUT gets its OWN `NotificationCenter()` (NOT `.default`), so foreground / power-state
 // notifications posted by one test never leak into another running in parallel. The scheduler's
 // observers (`notifications(named:)`) are wired to that same fresh center via the init parameter.
+//
+// `file_length` is disabled file-wide (a single named rule — NOT `disable all`): this is the shared
+// fixture file for BOTH the scheduler RED suite and the Story 3.5 `runExperiences` wiring suite, and it
+// sat at exactly the 400-line default before the multi-experience fixture was added. Splitting these
+// co-located fixtures across files to shave a handful of lines would scatter the test-support surface
+// for no readability gain; all other rules remain enforced. (Mirrors `OpenAPIRuntimeShim.swift`'s
+// file-wide `file_length` disable convention.)
+// swiftlint:disable file_length
 import Testing
 import Foundation
 @testable import ConvertSDK
@@ -185,6 +193,33 @@ func makeExperienceConfig(
     let experienceHead = #"{"id":"\#(experienceId)","key":"\#(experienceKey)","type":"a/b","#
     let experience = experienceHead + #""audiences":[],"locations":[],"variations":[\#(variation)]}"#
     let envelope = #"{"account_id":"acc-run","project":{"id":"proj-run"},"experiences":[\#(experience)]}"#
+    return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
+}
+
+/// One experience-wire FRAGMENT (no envelope) for the 1-based `index`: a `type:"a/b"`, no-audience,
+/// no-location experience keyed `"exp-{index}"` (id `"exp-{index}"`) with a sole `traffic_allocation:100`
+/// variation (id `"var-{index}"`). SAME shape `makeExperienceConfig` embeds, so the multi builder
+/// composes THIS per index rather than re-inlining the experience literal (SonarQube 3% gate; CPD is
+/// token-based, so one shared fragment holds the diff under it). Joined into `experiences` by
+/// ``makeMultiExperienceConfig``.
+private func experienceFragment(index: Int) -> String {
+    let variation = #"{"id":"var-\#(index)","key":"control","traffic_allocation":100}"#
+    let head = #"{"id":"exp-\#(index)","key":"exp-\#(index)","type":"a/b","#
+    return head + #""audiences":[],"locations":[],"variations":[\#(variation)]}"#
+}
+
+/// A ``ProjectConfig`` with `count` 100%-traffic no-audience experiences keyed `"exp-1".."exp-{count}"`,
+/// in DETERMINISTIC config order — the multi-experience twin of ``makeExperienceConfig`` used by the
+/// Story 3.5 `runExperiences` WIRING suite. Each experience runs for everyone (no audience) and its sole
+/// full-traffic variation covers the whole `0..<10000` bucket space ⇒ buckets EVERY visitor, so a ready
+/// SDK resolves `runExperiences()` to EXACTLY `count` variations with `experienceKey`s `["exp-1", …]` in
+/// order — which is why the wiring tests assert a concrete count + order. Composes
+/// ``experienceFragment(index:)`` per index into ONE envelope (the envelope literal written ONCE, never
+/// duplicated per experience); shared `account_id`/`project.id` match ``makeExperienceConfig``. `throws`
+/// only on malformed JSON (`ProjectConfig.init(from:)` degrades per-field, so this shape never throws).
+func makeMultiExperienceConfig(count: Int) throws -> ProjectConfig {
+    let experiences = (1...count).map(experienceFragment(index:)).joined(separator: ",")
+    let envelope = #"{"account_id":"acc-run","project":{"id":"proj-run"},"experiences":[\#(experiences)]}"#
     return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
 }
 
