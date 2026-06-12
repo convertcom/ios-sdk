@@ -337,23 +337,27 @@ struct ProjectConfigTests {
         #expect(config.goal(forKey: "no-such") == nil, "an unmatched goal key must miss to nil")
     }
 
-    /// Crash-safety: a goal whose wire `type` discriminator is UNKNOWN degrades to the `.sentinel`
-    /// arm (the SDK does not recognise the discriminator). `goal(forKey:)` MUST NOT crash when such
-    /// a goal sits in the array — a known-type goal alongside it still resolves by key, and a
-    /// miss against the sentinel-laden array still returns `nil` cleanly. (Both goals actually
-    /// decode to `.sentinel`; what this test pins is that the degraded arm never crashes the lookup
-    /// and never blocks resolution of a sibling.)
-    @Test("goal(forKey:) tolerates a sentinel-degraded goal: a sibling resolves, a miss returns nil")
+    /// Crash-safety: `goal(forKey:)` MUST NOT crash when a sentinel-decoded goal sits in the array,
+    /// must still resolve a sibling by key, and must still miss cleanly to `nil` for an absent key.
+    ///
+    /// BOTH goals here decode to `.sentinel`, not just the `type:"totally_unknown_type_xyz"` one: per
+    /// drift D3 EVERY wire goal sentinels (the `"advanced"` discriminator collides with
+    /// `ConfigGoalBase._type: [GoalTypes]` → `typeMismatch` → `SentinelWrapped` falls to `.sentinel`),
+    /// so this test exercises the `.sentinel` payload path TWICE — once with a recognised-but-still-
+    /// sentineled `type`, once with a genuinely unknown `type`. The `.known` arm of `goalBase(from:)`
+    /// is therefore NOT exercised by any current fixture; when D3 is resolved and goals begin decoding
+    /// via `.known`, add a companion test that pins `base(fromKnown:)` (reaching `.value1`).
+    @Test("goal(forKey:) tolerates a sentinel-decoded goal: a sibling resolves, a miss returns nil")
     func goalLookupToleratesSentinelDegradedGoal() throws {
         let config = try Self.goalConfig(
-            ProjectConfigFixtures.goalJSON(id: "g-good", key: "known-goal"),
+            ProjectConfigFixtures.goalJSON(id: "g-good", key: "resolvable-goal"),
             ProjectConfigFixtures.goalJSON(id: "g-degraded", key: "degraded-goal", type: "totally_unknown_type_xyz")
         )
 
-        // The known-type goal still resolves by key with the sentinel-degraded goal present.
+        // A sentineled goal still resolves by its key with another sentineled goal present in the array.
         #expect(
-            config.goal(forKey: "known-goal")?.id == "g-good",
-            "a resolvable goal must survive a sentinel-degraded sibling in the same array"
+            config.goal(forKey: "resolvable-goal")?.id == "g-good",
+            "a resolvable goal must survive a sentinel-decoded sibling in the same array"
         )
         // A key no goal carries still misses to nil — the sentinel element does not crash the scan.
         #expect(

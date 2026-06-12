@@ -362,20 +362,21 @@ public final class ConvertContext: Sendable {
             )
             return
         }
-        let accountId = config.accountId ?? ""
-        let projectId = config.project?.id ?? ""
-        let storeKey = "\(accountId)-\(projectId)-\(visitorId)"
+        // Sticky store key "<accountId>-<projectId>-<visitorId>" (the runExperience key shape).
+        let storeKey = "\(config.accountId ?? "")-\(config.project?.id ?? "")-\(visitorId)"
         let decisions = await decisionStore.bucketingDecisions(forStoreKey: storeKey)
         let bucketingData = decisions.isEmpty ? nil : decisions
+        // Resolve the wire goalId ONCE so the enqueued event and the `.conversion` bus payload share it.
+        let goalId = goal.id ?? ""
         let data = ConversionEventData(
-            goalId: goal.id ?? "",
+            goalId: goalId,
             goalData: goalData?.toEntries(),
             bucketingData: bucketingData
         )
         await eventSink.enqueue(.conversion(data))
         await eventBus.fire(
             .conversion,
-            payload: .conversion(ConversionPayload(goalId: goal.id ?? "", visitorId: visitorId))
+            payload: .conversion(ConversionPayload(goalId: goalId, visitorId: visitorId))
         )
     }
 
