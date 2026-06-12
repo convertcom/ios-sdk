@@ -11,9 +11,16 @@ import Foundation
 /// load/save pair over the existing ``TrackingEvent`` type and stays unaware of the file
 /// location or serialization format.
 public protocol EventQueueStore: Sendable {
-    /// Loads the persisted queue, returning an empty array when nothing is stored.
+    /// Loads the persisted queue, returning an empty array when nothing is stored. A file that
+    /// exists but fails to decode (corruption) is discarded and surfaced as `[]` — never thrown
+    /// (FR51 / NFR13): the SDK degrades to an empty queue rather than crashing on bad bytes.
     func load() async throws -> [TrackingEvent]
 
-    /// Persists the given queue atomically, replacing any prior contents.
-    func save(_ events: [TrackingEvent]) async throws
+    /// Persists the given queue atomically, replacing any prior contents. An empty array is
+    /// equivalent to ``clear()`` (no `[]` JSON file is left behind).
+    func persist(_ events: [TrackingEvent]) async throws
+
+    /// Removes the persisted queue file entirely (equivalent to `persist([])`). Total / no-throw:
+    /// erasing an already-absent queue is a successful no-op.
+    func clear() async throws
 }
