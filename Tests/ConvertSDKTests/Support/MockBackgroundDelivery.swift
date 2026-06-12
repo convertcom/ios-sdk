@@ -58,10 +58,25 @@ actor MockEventUploader: EventUploader {
     private var batches: [[TrackingEvent]] = []
     private var batchAwaiters: [BatchAwaiter] = []
 
-    /// Number of times ``upload(_:)`` was invoked.
+    /// When `true`, ``upload(_:)`` THROWS a transport-style error BEFORE recording the batch — modelling
+    /// a delivery failure so the ``EventQueue``'s flush `catch` re-persists the drained batch to disk
+    /// (Story 5.5 / AC4 re-persist-on-failure). Flipped via ``setShouldFail(_:)``; defaults `false` so the
+    /// common success path is unchanged. Throwing BEFORE the append is deliberate: a failed upload
+    /// delivered NOTHING, so it must NOT bump ``callCount`` / ``uploadedBatches()`` — afterwards the batch
+    /// lives only on disk, exactly as a real transport failure leaves it.
+    private var shouldFail = false
+
+    /// Number of times ``upload(_:)`` SUCCEEDED (a thrown failure does not count — see ``shouldFail``).
     var callCount: Int { batches.count }
 
-    /// The batches passed to each ``upload(_:)`` call, in call order.
+    /// Flips whether ``upload(_:)`` throws (the AC4 re-persist-on-failure driver). An `async` actor
+    /// mutator (matching ``MockConfigFetchService``'s `setLive` idiom): a test calls
+    /// `await uploader.setShouldFail(true)` before the flush whose upload it wants to fail.
+    func setShouldFail(_ value: Bool) {
+        shouldFail = value
+    }
+
+    /// The batches passed to each successful ``upload(_:)`` call, in call order.
     func uploadedBatches() -> [[TrackingEvent]] {
         batches
     }
@@ -79,6 +94,13 @@ actor MockEventUploader: EventUploader {
     }
 
     func upload(_ events: [TrackingEvent]) async throws {
+        // Failure injection (AC4): throw BEFORE recording the batch, so a failed upload delivers nothing
+        // and the EventQueue's flush `catch` re-persists the drained batch to disk. The transport-failure
+        // shape (`URLError(.networkConnectionLost)`) matches what the codebase uses elsewhere for a failed
+        // transport (e.g. `URLSessionHTTPClientTests`'s `stubFailure`).
+        if shouldFail {
+            throw URLError(.networkConnectionLost)
+        }
         batches.append(events)
         // Resume (and drop) every awaiter whose threshold the new count has now reached. Actor
         // isolation is the mutual exclusion, so the continuations resume directly; each is removed as

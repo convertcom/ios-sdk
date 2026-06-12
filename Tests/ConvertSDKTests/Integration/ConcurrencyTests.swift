@@ -1,20 +1,22 @@
 // Tests/ConvertSDKTests/Integration/ConcurrencyTests.swift
 //
 // FR70 concurrency integration suite (Epic 5 / Story 5 — full-chain payload structure +
-// concurrency staging). Proves the EventQueue's exactly-once delivery contract under a
-// foreground-flush ↔ background-drain race, and the re-persist-on-failure durable fallback (AC4).
-// Drives the REAL `EventQueue` over a temp-file `CoordinatedFileEventQueueStore` through the shared
-// T0 factory `makeQueueWithTempFileAndUploader()` (TestFixtures.swift); never constructs the queue
-// inline (SonarQube 3% new-duplicated-lines gate — the single construction path lives in that
-// factory).
+// concurrency staging). Proves the EventQueue's exactly-once delivery contract under a concurrent
+// `drain()` race, and the re-persist-on-failure durable fallback (AC4). Drives the REAL `EventQueue`
+// over a temp-file `CoordinatedFileEventQueueStore` through the shared T0 factory
+// `makeQueueWithTempFileAndUploader()` (TestFixtures.swift); never constructs the queue inline
+// (SonarQube 3% new-duplicated-lines gate — the single construction path lives in that factory).
 //
-// ── RED-phase state ─────────────────────────────────────────────────────────────────────────────
-// `exactlyOnceUnderConcurrentDrain` (item 1) compiles TODAY: it uses only existing APIs
-// (`enqueue`/`drain`, `withTaskGroup`, JSON identity read-back). `rePersistsBatchOnUploadFailure`
-// (item 2) is the RED-making reference: it calls `await sut.uploader.setShouldFail(true)`, a
-// failure-injection mutator that does NOT yet exist on `MockEventUploader` (the mock currently ALWAYS
-// succeeds — verified in MockBackgroundDelivery.swift). GREEN adds that one `async` mutator plus the
-// error it throws (see the comment on the failure test). This file touches NO Sources/.
+// ── Exactly-once is asserted CROSS-SURFACE ───────────────────────────────────────────────────────
+// FR70 is "every event delivered exactly once across EVERY consumer". A populated `EventQueue` can
+// hand an event to two surfaces: the `uploader` (the size-flush path — `uploadedBatches()`) and a
+// manual `drain()` result. `exactlyOnceUnderConcurrentDrain` unions the experienceIds from BOTH the
+// uploader's batches AND every drain (the two racing drains + the post-race tail) and asserts each id
+// appears EXACTLY once across that whole union — so an event delivered to one surface but missed by
+// another is caught, never producing a false-empty union. The drain race uses below-`batchSize` event
+// counts so no detached size-flush Task ever fires (see `raceEventCounts` for the determinism
+// rationale): the two `drain()` callers are then the only populated surface and the race is
+// deterministic. This file touches NO Sources/.
 //
 // ── Identity-derivation choice: ENCODED experienceId (not a bare count) ──────────────────────────
 // The exactly-once contract has TWO halves — no event DUPLICATED, no event LOST. A bare count
@@ -70,21 +72,52 @@ struct ExactlyOnceDeliveryTests {
 
     // MARK: - 1. Exactly-once under a concurrent drain race (FR70)
 
-    /// The event counts the race is proven at. A parameterized argument (NOT two copy-paste N=5 / N=20
-    /// functions — SonarQube 3% CPD gate); a typed `[Int]` keeps the `@Test` argument inference simple,
-    /// mirroring the typed-cases convention in `TrackingEventCodableTests`.
-    static let raceEventCounts = [5, 20]
+    /// The event counts the drain race is proven at — BOTH strictly below ``Defaults/batchSize`` (10).
+    /// A parameterized argument (NOT two copy-paste functions — SonarQube 3% CPD gate); a typed `[Int]`
+    /// keeps the `@Test` argument inference simple, mirroring the typed-cases convention in
+    /// `TrackingEventCodableTests`.
+    ///
+    /// ── Why below `batchSize`, not `[5, 20]` (the DETERMINISM constraint) ─────────────────────────
+    /// `EventQueue.enqueue` launches a DETACHED size flush — `Task { await self.flush() }` — on EVERY
+    /// enqueue once `buffer.count >= batchSize` (verified in EventQueue.swift `enqueue`). For an N ≥ 10
+    /// (e.g. 20) that is up to N − 9 detached flush Tasks (enqueue #10…#N each re-fire, since launching
+    /// the Task does NOT synchronously clear the buffer), and the queue retains NO handle to any of them
+    /// (unlike `timerTask`). Each runs `drain()` into a task-local batch then parks at `uploader.upload`.
+    /// There is therefore NO happens-before for "all size-flush Tasks have settled": an extra `flush()`
+    /// only quiesces the queue's surfaces — it cannot await a detached Task already parked at `upload`
+    /// with events drained into its locals — and `waitForBatchCount(K)` needs a FIXED K, but the number
+    /// of non-empty delivered batches is timing-dependent (one batch of N, or several splits, plus empty
+    /// no-op flushes). Reading `uploadedBatches()` while those Tasks may be in flight is inherently racy,
+    /// and the queue is production (no Sources/ change) so no join point can be added. Keeping BOTH N
+    /// below `batchSize` means ZERO size-flush Tasks ever launch, so the two manual `drain()` callers are
+    /// the only delivery surface and the race is DETERMINISTIC. 9 is the max below-threshold value, so the
+    /// larger case still exercises a full-but-not-flushing buffer right at the size-trigger boundary.
+    /// (The > `batchSize` auto-flush exactly-once path is covered DETERMINISTICALLY by the core suite's
+    /// `EventQueueTests` Scenario 5 + Scenario 12, where a KNOWN upload count makes the uploader-side
+    /// union awaitable via `awaitUploadCount`; it cannot be made deterministic from this drain-race seam.)
+    static let raceEventCounts = [5, 9]
 
-    /// FR70 — two concurrent `drain()` callers racing the SAME populated queue deliver every enqueued
-    /// event EXACTLY once: their union has no duplicate and loses nothing.
+    /// FR70 — every enqueued event is delivered EXACTLY once across the union of ALL delivery surfaces
+    /// while two `drain()` callers race the SAME populated queue: no duplicate, nothing lost.
     ///
     /// Enqueues N bucketing entries with DISTINCT experienceIds (`"exp-0"…"exp-(N-1)"`) for ONE visitor,
     /// then fires two `drain()` callers concurrently via `withTaskGroup`. `drain()` reads+clears both
     /// the disk and the in-memory buffer in ONE actor step (verified in EventQueue.drain), so actor
-    /// isolation makes one caller win the whole batch and the other observe `[]` — the union is exactly
-    /// the N enqueued ids with no repeat. That atomicity IS the exactly-once property under concurrency.
-    /// Uses only existing APIs, so this test COMPILES in RED (only item 2 is RED).
-    @Test("concurrent drain callers deliver every event exactly once", arguments: raceEventCounts)
+    /// isolation makes one caller win the whole batch and the other observe `[]`.
+    ///
+    /// ── Exactly-once is asserted CROSS-SURFACE (FR70's true contract) ─────────────────────────────
+    /// FR70 is "exactly once across EVERY consumer", not just across the two drains. The two delivery
+    /// surfaces a populated `EventQueue` can hand an event to are (1) the `uploader` (the size-flush
+    /// path — `uploadedBatches()`) and (2) a manual `drain()` result. So the assertion unions the
+    /// experienceIds from ALL of them — `sut.uploader.uploadedBatches()` (flattened), both racing drain
+    /// results, AND the post-race drain — and requires each id to appear EXACTLY once across that whole
+    /// union. With N < `batchSize` (see ``raceEventCounts``) no size flush ever fires, so the uploader
+    /// surface is empty here and the two drains carry everything; including the uploader in the union
+    /// anyway makes the check cross-surface-COMPLETE by construction — an event that ever leaked to the
+    /// uploader (e.g. if the size trigger fired) would be COUNTED, never silently dropped, so the
+    /// "delivered to the uploader, missed by the drains" failure mode that an N ≥ `batchSize` parameter
+    /// would hit is caught rather than producing a false empty union.
+    @Test("concurrent drain callers deliver every event exactly once across all surfaces", arguments: raceEventCounts)
     func exactlyOnceUnderConcurrentDrain(eventCount: Int) async {
         let sut = await makeQueueWithTempFileAndUploader()
         defer { try? FileManager.default.removeItem(at: sut.url) }
@@ -110,19 +143,32 @@ struct ExactlyOnceDeliveryTests {
             }
         }
 
-        // The FR70 invariant: across the union of BOTH drain results, every enqueued event appears
-        // EXACTLY once. The multiset of delivered experienceIds must (a) have length == N — none lost,
-        // none extra — and (b) collapse to the full distinct set — no id delivered twice.
-        let deliveredIds = Self.experienceIds(in: results.flatMap { $0 })
-        let expectedIds = Set((0..<eventCount).map { "exp-\($0)" })
-        #expect(deliveredIds.count == eventCount, "union must total N events — none lost, none duplicated")
-        #expect(Set(deliveredIds) == expectedIds, "union must be the full distinct id set — no duplicate, no loss")
-        #expect(Set(deliveredIds).count == deliveredIds.count, "no experienceId delivered more than once")
-
-        // A SECOND drain after the race returns nothing — disk + buffer were cleared atomically, so no
-        // entry is ever drained a third time (the exactly-once tail).
+        // A drain after the race returns nothing — disk + buffer were cleared atomically by whichever
+        // racing drain won, so no entry is ever drained again (the exactly-once tail). Captured here as a
+        // THIRD delivery surface (empty in the steady case) so the union below is complete.
         let afterRace = await sut.queue.drain()
         #expect(afterRace.isEmpty, "both surfaces cleared atomically — a later drain yields nothing")
+
+        // The FR70 invariant is exactly-once across EVERY delivery surface. Gather the delivered
+        // experienceIds from ALL of them via the single `experienceIds(in:)` helper (one JSON walk, no
+        // duplicated read-back — SonarQube 3% CPD gate) and concatenate the multisets:
+        //   1. the uploader's batches (the size-flush path) — empty here since N < batchSize, but unioned
+        //      so any event that ever reached the uploader is counted, never silently lost;
+        //   2. both racing drain results;
+        //   3. the post-race drain (the exactly-once tail).
+        let uploaderBatches = await sut.uploader.uploadedBatches()
+        let deliveredIds =
+            Self.experienceIds(in: uploaderBatches.flatMap { $0 })
+            + Self.experienceIds(in: results.flatMap { $0 })
+            + Self.experienceIds(in: afterRace)
+        let expectedIds = Set((0..<eventCount).map { "exp-\($0)" })
+        // (a) the multiset totals N — none lost, none extra; (b) it collapses to the full distinct set —
+        // every id present; (c) the set count equals the array count — no id delivered on TWO surfaces
+        // (the key cross-surface exactly-once check: an event must not appear in BOTH an uploader batch
+        // and a drain, nor be drained twice).
+        #expect(deliveredIds.count == eventCount, "union across all surfaces must total N — none lost, none duplicated")
+        #expect(Set(deliveredIds) == expectedIds, "union must be the full distinct id set — no duplicate, no loss")
+        #expect(Set(deliveredIds).count == deliveredIds.count, "no experienceId delivered on more than one surface")
     }
 
     // MARK: - 2. Re-persist-on-failure via the real flush() path (AC4)
