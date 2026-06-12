@@ -6,6 +6,10 @@ import Foundation
 
 /// Log severity levels, ordered from most verbose (`trace`) to fully muted (`silent`).
 ///
+/// ```swift
+/// let config = ConvertConfiguration(sdkKey: "your-sdk-key", logLevel: .debug)
+/// ```
+///
 /// `Comparable` compares by *severity*: `trace < debug < info < warn < error < silent`.
 /// A logger configured at a given level emits messages whose level is `>=` the configured
 /// threshold. The default ship level is ``warn`` — production builds suppress `trace`,

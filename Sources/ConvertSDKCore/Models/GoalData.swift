@@ -87,6 +87,12 @@ public enum GoalDataValue: Codable, Sendable {
 }
 
 /// Convenience map form of goal data, keyed by recognised metric key.
+///
+/// ```swift
+/// // given a ready `context`
+/// let data: GoalData = [.amount: .double(49.99), .productsCount: .double(2)]
+/// await context.trackConversion("purchase-goal", goalData: data)
+/// ```
 public typealias GoalData = [GoalDataKey: GoalDataValue]
 
 /// The array-of-`{key, value}` wire element form of a single goal metric.

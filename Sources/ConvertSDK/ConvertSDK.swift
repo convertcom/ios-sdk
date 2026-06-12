@@ -16,6 +16,12 @@ import Foundation
 
 /// The public entry point and handle for the Convert iOS SDK.
 ///
+/// ```swift
+/// let sdk = ConvertSDK(configuration: ConvertConfiguration(sdkKey: "your-sdk-key"))
+/// try await sdk.ready()                 // suspends until config is available
+/// let context = sdk.createContext()     // visitorId optional → persistent auto-UUID
+/// ```
+///
 /// Constructed synchronously (the initializer never blocks): config loading runs in a
 /// detached `Task`, and `ready()` suspends until that load resolves — successfully, degraded
 /// (transient network failure), or with an unrecoverable configuration error. The handle is a
@@ -444,6 +450,10 @@ public final class ConvertSDK: Sendable {
     /// `configProvider` to the internal init makes it build the real ``ConfigFetchService``
     /// (cache-load → live-fetch), so this path reads the on-disk cache then refreshes over the
     /// network, resolving `ready()` degraded only when both are unavailable.
+    ///
+    /// ```swift
+    /// let sdk = ConvertSDK(configuration: ConvertConfiguration(sdkKey: "your-sdk-key"))
+    /// ```
     /// - Parameter configuration: The SDK configuration.
     public convenience init(configuration: ConvertConfiguration) {
         // Pass `configProvider: nil` explicitly: it disambiguates this call to the internal
@@ -471,6 +481,11 @@ public final class ConvertSDK: Sendable {
     /// ``ConvertError`` only on an unrecoverable configuration error (empty SDK key, or
     /// empty/invalid direct-data). A transient network failure does NOT throw — the SDK
     /// resolves degraded. Latches: once resolved, subsequent calls return immediately.
+    ///
+    /// ```swift
+    /// // given a constructed `sdk`
+    /// try await sdk.ready()   // suspends until the first config load resolves
+    /// ```
     public func ready() async throws {
         try await configStore.waitForReady()
     }
@@ -501,6 +516,11 @@ public final class ConvertSDK: Sendable {
 
     /// Subscribes `callback` to `event` on the SDK's event bus. Returns a token to pass to
     /// ``off(_:)`` to cancel. Forwards directly to the shared ``EventBus``.
+    ///
+    /// ```swift
+    /// // given a constructed `sdk`
+    /// let token = await sdk.on(.ready) { _ in print("SDK is ready") }
+    /// ```
     public func on(
         _ event: SystemEvent,
         callback: @escaping @Sendable (EventPayloadValue) -> Void
@@ -510,12 +530,23 @@ public final class ConvertSDK: Sendable {
 
     /// Cancels the subscription identified by `token`. Idempotent. Forwards to the shared
     /// ``EventBus``.
+    ///
+    /// ```swift
+    /// // given a `token` from `on(_:callback:)`
+    /// await sdk.off(token)
+    /// ```
     public func off(_ token: EventListenerToken) async {
         await eventBus.off(token)
     }
 
     /// Creates a ``ConvertContext`` bound to this SDK. Synchronous and non-blocking: a context
     /// can be created before `ready()` resolves (it does not wait on config load).
+    ///
+    /// ```swift
+    /// // given a constructed `sdk`
+    /// let context = sdk.createContext()                       // anonymous, auto-UUID
+    /// let known = sdk.createContext(visitorId: "user-42", attributes: ["plan": "pro"])
+    /// ```
     ///
     /// The effective visitor ID is resolved NOW through `VisitorContextManager`: an explicit
     /// `visitorId` is returned verbatim (no store access); otherwise the injected

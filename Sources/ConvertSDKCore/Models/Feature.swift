@@ -96,6 +96,12 @@ public enum FeatureVariable: Codable, Sendable, Equatable {
 }
 
 /// A feature flag resolved for a visitor, carrying its status and typed variables.
+///
+/// ```swift
+/// // given a ready `context`
+/// let feature = await context.runFeature("new-checkout")
+/// if feature.status == .enabled { /* the feature is on for this visitor */ }
+/// ```
 public struct Feature: Codable, Sendable, Equatable {
     /// Stable identifier of the feature.
     public let id: String
@@ -132,6 +138,11 @@ public struct Feature: Codable, Sendable, Equatable {
     }
 
     /// Non-throwing typed accessor for a feature variable (AOD-6 — never throws).
+    ///
+    /// ```swift
+    /// // given a resolved `feature`
+    /// let color = feature.variable("buttonColor", as: String.self) ?? "blue"
+    /// ```
     ///
     /// Returns `nil` when the key is unknown, or when the stored case's associated value
     /// is not of the requested type `T`. For `.json`, the associated `Data` is returned

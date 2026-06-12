@@ -14,6 +14,14 @@ import Foundation
 
 /// A visitor-scoped handle for running experiences/features and tracking conversions.
 ///
+/// ```swift
+/// // given a ready `sdk`
+/// let context = sdk.createContext()
+/// if let variation = await context.runExperience("pricing-test") {
+///     print("Variation \(variation.key)")
+/// }
+/// ```
+///
 /// Story 2.2 ships the public surface as a stub: every decisioning method returns its DEGRADED
 /// value and never throws (AOD-6 — the public API never surfaces a thrown error to callers), so an
 /// integration compiles and runs against the final signatures before the Epic 3–4 engines land.
@@ -172,6 +180,13 @@ public final class ConvertContext: Sendable {
 
     /// Runs one experience and returns the bucketed ``Variation``, or `nil` when none applies.
     ///
+    /// ```swift
+    /// // given a ready `context`
+    /// if let variation = await context.runExperience("pricing-test") {
+    ///     print("Variation \(variation.key)")   // switch your UI on the key
+    /// }
+    /// ```
+    ///
     /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready,
     /// or a degraded load that resolved with no config) short-circuits to `nil` WITHOUT touching the
     /// manager (AC10 / AOD-6 — the degraded path returns `nil`, never throws). Otherwise delegates to
@@ -264,10 +279,19 @@ public final class ConvertContext: Sendable {
     }
 
     /// Runs every configured experience for this visitor and returns the bucketed ``Variation`` for
-    /// each eligible one, in config order. Reads the SDK's current config snapshot from its
+    /// each eligible one, in config order.
+    ///
+    /// ```swift
+    /// // given a ready `context`
+    /// for variation in await context.runExperiences() {
+    ///     print("\(variation.experienceKey) → \(variation.key)")
+    /// }
+    /// ```
+    ///
+    /// Reads the SDK's current config snapshot from its
     /// ``ConfigStore``; a `nil` snapshot (pre-ready / degraded) returns `[]` WITHOUT touching the
     /// manager (AOD-6 — degraded returns empty, never throws). Otherwise delegates to the injected
-    /// ``ExperienceManager/selectVariations(...)`` bulk path, which evaluates every experience through
+    /// `ExperienceManager`'s bulk path, which evaluates every experience through
     /// the full single-experience pipeline (sticky /
     /// audience / location / bucket / persist / event) and returns only the eligible variations. A thin
     /// bulk twin of ``runExperience(_:enableTracking:)``.
@@ -307,6 +331,12 @@ public final class ConvertContext: Sendable {
 
     /// Resolves one feature flag and returns its ``Feature`` — non-optional by contract, so
     /// the degraded answer is a DISABLED feature (never a throw, AOD-6).
+    ///
+    /// ```swift
+    /// // given a ready `context`
+    /// let feature = await context.runFeature("new-checkout")
+    /// if feature.status == .enabled { /* show the new checkout */ }
+    /// ```
     ///
     /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready,
     /// or a degraded load that resolved with no config) short-circuits to ``Feature/disabled(key:)``
@@ -358,6 +388,13 @@ public final class ConvertContext: Sendable {
 
     /// Resolves every feature in the config and returns its ``Feature``, in config order.
     ///
+    /// ```swift
+    /// // given a ready `context`
+    /// for feature in await context.runFeatures() where feature.status == .enabled {
+    ///     print("enabled: \(feature.key)")
+    /// }
+    /// ```
+    ///
     /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready /
     /// degraded) returns `[]` WITHOUT touching the manager (AOD-6 — degraded returns empty, never throws),
     /// the feature twin of ``runExperiences(enableTracking:)``. Otherwise delegates to the injected
@@ -391,6 +428,11 @@ public final class ConvertContext: Sendable {
 
     /// Tracks a conversion for `goalKey`, optionally carrying per-goal ``GoalData`` metrics, with a
     /// per-visitor dedup gate and an opt-in multiple-transactions override.
+    ///
+    /// ```swift
+    /// // given a ready `context`
+    /// await context.trackConversion("purchase-goal", goalData: [.amount: .double(49.99)])
+    /// ```
     ///
     /// `async` but NEVER throws (AOD-6). Two degraded inputs each WARN and DROP (enqueuing nothing),
     /// returning BEFORE the dedup gate: no usable config snapshot (pre-ready / degraded load) → WARN
@@ -512,6 +554,11 @@ public final class ConvertContext: Sendable {
 
     /// Sets default visitor segments (merge semantics) and fires ``SystemEvent/segments`` once.
     ///
+    /// ```swift
+    /// // given a ready `context`
+    /// await context.setDefaultSegments(["country": "US", "visitorType": "returning"])
+    /// ```
+    ///
     /// `async` but NEVER throws (AOD-6). Delegates the merge to ``SegmentsManager`` (each of the six
     /// recognised string keys overlays the visitor's existing segments; unknown keys WARN and are
     /// ignored), reads the resolved ``Segments`` back from the shared `decisionStore`, and fires
@@ -540,6 +587,11 @@ public final class ConvertContext: Sendable {
     }
 
     /// Appends custom segment identifiers for the visitor and fires ``SystemEvent/segments`` once.
+    ///
+    /// ```swift
+    /// // given a ready `context`
+    /// await context.setCustomSegments(["vip", "beta-tester"])
+    /// ```
     ///
     /// `async` but NEVER throws (AOD-6). Delegates the append to ``SegmentsManager`` (the ids are added to
     /// the visitor's existing `customSegments`; backend owns dedup, matching JS), reads the resolved
