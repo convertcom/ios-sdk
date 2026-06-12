@@ -44,4 +44,28 @@ struct ClockTests {
         // hanging. Elapsed time is intentionally NOT measured (NFR21).
         #expect(Bool(true))
     }
+
+    // MARK: Scenario 3 — sleep clamps a pathological value instead of overflowing
+
+    @Test("sleep clamps a pathological millisecond value instead of overflowing")
+    func systemClockSleepClampsHugeValueWithoutOverflow() async {
+        // `Int.max` ms would make `UInt64(...) * 1_000_000` overflow UInt64 and TRAP — and that
+        // multiply runs eagerly, BEFORE `Task.sleep` ever suspends. So the unsafe path crashes the
+        // process regardless of cancellation. We therefore cannot (and must not) await this sleep
+        // for real: clamped, it would suspend for the ~292-year ceiling. Instead we wrap it in a
+        // Task, cancel immediately, and await the cancelled task — `Task.sleep` throws on
+        // cancellation, `try?` swallows it, so a CLAMPED implementation returns promptly with no
+        // wall-clock wait. The overflow arithmetic still executes before the suspension point, so:
+        //   - clamped   → this returns and we reach the assertion (GREEN),
+        //   - unclamped → the eager multiply traps and crashes the test process (no clean RED).
+        // Passing GREEN proves the clamp makes the arithmetic overflow-safe. Deterministic; no
+        // wall-clock dependency (NFR21).
+        let sut = makeSut()
+        let task = Task { await sut.sleep(milliseconds: Int.max) }
+        task.cancel()
+        await task.value
+        // Reaching here proves `sut.sleep(milliseconds: Int.max)` computed its nanosecond delay
+        // without overflowing — the clamp held. Without it, the line above would have trapped.
+        #expect(Bool(true))
+    }
 }
