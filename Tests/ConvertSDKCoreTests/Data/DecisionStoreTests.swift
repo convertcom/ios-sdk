@@ -195,6 +195,65 @@ struct DecisionStoreTests {
         #expect(decoded.bucketing["exp-1"] == "var-a")
     }
 
+    // MARK: - Backward-compatible decode (AC6, bd-pi8)
+
+    /// RED-phase contract for AC6: a persisted `StoreData` JSON that PRE-DATES the `segments` and
+    /// `locations` fields (written by an SDK ≤ 4.4) must decode WITHOUT throwing, defaulting the
+    /// absent fields to `Segments()` and `[:]`. `StoreData` currently uses SYNTHESIZED Codable, so
+    /// its decoder calls `decode(_:forKey:)` (not `decodeIfPresent`) for the non-optional `segments`
+    /// and `locations` — meaning JSON missing those keys throws `keyNotFound` TODAY. These two tests
+    /// MUST FAIL (decode throws) until BE-2 adds a backward-compatible `init(from:)`.
+    ///
+    /// One decode call site for the two pre-4.4 fixtures so neither test re-inlines the decoder
+    /// (SonarQube CPD is token-based — this keeps the two cases from sharing a duplicate block).
+    private func decodeStoreData(fromJSON json: String) throws -> StoreData {
+        try JSONDecoder().decode(StoreData.self, from: Data(json.utf8))
+    }
+
+    @Test("StoreData decodes pre-4.4 JSON missing segments and locations (backward compat)")
+    func storeDataDecodesPre44JSONMissingSegmentsAndLocations() throws {
+        // No `segments` key, no `locations` key — the on-disk shape an SDK ≤ 4.4 persisted.
+        let decoded = try decodeStoreData(fromJSON: #"{"bucketing":{},"goalTriggered":{}}"#)
+
+        #expect(decoded.bucketing.isEmpty)
+        #expect(decoded.goalTriggered.isEmpty)
+        #expect(decoded.segments == Segments())
+        #expect(decoded.locations.isEmpty)
+    }
+
+    @Test("StoreData decodes pre-4.4 JSON with bucketing+goalTriggered data, missing segments")
+    func storeDataDecodesPre44JSONWithDataMissingSegments() throws {
+        // Pre-4.4 JSON carrying real bucketing + goalTriggered data, still no segments/locations.
+        let decoded = try decodeStoreData(
+            fromJSON: #"{"bucketing":{"exp-1":"var-a"},"goalTriggered":{"g-1":true}}"#
+        )
+
+        #expect(decoded.bucketing["exp-1"] == "var-a")
+        #expect(decoded.goalTriggered["g-1"] == true)
+        #expect(decoded.segments == Segments())
+        #expect(decoded.locations.isEmpty)
+    }
+
+    @Test("StoreData full round-trip preserves segments and locations")
+    func storeDataRoundTripPreservesSegmentsAndLocations() throws {
+        // Construct directly: this case needs non-default segments + locations, which the
+        // `makeStoreData(bucketing:)` factory cannot express (it seeds only bucketing).
+        let original = StoreData(
+            bucketing: ["exp-1": "var-a"],
+            goalTriggered: ["g-1": true],
+            segments: Segments(country: "DE"),
+            locations: ["loc-1": "active"]
+        )
+
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(StoreData.self, from: encoded)
+
+        #expect(decoded.bucketing["exp-1"] == "var-a")
+        #expect(decoded.goalTriggered["g-1"] == true)
+        #expect(decoded.segments.country == "DE")
+        #expect(decoded.locations["loc-1"] == "active")
+    }
+
     // MARK: - Goal dedup (Story 4.3)
 
     /// RED-phase contract for the NEW `markGoalTriggeredIfNeeded(goalId:forVisitorKey:)` (does NOT
