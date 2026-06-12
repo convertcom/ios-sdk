@@ -70,6 +70,30 @@ struct DecisionStoreTests {
         #expect(sticky == nil)
     }
 
+    // MARK: bucketingDecisions(forStoreKey:)
+
+    /// RED-phase contract for the NEW `bucketingDecisions(forStoreKey:)` accessor (does NOT exist
+    /// yet): `public func bucketingDecisions(forStoreKey storeKey: String) -> [String: String]`.
+    /// It returns the whole `store[storeKey].bucketing` map (experienceId → variationId) for a
+    /// visitor, or `[:]` when the store holds no entry for that key. The conversion-tracking path
+    /// reads it to populate `ConversionEventData.bucketingData`. It is read-only and does NOT bump
+    /// LRU recency (distinct from `stickyVariationId`, which touches) — but recency is the
+    /// `lruReadUpdatesRecency` test's concern; here we pin the returned MAP for both a seeded key
+    /// and an absent one in one shared-setup test (no copy-paste — SonarQube CPD is token-based).
+    @Test("bucketingDecisions returns the full per-visitor map, or empty for an unknown storeKey")
+    func bucketingDecisionsReturnsFullMapOrEmpty() async {
+        let store = makeDecisionStore()
+
+        await store.saveDecision(variationId: "var-1", experienceId: "exp-1", storeKey: "acc-proj-v1")
+        await store.saveDecision(variationId: "var-2", experienceId: "exp-2", storeKey: "acc-proj-v1")
+
+        let decisions = await store.bucketingDecisions(forStoreKey: "acc-proj-v1")
+        #expect(decisions == ["exp-1": "var-1", "exp-2": "var-2"], "must return the whole bucketing map")
+
+        let absent = await store.bucketingDecisions(forStoreKey: "acc-proj-none")
+        #expect(absent == [:], "an unknown storeKey must return an empty map, not nil/crash")
+    }
+
     // MARK: LRU eviction
 
     @Test("at capacity, the oldest-accessed storeKey is evicted on a new insert")

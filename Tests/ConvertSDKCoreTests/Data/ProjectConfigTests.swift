@@ -287,4 +287,78 @@ struct ProjectConfigTests {
         #expect(config.audience(id: "missing") == nil, "unknown audience id must miss to nil")
         #expect(config.location(id: "missing") == nil, "unknown location id must miss to nil")
     }
+
+    // MARK: - goal(forKey:) returns the embedded ConfigGoalBase (Epic 4 / Story 2)
+    //
+    // RED-phase contract for the NEW `goal(forKey:)` accessor (does NOT exist yet):
+    //
+    //     public func goal(forKey key: String) -> Components.Schemas.ConfigGoalBase?
+    //
+    // The conversion-tracking path resolves a caller's goalKey → the wire goalId by looking the
+    // goal up by `key` and reading the embedded base's `id`. These tests pin that lookup AND the
+    // crash-safety the sentinel-degraded goal arm demands.
+    //
+    // ── A note on the decode reality these tests are written against (probed, not assumed) ────
+    // On the wire EVERY goal carries `type` as a bare String discriminator, which makes
+    // `ConfigGoalOrSentinel` land on `.sentinel` (the embedded `ConfigGoalBase._type` is
+    // `[GoalTypes]`, so the String collides → `typeMismatch` → sentinel; this is drift D3). The
+    // `.sentinel` payload retains every field (`id`/`key`/`type`) as `JSONValue` — VERIFIED by an
+    // empirical decode probe. There is therefore NO goal that decodes to the `.known` arm from any
+    // production wire shape, so `goal(forKey:)` MUST resolve the base from the retained payload; a
+    // reader that only inspects `.known` arms would return nil for every real goal and silently
+    // break goalKey→goalId resolution. (See the matching note in `ProjectConfigFixtures.goalJSON`.)
+
+    /// Decodes a `ProjectConfig` from the goal fragments alone (no other arrays). One splice point
+    /// so neither goal test re-inlines the `[ <goal>, … ]` envelope (SonarQube 3% gate; CPD is
+    /// token-based — reuse, not renaming, holds the diff under the threshold).
+    static func goalConfig(_ goals: String...) throws -> ProjectConfig {
+        try ProjectConfigFixtures.goalsConfig(goalsJSON: "[" + goals.joined(separator: ",") + "]")
+    }
+
+    /// `goal(forKey:)` resolves a goal by its `key` and exposes the embedded `ConfigGoalBase` —
+    /// `id` (the wire goalId the conversion path emits) and `key` — and misses to `nil` for a key
+    /// no goal carries. Two goals prove the lookup discriminates by key rather than returning the
+    /// first goal unconditionally.
+    @Test("goal(forKey:) returns the base (id + key) for a known key, nil for an unknown one")
+    func goalReturnsBaseForKnownKeyNilForUnknown() throws {
+        let config = try Self.goalConfig(
+            ProjectConfigFixtures.goalJSON(id: "g-1", key: "primary"),
+            ProjectConfigFixtures.goalJSON(id: "g-2", key: "secondary")
+        )
+
+        let base = try #require(
+            config.goal(forKey: "primary"),
+            "a goal present by key must resolve to its embedded ConfigGoalBase"
+        )
+        #expect(base.id == "g-1", "the resolved base must carry the wire goalId")
+        #expect(base.key == "primary", "the resolved base must carry the looked-up key")
+        // A second key resolves independently — proves the lookup keys on `key`, not array position.
+        #expect(config.goal(forKey: "secondary")?.id == "g-2", "the other goal must resolve by its key")
+        #expect(config.goal(forKey: "no-such") == nil, "an unmatched goal key must miss to nil")
+    }
+
+    /// Crash-safety: a goal whose wire `type` discriminator is UNKNOWN degrades to the `.sentinel`
+    /// arm (the SDK does not recognise the discriminator). `goal(forKey:)` MUST NOT crash when such
+    /// a goal sits in the array — a known-type goal alongside it still resolves by key, and a
+    /// miss against the sentinel-laden array still returns `nil` cleanly. (Both goals actually
+    /// decode to `.sentinel`; what this test pins is that the degraded arm never crashes the lookup
+    /// and never blocks resolution of a sibling.)
+    @Test("goal(forKey:) tolerates a sentinel-degraded goal: a sibling resolves, a miss returns nil")
+    func goalLookupToleratesSentinelDegradedGoal() throws {
+        let config = try Self.goalConfig(
+            ProjectConfigFixtures.goalJSON(id: "g-good", key: "known-goal"),
+            ProjectConfigFixtures.goalJSON(id: "g-degraded", key: "degraded-goal", type: "totally_unknown_type_xyz")
+        )
+
+        // The known-type goal still resolves by key with the sentinel-degraded goal present.
+        #expect(
+            config.goal(forKey: "known-goal")?.id == "g-good",
+            "a resolvable goal must survive a sentinel-degraded sibling in the same array"
+        )
+        // A key no goal carries still misses to nil — the sentinel element does not crash the scan.
+        #expect(
+            config.goal(forKey: "absent-key") == nil,
+            "a miss must return nil even with a sentinel-degraded goal in the array, never crash"
+        )
+    }
 }
