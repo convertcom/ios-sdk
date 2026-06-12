@@ -12,9 +12,10 @@ import Foundation
 ///
 /// Lifecycle the delegate closes (per Story 5.3):
 /// - On a **2xx** upload outcome (a 2xx `HTTPURLResponse` on the task AND no transport error) the
-///   batch was accepted by the server, so the durable on-disk queue is cleared exactly once, an
-///   ``SystemEvent/apiQueueReleased`` event is fired (carrying the delivered batch's event count),
-///   and the stored background completion handler is invoked.
+///   batch was accepted by the server, so the durable on-disk queue is cleared exactly once and an
+///   ``SystemEvent/apiQueueReleased`` event is fired (carrying the delivered batch's event count).
+///   The stored background completion handler is NOT invoked on this per-task outcome — see the
+///   `urlSessionDidFinishEvents` bullet below for why it fires once from there per Apple's contract.
 /// - On a **non-2xx** HTTP response OR a **transport error** the durable on-disk file is the retry
 ///   record and MUST survive for the next launch: the queue is left intact (no `clear()`).
 /// - On `urlSessionDidFinishEvents(forBackgroundURLSession:)` (the system's signal that all events
@@ -91,8 +92,8 @@ final class BackgroundUploadDelegate:
         // on-disk file is the retry record — do NOT clear.
         guard (200..<300).contains(status) else { return }
 
-        // 2xx happy path: count the delivered events, clear the durable queue exactly once, announce
-        // the released batch, and acknowledge the background completion handler.
+        // 2xx happy path: count the delivered events, clear the durable queue exactly once, and
+        // announce the released batch.
         let events = (try? await store.load()) ?? []
         let eventCount = events.reduce(0) { partial, event in
             partial + event.visitors.reduce(0) { $0 + $1.events.count }
@@ -102,6 +103,10 @@ final class BackgroundUploadDelegate:
             .apiQueueReleased,
             payload: .apiQueueReleased(ApiQueueReleasedPayload(eventCount: eventCount))
         )
-        completionHandlerProvider()?()
+        // The background completion handler is intentionally NOT called here. Per Apple's background-
+        // `URLSession` contract (Story 5.3 AC5) the saved handler must be invoked exactly once, from
+        // `urlSessionDidFinishEvents(forBackgroundURLSession:)`, AFTER all session events are delivered
+        // — not on this per-task `didCompleteWithError` outcome. Calling it here too would double-fire
+        // it (once before all events are processed, once after), violating the contract.
     }
 }

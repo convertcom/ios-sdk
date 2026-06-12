@@ -18,8 +18,9 @@ import Foundation
 //   * `init(store: any EventQueueStore, eventBus: EventBus,
 //          completionHandlerProvider: @escaping () -> (() -> Void)?)`.
 //   * On a 2xx upload outcome (a 2xx `HTTPURLResponse` on the task AND no transport error): calls
-//     `store.clear()`, fires `.apiQueueReleased` on the bus, and invokes the stored completion
-//     handler. The on-disk queue is cleared ONLY on this happy path.
+//     `store.clear()` and fires `.apiQueueReleased` on the bus. The on-disk queue is cleared ONLY on
+//     this happy path. It does NOT invoke the completion handler — per Apple's background-session
+//     contract (AC5) that handler is called exactly once, from `urlSessionDidFinishEvents` (below).
 //   * On a non-2xx HTTP response OR a transport error: does NOT call `store.clear()` — the on-disk
 //     file is the durable record and must survive for the next launch to retry.
 //   * `urlSessionDidFinishEvents(forBackgroundURLSession:)`: invokes the stored completion handler.
@@ -55,6 +56,21 @@ final class StubURLSessionTask: URLSessionTask, @unchecked Sendable {
     }
 
     override var response: URLResponse? { _response }
+}
+
+/// An `actor`-isolated COUNT of how many times the stored background completion handler ran — the
+/// double-invocation detector. Unlike ``CompletionSignal`` (a one-shot "did it fire?" latch), this
+/// must distinguish "fired once" from "fired twice", so it tallies every invocation. Mirrors
+/// `EventQueueTests`' `ReleasedCountRecorder`: an `actor` satisfies the `@Sendable` capture the
+/// handler closure makes with no suppression, and the count is read back after the executor settles.
+private actor InvocationCounter {
+    /// How many times the handler closure ran. Read after settling to assert EXACTLY one invocation.
+    private(set) var count = 0
+
+    /// Records one invocation of the completion handler.
+    func increment() {
+        count += 1
+    }
 }
 
 /// A one-shot continuation handoff a test awaits to learn that the background completion handler
@@ -179,5 +195,64 @@ struct BackgroundUploadDelegateTests {
         delegate.urlSessionDidFinishEvents(forBackgroundURLSession: URLSession(configuration: .default))
 
         await signal.awaitFired()
+    }
+
+    /// The stored background completion handler must be invoked EXACTLY ONCE across a full successful
+    /// upload — Apple's background-`URLSession` contract requires the saved handler be called once,
+    /// from `urlSessionDidFinishEvents(forBackgroundURLSession:)`, after ALL session events have been
+    /// delivered (Story 5.3 AC5). This drives BOTH callback paths a real success hits — the awaitable
+    /// reconcile seam (the 2xx outcome, which fires on `didCompleteWithError`) THEN the finish-events
+    /// signal — through ONE delegate sharing ONE handler, and asserts the handler ran once, not twice.
+    ///
+    /// The handler closure tallies into ``InvocationCounter`` from a hopped `Task`, so the wait
+    /// mirrors `EventQueueTests`' AC8 "fires ONCE" settle: drain the executor until the count reaches
+    /// the expected invocation, then settle a bounded number of extra times so any spurious SECOND
+    /// invocation has every chance to land, and assert the final count is exactly one. No `Task.sleep`.
+    @Test("the background completion handler is invoked exactly once across reconcile + finish-events")
+    func completionHandlerInvokedExactlyOnceAcrossReconcileAndFinishEvents() async {
+        let counter = InvocationCounter()
+        let store = MockEventQueueStore()
+        await store.seed([makeTrackingEvent()])
+        let delegate = makeDelegate(store: store) {
+            Task { await counter.increment() }
+        }
+
+        // Both callback paths a successful background upload triggers, through the one shared handler:
+        // (1) the 2xx reconcile outcome (fires on `didCompleteWithError`), then (2) the finish-events
+        // signal. Under the bug the handler runs in BOTH; the contract is that it runs ONLY in (2).
+        await delegate.handleCompletionForTesting(
+            task: StubURLSessionTask(status: 200, url: Self.endpoint),
+            error: nil
+        )
+        delegate.urlSessionDidFinishEvents(forBackgroundURLSession: URLSession(configuration: .default))
+
+        // Wait for the handler's hopped `Task` to land at least once, then settle the executor a few
+        // more times so a duplicate invocation (the bug) would be observed before asserting exactly one.
+        await settleUntilCount(of: counter, reaches: 1)
+        for _ in 0..<5 { await drainExecutor() }
+        let finalCount = await counter.count
+        #expect(finalCount == 1)
+    }
+
+    // MARK: - Settling helpers (deterministic, no wall-clock wait — NFR21)
+
+    /// Advances BOTH executors one step: a `MainActor` barrier (so a handler that hopped to the main
+    /// thread runs) plus a cooperative `Task.yield()` (so a handler that hopped to the cooperative
+    /// pool runs). Mirrors `EventQueueTests.drainMainActor` + its paired `Task.yield()`: the completion
+    /// handler dispatches `Task { … }` without pinning an executor, so draining both covers either hop.
+    private func drainExecutor() async {
+        await MainActor.run {}
+        await Task.yield()
+    }
+
+    /// Bounded-budget poll that settles the executor until `counter` has recorded at least `target`
+    /// invocations, then returns — a deadlock guard, not a deadline (NFR21: no elapsed-duration is
+    /// asserted). Mirrors `EventQueueTests.awaitReleasedCount`: drain on every iteration so the
+    /// handler's hopped `Task` actually runs before each check.
+    private func settleUntilCount(of counter: InvocationCounter, reaches target: Int) async {
+        for _ in 0..<200 {
+            if await counter.count >= target { return }
+            await drainExecutor()
+        }
     }
 }
