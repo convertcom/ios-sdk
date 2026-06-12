@@ -328,6 +328,44 @@ func makeGoalConfig(
     return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
 }
 
+/// A ``ProjectConfig`` snapshot carrying BOTH a 100%-traffic experience AND a goal under ONE shared
+/// `account_id` / `project.id` — the fixture AC1 of Story 5.4 (dynamic tracking control) needs so a
+/// SINGLE ready SDK can `runExperience(experienceKey)` (buckets the sole full-traffic variation) AND
+/// `trackConversion(goalKey)` (resolves the goal) against the SAME snapshot and the SAME sticky store
+/// key. The two halves are the union of what ``makeExperienceConfig`` and ``makeGoalConfig`` each cover
+/// in isolation: the experience half is one `type:"a/b"`, no-audience/no-location experience whose sole
+/// `traffic_allocation:100` variation covers the entire `0..<10000` bucket space (buckets EVERY visitor
+/// hash, so `runExperience` resolves THIS variation deterministically); the goal half carries `type` as
+/// the bare String `"advanced"` (the D3 drift `makeGoalConfig` documents — it sentinel-decodes and
+/// `goal(forKey:)` reconstructs `id`/`key`/`name`), so the goal is resolvable by key and yields its wire
+/// `id`. The `account_id` / `project.id` are the SHARED ``conversionFixtureAccountId`` /
+/// ``conversionFixtureProjectId`` (NOT `acc-run`/`proj-run`) so BOTH the bucketing store key and the
+/// conversion store key the context computes from `config.accountId` land on ONE well-formed, predictable
+/// `"<accountId>-<projectId>-<visitorId>"` — letting a test seed / observe one decision for both paths.
+///
+/// Assembled in fragments (variation → experience → goal → envelope) so each line stays ≤120 chars and
+/// no experience/goal literal is re-inlined; `throws` only on malformed JSON (`ProjectConfig.init(from:)`
+/// degrades per-field, so this shape never throws). `experienceKey` is what `runExperience(_:)` looks up
+/// and `variationId` the id its resolved variation carries; `goalKey` is what `trackConversion(_:)` looks
+/// up and `goalId` the wire id the resolved goal carries.
+func makeExperienceAndGoalConfig(
+    experienceKey: String,
+    variationId: String,
+    variationKey: String,
+    goalKey: String,
+    goalId: String,
+    experienceId: String = "exp-tt",
+    goalName: String = "Purchase"
+) throws -> ProjectConfig {
+    let variation = #"{"id":"\#(variationId)","key":"\#(variationKey)","traffic_allocation":100}"#
+    let expHead = #"{"id":"\#(experienceId)","key":"\#(experienceKey)","type":"a/b","#
+    let experience = expHead + #""audiences":[],"locations":[],"variations":[\#(variation)]}"#
+    let goal = #"{"id":"\#(goalId)","key":"\#(goalKey)","name":"\#(goalName)","type":"advanced"}"#
+    let ids = #""account_id":"\#(conversionFixtureAccountId)","project":{"id":"\#(conversionFixtureProjectId)"}"#
+    let envelope = #"{\#(ids),"experiences":[\#(experience)],"goals":[\#(goal)]}"#
+    return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
+}
+
 /// Sentinel marking the `live` argument of `makeSchedulerSut(...)` as OMITTED — distinct from an
 /// explicit `live: nil` (which the failure suites pass to force a failing fetch).
 ///
