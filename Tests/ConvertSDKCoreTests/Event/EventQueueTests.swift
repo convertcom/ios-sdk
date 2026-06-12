@@ -20,13 +20,17 @@ import Foundation
 import Testing
 @testable import ConvertSDKCore
 
-/// RED-phase contract for the `EventQueue` actor (Epic 5 / Story 1 — batching + foreground
-/// delivery, FR43 / NFR21 + AC1–AC9).
+/// Contract for the `EventQueue` actor (Epic 5 / Story 1 — batching + foreground delivery,
+/// FR43 / NFR21 + AC1–AC9), EVOLVED by Story 5.2 (on-disk persistence & exactly-once). The
+/// Scenario 1–8 cases below are the FROZEN 5.1 behavioral contract (their observable assertions
+/// are unchanged); Scenario 9–12 add the 5.2 disk behaviors. Where 5.2 changed the MECHANISM the
+/// notes below say so — the 5.1 assertions still hold because the new disk-first `drain()` re-
+/// delivers what the old in-memory re-buffer used to.
 ///
-/// CONTRACT under test (the GREEN-phase implementer MUST satisfy these):
+/// CONTRACT under test:
 /// - `public actor EventQueue` at `Sources/ConvertSDKCore/Event/EventQueue.swift`, conforming
 ///   to ``EventSink`` (so `enqueue(_:for:segments:)` is its inward port).
-/// - Initializer (LOCKED for the impl phase):
+/// - Initializer (Story 5.2 added the NON-defaulted `store:` param; the 5.1 params are unchanged):
 ///     ```
 ///     EventQueue(
 ///         accountId: String,
@@ -36,15 +40,17 @@ import Testing
 ///         uploader: any EventUploader,
 ///         eventBus: EventBus,
 ///         trackingEnabled: Bool = true,
-///         clock: any Clock = SystemClock()
+///         clock: any Clock = SystemClock(),
+///         store: any EventQueueStore        // 5.2 — production injects; tests default it in makeHarness
 ///     )
 ///     ```
-/// - `drain() -> [TrackingEvent]` — assembles the buffered entries into the canonical
-///   `visitors:[{visitorId, segments, events}]` envelope (grouped by visitorId, first-seen
-///   order; `nil` segments → `[:]`) and empties the buffer in ONE actor step. A second
-///   `drain()` returns `[]` (AC1).
-/// - On `upload(_:)` throwing, the drained entries are re-buffered in memory so a later
-///   `drain()` returns them (AC1 re-enqueue-on-failure).
+/// - `drain() async -> [TrackingEvent]` (5.2 made it `async`) — loads the on-disk queue FIRST,
+///   then assembles the buffered entries into the canonical `visitors:[{visitorId, segments,
+///   events}]` envelope (grouped by visitorId, first-seen order; `nil` segments → `[:]`), merges
+///   DISK-FIRST, and clears BOTH the buffer and the on-disk file in ONE actor step. A second
+///   `drain()` returns `[]` (AC1/AC3).
+/// - On `upload(_:)` throwing, the drained batch is re-PERSISTED TO DISK (5.2 — was an in-memory
+///   re-buffer in 5.1) so a later disk-first `drain()` re-delivers it (AC1 durable fallback).
 /// - Size trigger (AC3): the `batchSize`-th enqueue flushes exactly once, carrying `batchSize`
 ///   events; below threshold, zero uploads.
 /// - Interval trigger (AC4): a timer loop sleeps `releaseIntervalMs` via the injected ``Clock``
@@ -230,17 +236,24 @@ struct EventQueueTests {
         #expect(second.isEmpty)
     }
 
-    // MARK: Scenario 2 — a failed upload re-buffers the drained entries (AC1 re-enqueue)
+    // MARK: Scenario 2 — a failed upload persists the drained batch to disk for re-delivery (AC1)
+    //
+    // FROZEN 5.1 assertion, EVOLVED 5.2 mechanism: in 5.1 the drained entries were re-buffered in
+    // memory; in 5.2 the failure path persists the assembled batch to the on-disk store and clears
+    // the buffer, and the new disk-first `drain()` loads it back. The observable outcome the test
+    // asserts (a later `drain()` returns the failed entry) is identical — only the mechanism moved
+    // from memory to disk. The `MockEventQueueStore` defaulted into `makeHarness` is the disk.
 
-    @Test("entries drained for a failed upload are re-buffered and returned by a later drain")
+    @Test("an entry whose upload failed is persisted to disk and returned by a later drain")
     func failedUploadReEnqueuesEntries() async {
         // batchSize 1 makes the lone enqueue trip the size flush; the uploader throws, so the
-        // flushed entry must return to the buffer rather than vanish.
+        // flushed entry must survive (persisted to the store) rather than vanish.
         let harness = makeHarness(batchSize: 1, uploaderShouldFail: true)
         await harness.queue.enqueue(Self.makeBucketingEntry(), for: "v1", segments: nil)
         await awaitUploadCount(harness.uploader, reaches: 1)
 
-        // The upload was attempted (and threw); the entry is back in the buffer for re-delivery.
+        // The upload was attempted (and threw); the entry is now on disk, so the disk-first
+        // `drain()` below re-delivers it (5.2 durable fallback).
         #expect(await harness.uploader.callCount == 1)
         let recovered = await harness.queue.drain()
         #expect(recovered.first?.visitors.first?.events.count == 1)
