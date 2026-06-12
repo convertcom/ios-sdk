@@ -1,99 +1,37 @@
 // Tests/ConvertSDKTests/Support/TestSupportSmokeTests.swift
 //
 // RED-phase smoke test for the T0 test-support additions (Epic 5 / Story 5 — full-chain
-// payload-structure + concurrency staging tests). This file exercises THREE pieces of
-// test-support API that do NOT exist yet, so the test target fails to compile with
-// "cannot find ... in scope" / "type ... has no member ..." until the GREEN step adds them —
-// that compile failure IS the expected RED state for this TDD cycle:
+// payload-structure + concurrency staging tests). This file exercises the two PARALLEL-SAFE
+// fixture-factory pieces of test-support API that do NOT exist yet, so the test target fails to
+// compile with "cannot find ... in scope" / "type ... has no member ..." until the GREEN step adds
+// them — that compile failure IS the expected RED state for this TDD cycle:
 //
-//   1. `URLProtocolStub.recordedRequestCount(for:)` — a per-URL request COUNT accessor added to
-//      `Support/URLProtocolStub.swift` (the existing `recordedRequest(for:)` returns only the LAST
-//      request for a URL; the new accessor returns HOW MANY hit it, lock-guarded + reset() aware).
-//   2. `makeTrackingBatch(events:visitorId:accountId:projectId:)` — a `TestFixtures.swift` factory
+//   1. `makeTrackingBatch(events:visitorId:accountId:projectId:)` — a `TestFixtures.swift` factory
 //      that wraps entries in ONE `Visitor` (segments `[:]`) inside ONE `TrackingEvent`
 //      (`enrichData == false`, `source == "ios-sdk"` are hardcoded by the model's init).
-//   3. `makeQueueWithTempFile()` — a `TestFixtures.swift` factory that builds a REAL `EventQueue`
+//   2. `makeQueueWithTempFile()` — a `TestFixtures.swift` factory that builds a REAL `EventQueue`
 //      over a `CoordinatedFileEventQueueStore` at a UUID-named temp file, plus that temp URL.
 //
 // `MockEventUploader` (the `EventQueue`'s uploader inside `makeQueueWithTempFile`) ALREADY EXISTS in
 // THIS target at `Support/MockBackgroundDelivery.swift` — so GREEN reuses it and need not add one.
 //
-// ── Why `.serialized` for the stub-counter suite ────────────────────────────────────────────────
-// `URLProtocolStub`'s registries (including the new per-URL counter) are PROCESS-GLOBAL. `.serialized`
-// orders cases WITHIN a suite, and this suite is nested in the SAME `.serialized` parent the existing
-// `URLProtocolStubBackedTests` uses so it runs serially RELATIVE TO the other stub-driving suites —
-// otherwise a concurrently-running suite's `reset()` (a global wipe) could clobber this suite's count
-// mid-flight (the cross-suite scheduler flake `URLSessionHTTPClientTests.swift` documents). The
-// fixture-factory suite (#2/#3) holds NO process-global state, so it is left parallel-safe (unnested).
+// ── Why these suites are parallel-safe (no `.serialized`) ───────────────────────────────────────
+// `makeTrackingBatch` and `makeQueueWithTempFile` touch NO process-global state — each
+// `makeQueueWithTempFile` uses its OWN UUID-named temp file — so these cases may run in parallel
+// with everything else.
+//
+// The third T0 addition — `URLProtocolStub.recordedRequestCount(for:)` — DOES drive process-global
+// stub state, so its smoke test (`RecordedRequestCountTests`) lives in
+// `Tests/ConvertSDKTests/Adapters/URLSessionHTTPClientTests.swift`, nested under the one shared
+// `URLProtocolStub-backed` `.serialized` parent alongside the other stub-driving suites. That is the
+// ONLY placement that serializes it RELATIVE TO those suites (two SEPARATE top-level `.serialized`
+// parents still run in PARALLEL, so a sibling suite's `reset()` global wipe would otherwise clobber
+// its tally mid-flight). See that file's header for the cross-suite serialization mechanism.
 import Testing
 import Foundation
 @testable import ConvertSDK
 
-// MARK: - Stub per-URL request counter (RED #1)
-
-/// Serialized RELATIVE TO the other `URLProtocolStub`-driving suites: this suite drives the same
-/// process-global stub registries (now including the per-URL counter), so it shares the
-/// `URLProtocolStub`-backed `.serialized` parent's scope — see this file's header and
-/// `URLSessionHTTPClientTests.swift` for why cross-suite serialization (not just within-suite) is
-/// required to avoid a `reset()`-clobbers-another-suite flake.
-@Suite("TestSupportStubCounter-backed", .serialized)
-enum TestSupportStubCounterBackedTests {
-    @Suite("URLProtocolStub.recordedRequestCount", .serialized)
-    struct RecordedRequestCountTests {
-        /// Endpoint hit THREE times — its counter must read 3.
-        static let urlA = URL(string: "https://example.com/count-a")
-        /// Endpoint hit ONCE — its counter must read 1, proving the count is per-URL (not global).
-        static let urlB = URL(string: "https://example.com/count-b")
-
-        /// Builds an ephemeral session wired to a freshly-reset `URLProtocolStub`, so neither the
-        /// install nor the reset block is copy-pasted into the test body (SonarQube new-code
-        /// duplication discipline). Mirrors `URLProtocolStubTests.makeStubbedSession`.
-        private func makeStubbedSession() -> URLSession {
-            URLProtocolStub.reset()
-            let configuration = URLSessionConfiguration.ephemeral
-            URLProtocolStub.install(into: configuration)
-            return URLSession(configuration: configuration)
-        }
-
-        /// Fires `count` GET requests to `url` through `session`, ignoring each result (the stub
-        /// answers them all). Extracted so the 3×/1× drive loop is written once, not inlined twice.
-        private func fire(_ count: Int, to url: URL, on session: URLSession) async throws {
-            for _ in 0..<count {
-                _ = try await session.data(from: url)
-            }
-        }
-
-        /// `recordedRequestCount(for:)` counts requests PER URL: after 3 hits to A and 1 to B it
-        /// reads 3 / 1, and after `reset()` both read 0 (the NFR21 teardown contract — the counter
-        /// is wiped alongside the other registries).
-        @Test("recordedRequestCount counts per URL and resets to zero")
-        func countsPerURLAndResets() async throws {
-            let session = makeStubbedSession()
-
-            guard let urlA = Self.urlA, let urlB = Self.urlB else {
-                Issue.record("Failed to construct test URLs")
-                return
-            }
-            // Stub both so the requests are answered (the stub records the request either way, but
-            // stubbing keeps the drive on the canned-response path rather than the 404 fallback).
-            let emptyBody = Data()
-            URLProtocolStub.stub(url: urlA, statusCode: 200, data: emptyBody, headers: [:])
-            URLProtocolStub.stub(url: urlB, statusCode: 200, data: emptyBody, headers: [:])
-
-            try await fire(3, to: urlA, on: session)
-            try await fire(1, to: urlB, on: session)
-
-            #expect(URLProtocolStub.recordedRequestCount(for: urlA) == 3)
-            #expect(URLProtocolStub.recordedRequestCount(for: urlB) == 1)
-
-            URLProtocolStub.reset()
-            #expect(URLProtocolStub.recordedRequestCount(for: urlA) == 0)
-            #expect(URLProtocolStub.recordedRequestCount(for: urlB) == 0)
-        }
-    }
-}
-
-// MARK: - Fixture factories (RED #2 + #3)
+// MARK: - Fixture factories (RED #1 + #2)
 
 /// Parallel-safe (NOT nested under the `.serialized` stub parent): `makeTrackingBatch` and
 /// `makeQueueWithTempFile` touch NO process-global state — each `makeQueueWithTempFile` uses its OWN
