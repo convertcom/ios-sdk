@@ -182,6 +182,44 @@ public actor DecisionStore {
         return true
     }
 
+    /// Returns the current ``Segments`` for `key`, or `Segments()` when the store holds no entry.
+    ///
+    /// A PURE READ — like ``bucketingDecisions(forStoreKey:)`` it does NOT ``touch(_:)`` (reporting a
+    /// visitor's segments is not an access that should bump LRU recency) and is NON-suspending (one
+    /// atomic actor step, AR12). [Source: AC10]
+    public func currentSegments(forVisitorKey key: String) -> Segments {
+        store[key]?.segments ?? Segments()
+    }
+
+    /// Writes `segments` into `key`'s ``StoreData/segments``, preserving the other three fields, and
+    /// persists the whole decision map (plus LRU order) to disk.
+    ///
+    /// The segment write is a SINGLE UNCONDITIONAL mutation (no read→conditional→write), so unlike
+    /// ``markGoalTriggeredIfNeeded(goalId:forVisitorKey:)`` there is no reentrancy hazard. When the cache
+    /// is at ``maxEntries`` and `key` is NEW, the least-recently-used key is evicted BEFORE the insert.
+    /// The evict + reconstruct + recency bump run as one non-suspending step; only the best-effort disk
+    /// write is awaited afterwards (AR12). [Source: AC5, AC10]
+    public func setSegments(_ segments: Segments, forVisitorKey key: String) async {
+        if store[key] == nil, store.count >= maxEntries, let oldest = accessOrder.first {
+            store[oldest] = nil
+            accessOrder.removeFirst()
+        }
+
+        let existing = store[key]
+        store[key] = StoreData(
+            bucketing: existing?.bucketing ?? [:],
+            goalTriggered: existing?.goalTriggered ?? [:],
+            segments: segments,
+            locations: existing?.locations ?? [:]
+        )
+        touch(key)
+
+        guard let data = try? JSONEncoder().encode(PersistedStore(store: store, order: accessOrder)) else {
+            return
+        }
+        try? await fileStore.write(data, to: fileURL)
+    }
+
     /// Moves `storeKey` to the most-recently-used end of the LRU order.
     private func touch(_ storeKey: String) {
         accessOrder.removeAll { $0 == storeKey }
