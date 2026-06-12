@@ -23,7 +23,8 @@ struct BucketingManagerTests {
 
     /// One variation spec for ``makeExperience`` — a named struct (not a 3-member tuple) so the
     /// `large_tuple` rule stays satisfied, mirroring the `ManagerHarness` precedent in
-    /// `MockCorePorts.swift`.
+    /// `MockCorePorts.swift`. `alloc` is a **0–100 traffic percentage** (the CDN's
+    /// `traffic_allocation` scale), which `BucketingManager` scales ×100 into bucket-units.
     private struct VariationSpec {
         let id: String
         let key: String
@@ -132,20 +133,51 @@ struct BucketingManagerTests {
     // MARK: - AC2: hash-input concatenation order, end-to-end
 
     /// AC2: `bucket(visitorId:experience:)` against an experience with a single 100%-allocation
-    /// variation (`traffic_allocation: 10000`) must return that variation regardless of the
-    /// hashed bucket value — which proves the experienceId+visitorId concat feeds the hash and
-    /// the selected variation is mapped back onto the result `Variation`.
+    /// variation (`traffic_allocation: 100`, i.e. 100% → 10000 bucket-units) must return that
+    /// variation regardless of the hashed bucket value — which proves the experienceId+visitorId
+    /// concat feeds the hash and the selected variation is mapped back onto the result `Variation`.
     @Test("AC2 — bucket() selects the sole full-allocation variation and maps its identity")
     func bucketSelectsFullAllocationVariation() async {
         let experience = makeExperience(
             id: "exp-123",
             key: "exp-key",
-            variations: [VariationSpec(id: "var1", key: "var1-key", alloc: 10_000)]
+            variations: [VariationSpec(id: "var1", key: "var1-key", alloc: 100)]
         )
         let manager = makeBucketingManager()
         let variation = await manager.bucket(visitorId: "visitor-1", experience: experience)
         #expect(variation?.id == "var1")
         #expect(variation?.experienceId == "exp-123")
+    }
+
+    // MARK: - AC2/AC3/AC5: realistic 50/50 split exercises the production *100 scaling
+
+    /// Regression guard for the `traffic_allocation` SCALE: a realistic 50/50 split (`alloc: 50`
+    /// each, the CDN's actual percentage form — see `cdn-config-baseline.json`) must bucket
+    /// visitors into a REAL variation across the whole hash space, not return `nil`. Under a
+    /// missing `×100` (treating 50 as 50 bucket-units instead of 5000), `selectBucket` would
+    /// cover only `0..<100` and ~99% of visitors would fall through to `nil` — so this test fails
+    /// loudly if the percentage→bucket-unit scaling regresses. The two visitor ids land in known
+    /// halves (computed via the published murmurhash): `visitor-a` → bucket 3774 (varA, the
+    /// `[0,5000)` half) and `visitor-c` → bucket 7328 (varB, the `[5000,10000)` half).
+    @Test(
+        "AC5 — a 50/50 split buckets visitors into a real variation (percentage ×100 scaling)",
+        arguments: [
+            (visitorId: "visitor-a", expectedVariationId: "varA"),
+            (visitorId: "visitor-c", expectedVariationId: "varB")
+        ]
+    )
+    func fiftyFiftySplitBucketsAcrossTheSpace(visitorId: String, expectedVariationId: String) async {
+        let experience = makeExperience(
+            id: "100334665",
+            key: "exp-key",
+            variations: [
+                VariationSpec(id: "varA", key: "varA-key", alloc: 50),
+                VariationSpec(id: "varB", key: "varB-key", alloc: 50)
+            ]
+        )
+        let manager = makeBucketingManager()
+        let variation = await manager.bucket(visitorId: visitorId, experience: experience)
+        #expect(variation?.id == expectedVariationId)
     }
 
     // MARK: - AC11 / AC12: enqueue exactly one bucketing event when tracking is enabled
@@ -158,7 +190,7 @@ struct BucketingManagerTests {
         let experience = makeExperience(
             id: "exp1",
             key: "exp-key",
-            variations: [VariationSpec(id: "var1", key: "var1-key", alloc: 10_000)]
+            variations: [VariationSpec(id: "var1", key: "var1-key", alloc: 100)]
         )
         let manager = makeBucketingManager(eventSink: sink)
         _ = await manager.bucket(visitorId: "v1", experience: experience, enableTracking: true)
@@ -179,7 +211,7 @@ struct BucketingManagerTests {
         let experience = makeExperience(
             id: "exp1",
             key: "exp-key",
-            variations: [VariationSpec(id: "var1", key: "var1-key", alloc: 10_000)]
+            variations: [VariationSpec(id: "var1", key: "var1-key", alloc: 100)]
         )
         let manager = makeBucketingManager(eventSink: sink)
         _ = await manager.bucket(visitorId: "v1", experience: experience, enableTracking: false)

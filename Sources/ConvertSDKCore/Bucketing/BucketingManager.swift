@@ -12,10 +12,15 @@
 //     weights, and returns the FIRST whose running total strictly exceeds `value`
 //     (`value < prev`) — accumulate-first-wins. An uncovered tail returns `nil`.
 //
-// SCALE NOTE — `traffic_allocation` on the generated `ExperienceVariationConfig` is already
-// "a number from 0 to 10000" (per its schema doc), i.e. already in bucket-units. It is used
-// DIRECTLY as the weight — there is NO `*100` on the production path. (The parity test drives
-// ``selectBucket`` with pre-scaled bucket-units too, so the helper itself never scales.)
+// SCALE NOTE — `traffic_allocation` on the generated `ExperienceVariationConfig` is a 0–100
+// PERCENTAGE as actually delivered by the CDN (e.g. a 50/50 split is `[50, 50]`, summing to
+// 100 — verified against the repo's `cdn-config-baseline.json` and the JS/Android SDKs). The
+// generated schema's "0 to 10000" doc is misleading. ``selectBucket`` accumulates in 0..<10000
+// bucket-units, so each percentage is scaled `×100` here before selection — identical to the JS
+// SDK (`bucketing-manager.ts:68` `buckets[id] * 100`) and the Android SDK
+// (`PERCENTAGE_TO_BASIS_MULTIPLIER = 100`). The parity test independently scales the fixture's
+// 0–100 `buckets` by `×100` before driving ``selectBucket`` directly, so the helper itself
+// never scales — both call sites convert percentages to bucket-units before calling it.
 //
 // STATELESS (AC13): a plain `struct` with two `let` port dependencies — no actor, no mutable
 // state. `bucket(...)` is `async` only because ``EventSink/enqueue(_:)`` is `async`; it never
@@ -78,13 +83,14 @@ internal struct BucketingManager {
         )
 
         // 5. Keep only variations that carry BOTH an id and a traffic_allocation — a variation
-        //    missing either can't be bucketed into. `traffic_allocation` is already 0..10000
-        //    (bucket-units), so it's the weight directly (NO *100). Order is preserved.
+        //    missing either can't be bucketed into. `traffic_allocation` is a 0–100 PERCENTAGE
+        //    (see SCALE NOTE), so it is scaled `×100` into the 0..<10000 bucket-unit space the
+        //    selector accumulates in — matching the JS/Android SDKs. Order is preserved.
         let eligible: [WeightedVariation] = (experience.variations ?? []).compactMap { variation in
             guard let key = variation.id, let allocation = variation.traffic_allocation else {
                 return nil
             }
-            return WeightedVariation(key: key, weight: Int(allocation), config: variation)
+            return WeightedVariation(key: key, weight: Int(allocation * 100), config: variation)
         }
         let weights = eligible.map { (key: $0.key, weight: $0.weight) }
 
