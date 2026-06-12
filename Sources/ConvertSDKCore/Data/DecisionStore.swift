@@ -104,6 +104,17 @@ public actor DecisionStore {
         return variationId
     }
 
+    /// Returns the whole sticky-bucketing map (`experienceId` → `variationId`) for `storeKey`, or an
+    /// empty map when the store holds no entry for that key. The conversion-tracking path reads it to
+    /// populate `ConversionEventData.bucketingData`.
+    ///
+    /// A PURE READ: unlike ``stickyVariationId(forExperience:storeKey:)`` it does NOT ``touch(_:)`` —
+    /// it must not bump LRU recency (reporting the visitor's decisions is not an access that should
+    /// keep the entry warm). Non-suspending (no `await`): the lookup is one atomic actor step (AR12).
+    public func bucketingDecisions(forStoreKey storeKey: String) -> [String: String] {
+        store[storeKey]?.bucketing ?? [:]
+    }
+
     /// Merges `variationId` into `storeKey`'s `StoreData.bucketing[experienceId]`, refreshes LRU
     /// recency, and persists the whole decision map — together with the LRU access order — to disk.
     ///
