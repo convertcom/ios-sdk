@@ -87,6 +87,14 @@ public final class ConvertContext: Sendable {
     /// suppression.
     private let logger: any Logger
 
+    /// The SDK's segment assignment engine, constructed over the SAME canonical ``decisionStore`` this
+    /// context is injected with (Story 4.4). ``setDefaultSegments(_:)`` / ``setCustomSegments(_:)``
+    /// delegate to it, and ``runExperience(_:enableTracking:)`` reads the persisted result back from that
+    /// shared store to overlay onto the audience-rule attribute map (AC11). ``SegmentsManager`` is a
+    /// stateless `Sendable` `struct` (it owns no mutable state — the `actor` store does), so storing it as
+    /// a `let` keeps this class an all-`let` `Sendable final class` with no suppression.
+    private let segmentsManager: SegmentsManager
+
     /// The visitor attributes as a loosely-typed `[String: Any]` map, reconstructed on each access
     /// from the internal ``ConvertValue`` storage via ``ConvertValue/anyValue`` — so a value supplied
     /// as `["age": 30]` reads back as `attributes["age"] as? Int == 30`. A COMPUTED property (no stored
@@ -144,6 +152,9 @@ public final class ConvertContext: Sendable {
         self.eventSink = eventSink
         self.eventBus = eventBus
         self.logger = logger
+        // Built over the injected canonical store (not a separate parameter — callers do not pass it), so
+        // every context from the same SDK records segments into the ONE store the decisioning path reads.
+        self.segmentsManager = SegmentsManager(decisionStore: decisionStore, logger: logger)
     }
 
     /// Whether event delivery is enabled for this context's SDK (FR6 static `network.tracking`).
@@ -182,13 +193,18 @@ public final class ConvertContext: Sendable {
             // manager (AC10, no throw).
             return nil
         }
+        // AC11: overlay the visitor's persisted segments onto the explicit attribute map so an audience
+        // rule can match on a `setDefaultSegments` value (e.g. country). Read under the SAME store key the
+        // manager rebuilds internally; explicit createContext attributes still win on collision.
+        let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
+        let attributes = mergedAttributes(stringAttributes(), with: segments)
         return await experienceManager.selectVariation(
             forKey: key,
             in: config,
             visitorId: visitorId,
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
-            attributes: stringAttributes(),
+            attributes: attributes,
             locationProperties: [:],
             enableTracking: enableTracking
         )
@@ -211,6 +227,32 @@ public final class ConvertContext: Sendable {
             case .bool(let bool): return String(bool)
             }
         }
+    }
+
+    /// The sticky store key `"<accountId>-<projectId>-<visitorId>"` for the given config snapshot.
+    /// `accountId`/`projectId` default to `""` when absent (a stable, if empty-segmented, key). One owner
+    /// of the key shape that ``trackConversion(_:goalData:forceMultipleTransactions:)``, the new
+    /// segmentation methods, and ``runExperience(_:enableTracking:)``'s segment overlay all share — and the
+    /// same shape ``ExperienceManager`` rebuilds internally, so the segments overlay reads under the SAME
+    /// key the manager buckets against.
+    private func storeKey(for config: ProjectConfig) -> String {
+        "\(config.accountId ?? "")-\(config.project?.id ?? "")-\(visitorId)"
+    }
+
+    /// Overlays the visitor's non-nil string segment fields onto the explicit attribute map so audience
+    /// rules can match on `country`/`visitorType`/etc. Explicit attributes WIN on key collision (the
+    /// caller's createContext attribute is more specific than a stored segment). `customSegments` is an
+    /// array, not a scalar attribute, so it is NOT overlaid. [Source: AC11]
+    private func mergedAttributes(_ attributes: [String: String], with segments: Segments) -> [String: String] {
+        var merged = attributes
+        let segmentPairs: [(String, String?)] = [
+            ("country", segments.country), ("browser", segments.browser), ("devices", segments.devices),
+            ("source", segments.source), ("campaign", segments.campaign), ("visitorType", segments.visitorType)
+        ]
+        for (key, value) in segmentPairs where merged[key] == nil {
+            if let value { merged[key] = value }
+        }
+        return merged
     }
 
     /// Runs every configured experience for this visitor and returns the bucketed ``Variation`` for
@@ -236,12 +278,16 @@ public final class ConvertContext: Sendable {
         guard let config = await sdk.configStore.getSnapshot() else {
             return []
         }
+        // AC11: same segment overlay as the single-experience path (run-all mirrors run-single, not
+        // diverge) — each experience's audience gate sees the visitor's persisted segments.
+        let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
+        let attributes = mergedAttributes(stringAttributes(), with: segments)
         return await experienceManager.selectVariations(
             in: config,
             visitorId: visitorId,
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
-            attributes: stringAttributes(),
+            attributes: attributes,
             locationProperties: [:],
             enableTracking: enableTracking
         )
@@ -400,14 +446,57 @@ public final class ConvertContext: Sendable {
         }
     }
 
-    /// Sets the default visitor ``Segments``. Stub: no-op until Epic 4 wires segmentation.
-    public func setDefaultSegments(_ segments: Segments) {
-        // [WARN] ConvertContext.setDefaultSegments: not yet implemented (Epic 4).
+    /// Sets default visitor segments (merge semantics) and fires ``SystemEvent/segments`` once.
+    ///
+    /// `async` but NEVER throws (AOD-6). Delegates the merge to ``SegmentsManager`` (each of the six
+    /// recognised string keys overlays the visitor's existing segments; unknown keys WARN and are
+    /// ignored), reads the resolved ``Segments`` back from the shared ``decisionStore``, and fires
+    /// ``SystemEvent/segments`` ONCE with a ``SegmentsPayload`` carrying them (AC12). A `nil` config
+    /// snapshot (pre-ready / degraded) means there is no account/project to form the sticky store key —
+    /// it WARNs and returns WITHOUT firing, the same degrade ``trackConversion(_:goalData:forceMultipleTransactions:)``
+    /// applies on a not-ready SDK. The WARN `message` is ONLY the descriptive tail; the adapter composes
+    /// the `[WARN] ConvertContext.setDefaultSegments: …` prefix from `type`/`method` (UX-DR19).
+    /// - Parameter segments: The wire-keyed string segment fields to merge (`country`, `browser`,
+    ///   `devices`, `source`, `campaign`, `visitorType`); unrecognised keys are ignored with a WARN.
+    /// [Source: AC1, AC12]
+    public func setDefaultSegments(_ segments: [String: String]) async {
+        guard let config = await sdk.configStore.getSnapshot() else {
+            logger.log(
+                level: .warn,
+                type: "ConvertContext",
+                method: "setDefaultSegments",
+                message: "SDK not ready, dropping segments update."
+            )
+            return
+        }
+        let key = storeKey(for: config)
+        await segmentsManager.setDefaultSegments(segments, forVisitorKey: key)
+        let updated = await segmentsManager.currentSegments(forVisitorKey: key)
+        await eventBus.fire(.segments, payload: .segments(SegmentsPayload(visitorId: visitorId, segments: updated)))
     }
 
-    /// Sets the custom segment identifiers for the visitor. Stub: no-op until Epic 4 wires
-    /// custom segmentation.
-    public func setCustomSegments(_ segmentIds: [String]) {
-        // [WARN] ConvertContext.setCustomSegments: not yet implemented (Epic 4).
+    /// Appends custom segment identifiers for the visitor and fires ``SystemEvent/segments`` once.
+    ///
+    /// `async` but NEVER throws (AOD-6). Delegates the append to ``SegmentsManager`` (the ids are added to
+    /// the visitor's existing `customSegments`; backend owns dedup, matching JS), reads the resolved
+    /// ``Segments`` back from the shared ``decisionStore``, and fires ``SystemEvent/segments`` ONCE with a
+    /// ``SegmentsPayload`` (AC12). A `nil` config snapshot (pre-ready / degraded) WARNs and returns WITHOUT
+    /// firing — the same not-ready degrade as ``setDefaultSegments(_:)``.
+    /// - Parameter segmentIds: The custom segment identifiers to append to the visitor's `customSegments`.
+    /// [Source: AC2, AC12]
+    public func setCustomSegments(_ segmentIds: [String]) async {
+        guard let config = await sdk.configStore.getSnapshot() else {
+            logger.log(
+                level: .warn,
+                type: "ConvertContext",
+                method: "setCustomSegments",
+                message: "SDK not ready, dropping custom segments update."
+            )
+            return
+        }
+        let key = storeKey(for: config)
+        await segmentsManager.setCustomSegments(segmentIds, forVisitorKey: key)
+        let updated = await segmentsManager.currentSegments(forVisitorKey: key)
+        await eventBus.fire(.segments, payload: .segments(SegmentsPayload(visitorId: visitorId, segments: updated)))
     }
 }
