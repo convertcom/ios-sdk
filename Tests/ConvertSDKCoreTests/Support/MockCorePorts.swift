@@ -214,6 +214,30 @@ final class MockLogger: Logger {
     }
 }
 
+// MARK: - MockEventSink
+
+/// Test double for ``EventSink`` (the decisioning → queue enqueue seam consumed by the
+/// Epic 3 / Story 2 bucketing suite). Re-declared here (not shared from `ConvertSDKTests`)
+/// for the same target-visibility reason as ``MockLogger`` above — `ConvertSDKCoreTests`
+/// cannot see the `ConvertSDKTests` copy in `MockPorts.swift`.
+///
+/// Shape: `actor` — `enqueue(_:)` is `async`, so actor isolation satisfies the port with
+/// no `Sendable` suppression (unlike the synchronous ports above, which need ``LockedBox``).
+/// Records enqueued entries; a test reads them via ``recordedEvents()`` (awaited, since the
+/// accessor is actor-isolated).
+actor MockEventSink: EventSink {
+    private var recorded: [TrackingEventEntry] = []
+
+    func enqueue(_ event: TrackingEventEntry) async {
+        recorded.append(event)
+    }
+
+    /// Returns the recorded entries without clearing them.
+    func recordedEvents() -> [TrackingEventEntry] {
+        recorded
+    }
+}
+
 // MARK: - makeManager factory
 
 /// The mocks a visitor-context scenario drives, returned as a named struct (not a tuple) so
