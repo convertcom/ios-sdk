@@ -30,7 +30,25 @@ import ConvertSDK
 /// disk-first fixture the way a prior process would have left the queue file, so the counters still
 /// reflect only the calls the SUBJECT made during the test (a `persist` would conflate fixture setup
 /// with subject behavior). It is an `actor`-isolated method, so a test awaits it before the action.
+///
+/// ── `waitForPersistCount(_:)` helper (Story 5.3 lifecycle RED) ─────────────────────────────────
+/// The Story-5.3 `LifecycleObserver` AC1 test needs a genuine happens-before on "the observer's
+/// background-transition handler called the queue's `persistBeforeBackground()`, which wrote the
+/// store" — that persist runs on a detached `Task` the notification observer's block spawns, which
+/// the test does not await directly. ``waitForPersistCount(_:)`` parks a continuation that
+/// ``persist(_:)`` resumes the instant the Nth persist lands — a pure continuation handoff, no
+/// wall-clock wait (NFR21) — mirroring `MockEventUploader.waitForBatchCount` /
+/// `MockConfigFetchService.waitForFetchCount`. Additive: the existing `BackgroundUploadDelegate` /
+/// `CoordinatedFileEventQueueStore` suites that use this double are unaffected (no existing signature
+/// changes).
 actor MockEventQueueStore: EventQueueStore {
+    /// One awaiter parked by ``waitForPersistCount(_:)``, keyed to the persist-count THRESHOLD it
+    /// waits for. A named struct keeps the `large_tuple` lint rule satisfied.
+    private struct PersistAwaiter {
+        let threshold: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
     /// The events currently "on disk": set by ``persist(_:)`` / ``seed(_:)``, emptied by ``clear()``,
     /// returned by ``load()``. A test reads it to confirm a side effect landed (or didn't).
     private(set) var storedEvents: [TrackingEvent] = []
@@ -40,6 +58,7 @@ actor MockEventQueueStore: EventQueueStore {
     private(set) var persistCallCount = 0
     /// Number of times ``clear()`` was invoked — the 2xx-upload-clears-the-queue signal under test.
     private(set) var clearCallCount = 0
+    private var persistAwaiters: [PersistAwaiter] = []
 
     func load() async throws -> [TrackingEvent] {
         loadCallCount += 1
@@ -49,6 +68,24 @@ actor MockEventQueueStore: EventQueueStore {
     func persist(_ events: [TrackingEvent]) async throws {
         persistCallCount += 1
         storedEvents = events
+        // Resume (and drop) every awaiter whose threshold the new count has now reached. Actor
+        // isolation is the mutual exclusion; each awaiter is removed as collected, so it resumes once.
+        let ready = persistAwaiters.filter { $0.threshold <= persistCallCount }
+        persistAwaiters.removeAll { $0.threshold <= persistCallCount }
+        for awaiter in ready {
+            awaiter.continuation.resume()
+        }
+    }
+
+    /// Suspends until ``persist(_:)`` has been called at least `target` times, then resumes — a
+    /// genuine happens-before on "the Nth persist has run". Returns immediately if the count is already
+    /// ≥ `target`; otherwise parks a continuation keyed to that threshold, which ``persist(_:)``
+    /// resumes the moment the count reaches it. Pure continuation handoff — no wall-clock wait (NFR21).
+    func waitForPersistCount(_ target: Int) async {
+        if persistCallCount >= target { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            persistAwaiters.append(PersistAwaiter(threshold: target, continuation: continuation))
+        }
     }
 
     func clear() async throws {
