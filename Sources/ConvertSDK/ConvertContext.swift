@@ -1,6 +1,14 @@
 // ConvertContext.swift
 // Visitor-scoped experimentation context (Epic 2 / Story 2 — stub).
 // Real bucketing, feature resolution, and tracking arrive in Epics 3–4.
+//
+// `file_length` is disabled file-wide (a single named rule — NOT a blanket `disable all`): this is the
+// SDK's public-surface hub, and its DocC-heavy house style (each public method carries the full FR/AR/AC
+// rationale) pushed it past the 400-line default once Story 4.3 added the conversion dedup gate, the
+// two-event emission, and the `forceMultipleTransactions` override to `trackConversion`. Trimming the
+// mandated rationale to chase the line count would trade documentation rigor for a cosmetic number; the
+// named-rule suppression keeps every other rule — and the 400-line gate on every OTHER file — enforced.
+// swiftlint:disable file_length
 
 import Foundation
 
@@ -303,47 +311,45 @@ public final class ConvertContext: Sendable {
         )
     }
 
-    /// Tracks a conversion for `goalKey`, optionally carrying per-goal ``GoalData`` metrics.
+    /// Tracks a conversion for `goalKey`, optionally carrying per-goal ``GoalData`` metrics, with a
+    /// per-visitor dedup gate and an opt-in multiple-transactions override.
     ///
-    /// `async` but NEVER throws (AOD-6 — the public conversion API never surfaces a thrown error). The
-    /// two degraded inputs each emit a WARN and DROP, enqueuing nothing:
-    ///   * NO usable config snapshot (pre-ready, or a degraded load that resolved with no config) →
-    ///     WARN "SDK not ready…" + return, BEFORE any goal lookup — the conversion twin of
-    ///     ``runExperience(_:enableTracking:)`` short-circuiting to `nil` on an absent snapshot.
-    ///   * `goalKey` ABSENT from the config (``ProjectConfig/goal(forKey:)`` miss) → WARN "…not found
-    ///     in config, dropping." + return. The WARN `message` is ONLY the descriptive tail — the
-    ///     adapter composes the `[WARN] ConvertContext.trackConversion: …` prefix from `type`/`method`
-    ///     (UX-DR19), so the call passes neither the level tag nor the type/method in the message.
+    /// `async` but NEVER throws (AOD-6). Two degraded inputs each WARN and DROP (enqueuing nothing),
+    /// returning BEFORE the dedup gate: no usable config snapshot (pre-ready / degraded load) → WARN
+    /// "SDK not ready…" before any goal lookup (the twin of ``runExperience(_:enableTracking:)``
+    /// short-circuiting to `nil`); and `goalKey` absent (``ProjectConfig/goal(forKey:)`` miss) → WARN
+    /// "…not found in config, dropping." The WARN `message` is ONLY the descriptive tail — the adapter
+    /// composes the `[WARN] ConvertContext.trackConversion: …` prefix from `type`/`method` (UX-DR19).
     ///
-    /// On the happy path it builds a ``ConversionEventData``:
-    ///   * `goalId` ← the resolved goal's wire `id` (the goalKey → goalId mapping; `?? ""` because
-    ///     ``Components/Schemas/ConfigGoalBase/id`` is `String?`).
-    ///   * `goalData` ← `goalData?.toEntries()` — the `[GoalDataKey: GoalDataValue]` map flattened to
-    ///     the array-of-`{key, value}` wire form, or `nil` (omitted from the wire) when no metrics were
-    ///     supplied.
-    ///   * `bucketingData` ← the visitor's CURRENT sticky decisions
-    ///     (``DecisionStore/bucketingDecisions(forStoreKey:)`` under the same
-    ///     `"<accountId>-<projectId>-<visitorId>"` key the experience path computes), or `nil` when the
-    ///     visitor has no decision (FR27 — the conversion carries the bucketing context; the empty map
-    ///     is collapsed to `nil` so the wire OMITS the key rather than emitting `{}`, the
-    ///     anti-Android-regression guard).
+    /// Past the guards it resolves `goalId` (the goal's wire `id`; `?? ""` since it is `String?`) and
+    /// `bucketingData` (the visitor's sticky ``DecisionStore/bucketingDecisions(forStoreKey:)`` under the
+    /// `"<accountId>-<projectId>-<visitorId>"` key, or `nil` when empty — FR27 collapses `{}` to omit the
+    /// wire key, the anti-Android-regression guard), then applies a DEDUP gate via
+    /// ``DecisionStore/markGoalTriggeredIfNeeded(goalId:forVisitorKey:)`` (one atomic check-and-mark;
+    /// `true` ⇒ FIRST trigger) and emits up to TWO independent ``TrackingEventEntry/conversion(_:)`` events
+    /// through the injected ``EventSink`` port — NOT a concrete `EventQueue` (AR14; real queue lands Epic 5
+    /// as a one-site swap of ``NoopEventSink``):
+    ///   * CONVERSION event (`goalData == nil`) — enqueued ONLY on the first trigger, which also FIRES
+    ///     ``SystemEvent/conversion`` with a ``ConversionPayload`` (AC9) once (`.conversion` already exists;
+    ///     no new case). A repeat trigger emits neither — just a WARN, then FALLS THROUGH to the txn gate.
+    ///   * TRANSACTION event (`goalData == data.toEntries()`, the wire `{key, value}` array) — enqueued when
+    ///     `goalData` is present AND (first trigger OR `forceMultipleTransactions`), recording a deliberate
+    ///     repeat purchase as a second transaction without re-emitting the conversion.
     ///
-    /// then ENQUEUES it as a SINGLE ``TrackingEventEntry/conversion(_:)`` (`eventType == "conversion"`)
-    /// through the injected ``EventSink`` port — NOT a concrete `EventQueue` (AR14: events are produced
-    /// at the inward-facing port; the real queue arrives in Epic 5 and is a one-site swap of the default
-    /// ``NoopEventSink``) — and FIRES ``SystemEvent/conversion`` on the shared ``EventBus`` with a
-    /// ``ConversionPayload`` (AC9). No NEW `SystemEvent` case is introduced; `.conversion` already
-    /// exists.
-    ///
-    /// The global `network.tracking` gate (FR6) is deliberately NOT applied here: it is an Epic 5
-    /// concern, and ``runExperience(_:enableTracking:)`` does not apply it either — the conversion path
-    /// mirrors the experience path rather than diverging. (``trackingEnabled()`` remains the scaffolded
-    /// hook for when that gate lands.)
+    /// The global `network.tracking` gate (FR6) is deliberately NOT applied here — an Epic 5 concern, and
+    /// ``runExperience(_:enableTracking:)`` does not apply it either (``trackingEnabled()`` is the hook).
     /// - Parameters:
     ///   - goalKey: The goal `key` to look up in the config and convert on.
-    ///   - goalData: Optional per-goal metrics (e.g. revenue `amount`, `transactionId`); when omitted
-    ///     the event's `goalData` is absent.
-    public func trackConversion(_ goalKey: String, goalData: GoalData? = nil) async {
+    ///   - goalData: Optional per-goal metrics (e.g. revenue `amount`, `transactionId`); drives the
+    ///     separate TRANSACTION event and is absent from the conversion event.
+    ///   - forceMultipleTransactions: When `true`, the TRANSACTION event is emitted for `goalData` even on
+    ///     an ALREADY-triggered goal (the conversion + bus signal stay suppressed). Defaults to `false`
+    ///     (plain repeat call is a WARN-only no-op); has no effect without `goalData`.
+    public func trackConversion(
+        _ goalKey: String,
+        goalData: GoalData? = nil,
+        forceMultipleTransactions: Bool = false
+    ) async {
         guard let config = await sdk.configStore.getSnapshot() else {
             logger.log(
                 level: .warn,
@@ -362,22 +368,36 @@ public final class ConvertContext: Sendable {
             )
             return
         }
-        // Sticky store key "<accountId>-<projectId>-<visitorId>" (the runExperience key shape).
+        // Sticky store key "<accountId>-<projectId>-<visitorId>" (the runExperience key shape); goalId
+        // resolved ONCE so the enqueued event and the `.conversion` bus payload share it.
         let storeKey = "\(config.accountId ?? "")-\(config.project?.id ?? "")-\(visitorId)"
         let decisions = await decisionStore.bucketingDecisions(forStoreKey: storeKey)
         let bucketingData = decisions.isEmpty ? nil : decisions
-        // Resolve the wire goalId ONCE so the enqueued event and the `.conversion` bus payload share it.
         let goalId = goal.id ?? ""
-        let data = ConversionEventData(
-            goalId: goalId,
-            goalData: goalData?.toEntries(),
-            bucketingData: bucketingData
-        )
-        await eventSink.enqueue(.conversion(data))
-        await eventBus.fire(
-            .conversion,
-            payload: .conversion(ConversionPayload(goalId: goalId, visitorId: visitorId))
-        )
+        // Atomic check-and-mark: `true` ⇒ first trigger (proceed), `false` ⇒ already triggered (suppress
+        // the conversion, but NOT a forced txn).
+        let firstTrigger = await decisionStore.markGoalTriggeredIfNeeded(goalId: goalId, forVisitorKey: storeKey)
+        // CONVERSION gate — first trigger enqueues the conversion event and fires `.conversion` once. A
+        // repeat trigger WARNs and (crucially) does NOT `return`: control falls through to the txn gate.
+        if firstTrigger {
+            let event = ConversionEventData(goalId: goalId, goalData: nil, bucketingData: bucketingData)
+            await eventSink.enqueue(.conversion(event))
+            let payload = ConversionPayload(goalId: goalId, visitorId: visitorId)
+            await eventBus.fire(.conversion, payload: .conversion(payload))
+        } else {
+            logger.log(
+                level: .warn,
+                type: "ConvertContext",
+                method: "trackConversion",
+                message: "goal '\(goalId)' already tracked for visitor, skipping."
+            )
+        }
+        // TRANSACTION gate (independent) — emits the goalData event on the first trigger OR when
+        // `forceMultipleTransactions` overrides dedup for a deliberate repeat purchase.
+        if let data = goalData, firstTrigger || forceMultipleTransactions {
+            let event = ConversionEventData(goalId: goalId, goalData: data.toEntries(), bucketingData: bucketingData)
+            await eventSink.enqueue(.conversion(event))
+        }
     }
 
     /// Sets the default visitor ``Segments``. Stub: no-op until Epic 4 wires segmentation.

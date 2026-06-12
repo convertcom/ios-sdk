@@ -154,7 +154,7 @@ public actor DecisionStore {
     /// same goal cannot both observe "not triggered" (actor-reentrancy caveat, AR12). The only suspend
     /// point is the trailing best-effort disk write, which runs AFTER the in-memory mark is committed.
     /// [Source: data-manager.ts:1058-1072,851]
-    func markGoalTriggeredIfNeeded(goalId: String, forVisitorKey storeKey: String) async -> Bool {
+    public func markGoalTriggeredIfNeeded(goalId: String, forVisitorKey storeKey: String) async -> Bool {
         if store[storeKey]?.goalTriggered[goalId] == true {
             return false
         }
