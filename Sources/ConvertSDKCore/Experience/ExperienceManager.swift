@@ -182,6 +182,81 @@ public struct ExperienceManager: Sendable {
         return variation
     }
 
+    // The seven parameters mirror `selectVariation`'s call contract minus the single `key` (the bulk
+    // form enumerates keys from the config itself). Like its singular sibling this exceeds SwiftLint's
+    // default `function_parameter_count` warning threshold (5); a targeted disable on the `func` line
+    // (precedent: `selectVariation` above) keeps the `///` doc flush against the declaration (avoids
+    // `orphaned_doc_comment`) rather than raising the project-wide threshold.
+    /// Resolves the bucketed ``Variation`` for EVERY eligible experience in `config`, in config order.
+    ///
+    /// A thin bulk wrapper over
+    /// ``selectVariation(forKey:in:visitorId:accountId:projectId:attributes:locationProperties:enableTracking:)``
+    /// — it adds NO decisioning logic of its own. It enumerates ``ProjectConfig/rawExperiences`` (the
+    /// deterministic, decoded config order) and feeds each element's `key` through the FULL
+    /// single-experience pipeline (sticky → audience → location → bucket → persist → `.bucketing` fire).
+    /// All sticky resolution, rule evaluation, bucketing, ``DecisionStore`` access, and ``EventBus``
+    /// interaction stay owned by that one call; this method only enumerates, threads inputs, and
+    /// collects.
+    ///
+    /// Invariants:
+    ///   * NO duplicated decision logic — the loop body's sole decisioning call is `selectVariation`.
+    ///   * CONFIG ORDER — results are appended in `rawExperiences` array order; an excluded experience
+    ///     never reorders the survivors.
+    ///   * STRAIGHT-THROUGH TRACKING — `enableTracking` is forwarded UNCHANGED to each per-experience
+    ///     bucket (the per-call FR19 flag). The global `network.tracking` gate is an Epic 5 concern and
+    ///     is NOT resolved here.
+    ///   * NEVER THROWS — `selectVariation` degrades every failure mode to `nil`, so the loop is
+    ///     naturally crash-proof (AC9): an experience the visitor is ineligible for (unknown key, no id,
+    ///     audience/location gate fail, below-traffic bucket, or sticky-nil) returns `nil` and is
+    ///     silently excluded WITHOUT aborting the loop. Evaluated SEQUENTIALLY (one experience at a
+    ///     time) — not in parallel — to keep the ``DecisionStore`` actor interaction simple and the
+    ///     collected order deterministic.
+    ///
+    /// - Parameters:
+    ///   - config: The decoded project config whose ``ProjectConfig/rawExperiences`` are enumerated;
+    ///     `nil`/empty yields `[]`.
+    ///   - visitorId: The visitor being bucketed (forwarded to each `selectVariation`).
+    ///   - accountId: Account id — the first segment of the sticky store key.
+    ///   - projectId: Project id — the second segment of the sticky store key.
+    ///   - attributes: The data map each experience's audience gate evaluates against.
+    ///   - locationProperties: The data map each experience's location gate evaluates against.
+    ///   - enableTracking: Forwarded UNCHANGED to every per-experience bucket; when `false` the bucketing
+    ///     enqueue is suppressed (the variation is still selected, persisted, and fired).
+    /// - Returns: The assigned ``Variation`` for every eligible experience, in config order; `[]` when
+    ///   the config has no experiences or the visitor is eligible for none.
+    public func selectVariations( // swiftlint:disable:this function_parameter_count
+        in config: ProjectConfig,
+        visitorId: String,
+        accountId: String,
+        projectId: String,
+        attributes: [String: String],
+        locationProperties: [String: String],
+        enableTracking: Bool
+    ) async -> [Variation] {
+        guard let experiences = config.rawExperiences, !experiences.isEmpty else { return [] }
+        var results: [Variation] = []
+        results.reserveCapacity(experiences.count)
+        for experience in experiences {
+            // Skip an element with no `key` (cannot look it up) defensively — fixtures always carry a
+            // key, but a `nil` here must continue the loop, not crash. `selectVariation` owns every
+            // decision for the looked-up experience; a `nil` result is silently excluded.
+            guard let key = experience.key else { continue }
+            if let variation = await selectVariation(
+                forKey: key,
+                in: config,
+                visitorId: visitorId,
+                accountId: accountId,
+                projectId: projectId,
+                attributes: attributes,
+                locationProperties: locationProperties,
+                enableTracking: enableTracking
+            ) {
+                results.append(variation)
+            }
+        }
+        return results
+    }
+
     /// Rebuilds the sticky ``Variation`` for `experienceId` under `storeKey`, or `nil` when no
     /// sticky decision is stored. The stored variation id is matched back onto `full`'s variations
     /// to recover its `key`; an id with no matching variation still returns a `Variation` carrying
