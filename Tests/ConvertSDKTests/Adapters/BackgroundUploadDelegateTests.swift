@@ -106,7 +106,12 @@ private actor CompletionSignal {
 struct BackgroundUploadDelegateTests {
     /// A stable URL for the stub tasks; the host is irrelevant — only the canned status drives the
     /// classification. Centralized so no case hardcodes its own literal.
-    private static let endpoint = URL(string: "https://example.convert.com/track")!
+    private static let endpoint: URL = {
+        guard let url = URL(string: "https://example.convert.com/track") else {
+            preconditionFailure("invalid test endpoint literal")
+        }
+        return url
+    }()
 
     // MARK: - Shared builders (defined once, used everywhere — SonarQube new-code dup gate ≤ 3%)
 
