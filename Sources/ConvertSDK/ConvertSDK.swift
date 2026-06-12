@@ -50,6 +50,16 @@ public final class ConvertSDK: Sendable {
     /// class `Sendable` with no suppression. Injectable so a test can assert the shared-identity contract.
     private let decisionStore: DecisionStore
 
+    /// The single, fully-wired ``ExperienceManager`` every ``ConvertContext`` from this handle delegates
+    /// `runExperience` to (Story 3.4). Built ONCE in `init` via
+    /// ``ExperienceManager/makeDefault(decisionStore:eventBus:logger:)`` over the SDK's CANONICAL
+    /// ``decisionStore`` (so sticky decisions read/persist on the one shared store) and SHARED
+    /// ``eventBus`` (so `.bucketing` deliveries reach `sdk.on(.bucketing)` subscribers). ``ExperienceManager``
+    /// is a stateless `Sendable` `struct`, so storing it as a `let` keeps the class an all-`let`
+    /// `Sendable final class` with no suppression. Stored rather than rebuilt per `createContext` so the
+    /// (cheap) wiring happens exactly once.
+    private let experienceManager: ExperienceManager
+
     /// Developer-assigned convenience, nil until set; not a singleton and not installed by
     /// init. `nonisolated(unsafe)` because it is intended to be assigned once at app startup,
     /// not mutated concurrently (Story 2.2 Dev Notes Option A).
@@ -102,6 +112,14 @@ public final class ConvertSDK: Sendable {
         self.secureStore = secureStore
         self.keyValueStore = keyValueStore
         self.decisionStore = decisionStore
+        // Wire the ONE ExperienceManager every context delegates `runExperience` to, over the
+        // CANONICAL decisionStore (sticky parity) and the SHARED eventBus (so `.bucketing`
+        // subscribers fire). `makeDefault` is the single public factory — it builds the internal
+        // RuleManager / BucketingManager(NoopEventSink) inside ConvertSDKCore, so this target never
+        // names those internal types. NoopLogger matches the SDK's production logging path (the real
+        // OSLog sink is not wired yet — same default the config-load Task and createContext use).
+        self.experienceManager = ExperienceManager
+            .makeDefault(decisionStore: decisionStore, eventBus: eventBus, logger: NoopLogger())
         let store = ConfigStore(eventBus: eventBus)
         self.configStore = store
 
@@ -312,7 +330,8 @@ public final class ConvertSDK: Sendable {
             sdk: self,
             visitorId: resolvedId,
             attributes: coercedAttributes,
-            decisionStore: decisionStore
+            decisionStore: decisionStore,
+            experienceManager: experienceManager
         )
     }
 }

@@ -42,6 +42,14 @@ public final class ConvertContext: Sendable {
     /// the public surface.
     internal let decisionStore: DecisionStore
 
+    /// The SDK's single, fully-wired ``ExperienceManager`` that ``runExperience(_:enableTracking:)``
+    /// delegates to (Story 3.4). Injected from ``ConvertSDK`` (built once over the SDK's canonical
+    /// ``decisionStore`` and shared event bus), so every context buckets through the SAME manager —
+    /// sticky decisions and `.bucketing` fires converge on the shared instances. ``ExperienceManager``
+    /// is a stateless `Sendable` `struct`, so storing it as a `let` keeps this class an all-`let`
+    /// `Sendable final class` with no suppression.
+    private let experienceManager: ExperienceManager
+
     /// The visitor attributes as a loosely-typed `[String: Any]` map, reconstructed on each access
     /// from the internal ``ConvertValue`` storage via ``ConvertValue/anyValue`` — so a value supplied
     /// as `["age": 30]` reads back as `attributes["age"] as? Int == 30`. A COMPUTED property (no stored
@@ -69,16 +77,20 @@ public final class ConvertContext: Sendable {
     ///   - attributes: The caller-supplied attributes, already coerced to ``ConvertValue`` (unsupported
     ///     values were dropped, and logged at DEBUG, by ``ConvertSDK/createContext(visitorId:attributes:)``).
     ///   - decisionStore: The SDK's canonical decision store, shared across every context it creates.
+    ///   - experienceManager: The SDK's single wired ``ExperienceManager`` this context delegates
+    ///     `runExperience` to (Story 3.4), shared across every context the SDK creates.
     internal init(
         sdk: ConvertSDK,
         visitorId: String,
         attributes: [String: ConvertValue],
-        decisionStore: DecisionStore
+        decisionStore: DecisionStore,
+        experienceManager: ExperienceManager
     ) {
         self.sdk = sdk
         self.visitorId = visitorId
         self.decisionStore = decisionStore
         self.attributesStorage = attributes
+        self.experienceManager = experienceManager
     }
 
     /// Whether event delivery is enabled for this context's SDK (FR6 static `network.tracking`).
@@ -92,12 +104,60 @@ public final class ConvertContext: Sendable {
     }
 
     /// Runs one experience and returns the bucketed ``Variation``, or `nil` when none applies.
-    /// Stub: returns `nil` (degraded) until Epic 3 wires bucketing.
+    ///
+    /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready,
+    /// or a degraded load that resolved with no config) short-circuits to `nil` WITHOUT touching the
+    /// manager (AC10 / AOD-6 — the degraded path returns `nil`, never throws). Otherwise delegates to
+    /// the injected ``ExperienceManager``, which honours sticky assignment, the audience / location
+    /// gates, and `enableTracking`, returning its ``Variation?`` verbatim. Never throws.
+    ///
+    /// `accountId` / `projectId` come from the snapshot (`account_id` / `project.id`), defaulting to
+    /// `""` when absent — they form the sticky store key `"<accountId>-<projectId>-<visitorId>"`, so an
+    /// absent id yields a stable (if empty-segmented) key rather than a crash. `locationProperties` is
+    /// empty on native: the JS SDK's location model is caller-supplied browser context with no native
+    /// equivalent (the Foundation-only core has no CoreLocation dependency), so the location gate is
+    /// driven only by an explicitly-empty map here (an experience with no `locations` is unrestricted
+    /// and passes); native location targeting is out of scope for this story.
+    /// - Parameters:
+    ///   - key: The experience `key` to look up and bucket.
+    ///   - enableTracking: When `false`, the manager suppresses the bucketing enqueue (the variation is
+    ///     still selected, persisted, and the `.bucketing` event fired); defaults to `true`.
+    /// - Returns: The bucketed ``Variation``, or `nil` on a missing snapshot / gate failure / miss.
     public func runExperience(_ key: String, enableTracking: Bool = true) async -> Variation? {
-        // [WARN] ConvertContext.runExperience: not yet implemented (Epic 3).
-        // tracking toggle guard (FR6): guard trackingEnabled() else { return nil }
-        //   — wired when Epics 3-4 add eventSink.enqueue
-        nil
+        guard let config = await sdk.configStore.getSnapshot() else {
+            // Pre-ready / degraded: a nil snapshot resolves to a nil variation without reaching the
+            // manager (AC10, no throw).
+            return nil
+        }
+        return await experienceManager.selectVariation(
+            forKey: key,
+            in: config,
+            visitorId: visitorId,
+            accountId: config.accountId ?? "",
+            projectId: config.project?.id ?? "",
+            attributes: stringAttributes(),
+            locationProperties: [:],
+            enableTracking: enableTracking
+        )
+    }
+
+    /// The visitor attributes as the `[String: String]` map the rule / segment engine compares against.
+    ///
+    /// ``RuleManager`` / `Comparisons` evaluate audience and location rules against STRING values
+    /// (the wire/comparison form), so each ``ConvertValue`` scalar is stringified to its canonical
+    /// textual form: a string stays itself, an int / double / bool render via their `String(_:)`
+    /// initialisers (e.g. `.int(30)` → `"30"`, `.bool(true)` → `"true"`). A private read-only view over
+    /// the immutable ``attributesStorage`` — it allocates a fresh dictionary per call but is invoked
+    /// once per `runExperience`, so there is no retained mutable state and the class stays `Sendable`.
+    private func stringAttributes() -> [String: String] {
+        attributesStorage.mapValues { value in
+            switch value {
+            case .string(let string): return string
+            case .int(let int): return String(int)
+            case .double(let double): return String(double)
+            case .bool(let bool): return String(bool)
+            }
+        }
     }
 
     /// Runs every applicable experience and returns the bucketed ``Variation``s. Stub: returns

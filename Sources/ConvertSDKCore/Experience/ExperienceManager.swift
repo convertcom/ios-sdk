@@ -32,7 +32,18 @@ import Foundation
 
 /// Selects the variation a visitor is assigned for a single experience, honouring sticky
 /// assignment, the audience and location gates, and the `enableTracking` flag.
-internal struct ExperienceManager: Sendable {
+///
+/// `public` (with the `internal init` kept for `@testable` construction in
+/// `ExperienceManagerTests`): the cross-module ``ConvertSDK`` target stores this type on its
+/// ``ConvertContext`` and calls
+/// ``selectVariation(forKey:in:visitorId:accountId:projectId:attributes:locationProperties:enableTracking:)``
+/// (the full signature is documented on that method), so both the type and that one method are part
+/// of the SDK-facing surface. Its collaborators —
+/// ``RuleManager``, ``BucketingManager``, ``NoopEventSink`` — stay `internal`: the SDK never
+/// constructs them, it calls the single public ``makeDefault(decisionStore:eventBus:logger:)``
+/// factory, which wires them inside this module. This keeps the newly-public surface to exactly
+/// the manager, `selectVariation`, and `makeDefault`.
+public struct ExperienceManager: Sendable {
     /// Evaluates the flattened audience / location rule groups (OR-of-AND).
     private let ruleManager: RuleManager
     /// Performs the deterministic bucket — and the single bucketing enqueue when tracking is on.
@@ -58,6 +69,42 @@ internal struct ExperienceManager: Sendable {
         self.decisionStore = decisionStore
         self.eventBus = eventBus
         self.logger = logger
+    }
+
+    /// Builds a fully-wired ``ExperienceManager`` from the dependencies the SDK already owns — the
+    /// ONE public entry point a cross-module caller (``ConvertSDK``) uses, so it never touches the
+    /// `internal` ``RuleManager`` / ``BucketingManager`` / ``NoopEventSink`` collaborators directly.
+    ///
+    /// Wires:
+    ///   * ``RuleManager`` over `logger` — evaluates the flattened audience / location rule groups.
+    ///   * ``BucketingManager`` over a ``NoopEventSink`` and `logger` — performs the deterministic
+    ///     bucket. The sink is the production default until Epic 5's `EventQueue` is built
+    ///     (bead bd-2pb): the bucketing enqueue is PRODUCED at the ``EventSink`` boundary but
+    ///     discarded by ``NoopEventSink`` until the real queue replaces it HERE (the single swap
+    ///     site). This does not weaken the Story 3.4 contract — the seam is exercised; only the
+    ///     downstream destination is deferred.
+    ///   * `decisionStore` / `eventBus` — passed through verbatim so the manager reads/persists
+    ///     sticky decisions on, and fires `.bucketing` on, the SAME instances the SDK shares across
+    ///     every context (sticky parity + `.bucketing` subscribers both depend on shared identity).
+    ///
+    /// - Parameters:
+    ///   - decisionStore: The SDK's canonical sticky-decision store (shared across every context).
+    ///   - eventBus: The SDK's shared bus — the manager fires `.bucketing` on it for new decisions.
+    ///   - logger: The diagnostic sink for the manager and its collaborators.
+    /// - Returns: A wired ``ExperienceManager`` ready to call
+    ///   ``selectVariation(forKey:in:visitorId:accountId:projectId:attributes:locationProperties:enableTracking:)``.
+    public static func makeDefault(
+        decisionStore: DecisionStore,
+        eventBus: EventBus,
+        logger: Logger
+    ) -> ExperienceManager {
+        ExperienceManager(
+            ruleManager: RuleManager(logger: logger),
+            bucketingManager: BucketingManager(eventSink: NoopEventSink(), logger: logger),
+            decisionStore: decisionStore,
+            eventBus: eventBus,
+            logger: logger
+        )
     }
 
     // The eight parameters are the pinned call contract (the visitor/account/project triple, the two
@@ -86,7 +133,7 @@ internal struct ExperienceManager: Sendable {
     ///   - enableTracking: When `false`, suppresses the bucketing enqueue (passed through to the
     ///     bucket step); the variation is still selected, persisted, and fired.
     /// - Returns: The assigned ``Variation``, or `nil` on any short-circuit / gate failure / miss.
-    func selectVariation( // swiftlint:disable:this function_parameter_count
+    public func selectVariation( // swiftlint:disable:this function_parameter_count
         forKey key: String,
         in config: ProjectConfig,
         visitorId: String,
