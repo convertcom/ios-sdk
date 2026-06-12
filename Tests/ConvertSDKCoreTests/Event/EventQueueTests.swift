@@ -497,6 +497,47 @@ struct EventQueueTests {
         #expect(await harness.queue.drain().isEmpty)
     }
 
+    // MARK: Scenario 13 — background transition persists the live buffer to disk (Story 5.3, lifecycle)
+
+    /// Story-5.3 background-transition durability: `LifecycleObserver` calls `persistBeforeBackground()`
+    /// when the app backgrounds, so the in-memory buffer is flushed to disk BEFORE the OS can suspend
+    /// the process — closing the gap where a below-threshold buffer (never size/interval-flushed) would
+    /// be lost on a cold kill. `batchSize 100` keeps the three enqueues below threshold so NO auto-flush
+    /// races the explicit persist; the method assembles the buffer into the canonical envelope, hands it
+    /// to ``EventQueueStore/persist(_:)`` ONCE, and empties the buffer. The three distinct visitors group
+    /// into one envelope in first-seen order (`assemble`), so the persisted batch flattens to v1/v2/v3,
+    /// and a follow-up `drain()` returns them DISK-FIRST (the buffer is now empty, the store holds them) —
+    /// proving the in-memory buffer moved to disk rather than being duplicated across both surfaces.
+    @Test("persistBeforeBackground moves the buffer to the store and clears the in-memory buffer")
+    func persistBeforeBackgroundMovesBufferToDisk() async {
+        let harness = makeHarness(batchSize: 100)
+        await enqueueBucketing(1, for: "v1", on: harness.queue)
+        await enqueueBucketing(1, for: "v2", on: harness.queue)
+        await enqueueBucketing(1, for: "v3", on: harness.queue)
+
+        await harness.queue.persistBeforeBackground()
+
+        // Persisted exactly once, carrying all three visitors in first-seen order (one assembled envelope).
+        #expect(await harness.store.persistCallCount == 1)
+        #expect(Self.visitorIds(of: await harness.store.storedEvents) == ["v1", "v2", "v3"])
+        // The buffer was emptied, so the recovery drain loads the three back disk-first (not duplicated).
+        let drained = await harness.queue.drain()
+        #expect(Self.visitorIds(of: drained) == ["v1", "v2", "v3"])
+    }
+
+    // MARK: Scenario 14 — background persist is a no-op when the buffer is empty (Story 5.3, lifecycle)
+
+    /// The empty-buffer guard: a background transition with nothing buffered must NOT write an empty
+    /// envelope to disk (which would needlessly bump the persist count and could overwrite a queue file
+    /// the interval/size path is mid-flush of). `persistBeforeBackground` short-circuits on an empty
+    /// buffer, so `persistCallCount` stays at zero.
+    @Test("persistBeforeBackground is a no-op when the buffer is empty")
+    func persistBeforeBackgroundIsNoOpWhenBufferEmpty() async {
+        let harness = makeHarness()
+        await harness.queue.persistBeforeBackground()
+        #expect(await harness.store.persistCallCount == 0)
+    }
+
     /// Unwraps the `eventCount` carried by an `.apiQueueReleased` payload; `nil` for any other
     /// case. Keeps the `switch` out of the test body and gives the AC8 assertion one field to
     /// compare — mirrors `EventBusTests.experienceId(of:)` / `ConfigStoreTests.snapshotAccountId(of:)`.
