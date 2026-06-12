@@ -300,8 +300,13 @@ struct EventQueueTests {
         }
         await enqueueBucketing(Defaults.batchSize, for: "v1", on: harness.queue)
         let delivered = await awaitReleasedCount(recorder)
-        // Fired exactly once, carrying the delivered event count (== batchSize for one full batch).
+        // The first (and only) fire carried the delivered event count (== batchSize for one full batch).
         #expect(delivered == Defaults.batchSize)
+        // AC8 "fires ONCE per flush": settle the MainActor a few more times to give any spurious second
+        // fire a chance to land, then assert exactly one delivery — a count check alone would not catch
+        // a duplicate fire that happened to carry the same count.
+        for _ in 0..<5 { await drainMainActor() }
+        #expect(await recorder.fireCount == 1)
     }
 
     // MARK: Scenario 8 — tracking disabled drops every entry: no upload, empty drain (AC9)
@@ -331,12 +336,16 @@ struct EventQueueTests {
 /// `EventBus.fire`, not synchronously). An `actor` satisfies the `Sendable` capture the `@Sendable`
 /// bus callback requires with no suppression; `recorded` is `nil` until the first fire lands.
 private actor ReleasedCountRecorder {
+    /// The count carried by the FIRST fire; `nil` until one lands.
     private(set) var recorded: Int?
+    /// How many times the callback fired — so the AC8 test can assert "fires ONCE per flush", not
+    /// merely that the first fire carried the right count (a spurious second fire would be caught).
+    private(set) var fireCount = 0
 
-    /// Stores the first delivered count; ignores any subsequent fire so a double-delivery would be
-    /// caught by the count check rather than silently overwritten.
+    /// Records a delivery: bumps the fire count and stores the count of the FIRST fire (later fires
+    /// bump the count but do not overwrite, so the test sees both "first count" and "how many fires").
     func record(_ count: Int?) {
-        guard recorded == nil else { return }
-        recorded = count
+        fireCount += 1
+        if recorded == nil { recorded = count }
     }
 }
