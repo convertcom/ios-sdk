@@ -1,9 +1,21 @@
 // Tests/ConvertSDKCoreTests/Event/EventQueueTests.swift
-// `@testable` import: the suite reaches the in-module `EventQueue` actor (Story 5.1) and
-// observes its `apiQueueReleased` firing through the public `EventBus` (`on(.apiQueueReleased)`),
-// never via the `package fire`. The `EventQueue` actor does not exist yet, so this suite is
-// EXPECTED to fail to compile until the GREEN phase lands it (RED) — the ONLY unresolved symbol
-// must be `EventQueue`; the mocks and helpers here compile against the real ports.
+// `@testable` import: the suite reaches the in-module `EventQueue` actor and observes its
+// `apiQueueReleased` firing through the public `EventBus` (`on(.apiQueueReleased)`), never via the
+// `package fire`.
+//
+// RED state: the eight Story-5.1 scenarios are FROZEN (committed green). This file is now extended
+// for Story 5.2 (on-disk persistence + exactly-once), so it is EXPECTED to fail to compile until the
+// GREEN phase evolves `EventQueue` — the ONLY errors must stem from the not-yet-added 5.2 production
+// API: the non-defaulted `store:` init param, the now-`async` `drain()`, and the new `start()`. The
+// mocks and helpers here (including `MockEventQueueStore`) compile against the already-updated ports.
+//
+// `file_length` is disabled file-wide (a single named rule — NOT `disable all`): this is ONE cohesive
+// `@Suite("EventQueue")` whose tests all share the `makeHarness` factory and the static entry/envelope
+// helpers, so splitting it across files to shave lines would fragment the suite for no readability gain.
+// The file crossed the 400-line default only when the Story-5.2 disk-persistence scenarios (AC1/3/5/9)
+// were appended. Mirrors the file-wide `file_length` disable convention in `MockCorePorts.swift` /
+// `Tests/ConvertSDKTests/Support/TestFixtures.swift`.
+// swiftlint:disable file_length
 import Foundation
 import Testing
 @testable import ConvertSDKCore
@@ -53,21 +65,27 @@ struct EventQueueTests {
         let uploader: MockEventUploader
         let bus: EventBus
         let clock: MockClock
+        let store: MockEventQueueStore
     }
 
     /// Builds the subject through ONE factory so no test re-spells the `EventQueue(...)`
     /// construction inline (SonarQube CPD is token-based — the duplicated block, not the
     /// argument names, is what trips the 3% gate). Every default mirrors the production default
     /// (`Defaults.batchSize` / `Defaults.releaseIntervalMs`, tracking on); a test overrides only
-    /// the knob it exercises. The `uploader`/`bus`/`clock` it wires are returned in the harness so
-    /// the test can assert on them without reconstructing the same instances.
+    /// the knob it exercises. The `uploader`/`bus`/`clock`/`store` it wires are returned in the
+    /// harness so the test can assert on them without reconstructing the same instances.
+    ///
+    /// `store` defaults to a fresh empty ``MockEventQueueStore`` so the eight Story-5.1 tests pass
+    /// no argument and keep working unchanged; a Story-5.2 disk-persistence test injects (or, since
+    /// `seed` is actor-isolated, post-seeds) its own store to stage the on-disk fixture.
     private func makeHarness(
         accountId: String = "acc1",
         projectId: String = "proj1",
         batchSize: Int = Defaults.batchSize,
         releaseIntervalMs: Int = Defaults.releaseIntervalMs,
         trackingEnabled: Bool = true,
-        uploaderShouldFail: Bool = false
+        uploaderShouldFail: Bool = false,
+        store: MockEventQueueStore = MockEventQueueStore()
     ) -> QueueHarness {
         let uploader = MockEventUploader(shouldFail: uploaderShouldFail)
         let bus = EventBus()
@@ -80,9 +98,10 @@ struct EventQueueTests {
             uploader: uploader,
             eventBus: bus,
             trackingEnabled: trackingEnabled,
-            clock: clock
+            clock: clock,
+            store: store
         )
-        return QueueHarness(queue: queue, uploader: uploader, bus: bus, clock: clock)
+        return QueueHarness(queue: queue, uploader: uploader, bus: bus, clock: clock, store: store)
     }
 
     /// One bucketing entry; ids default so a test that only needs "some bucketing entry" passes
@@ -99,6 +118,26 @@ struct EventQueueTests {
     /// construction so no test re-inlines it.
     static func makeConversionEntry(goalId: String = "goal1") -> TrackingEventEntry {
         .conversion(ConversionEventData(goalId: goalId))
+    }
+
+    /// One persisted ``TrackingEvent`` envelope carrying a single bucketing event for `visitorId`,
+    /// shaped the way a prior process would have left it in the queue file. Single owner of the
+    /// seed-envelope construction so the Story-5.2 disk-first / cold-start tests stage their fixture
+    /// in one call (`accountId`/`projectId` mirror `makeHarness`'s defaults so a loaded envelope is
+    /// indistinguishable from one the queue itself would assemble).
+    static func makeStoredEvent(visitorId: String) -> TrackingEvent {
+        TrackingEvent(
+            accountId: "acc1",
+            projectId: "proj1",
+            visitors: [Visitor(visitorId: visitorId, segments: [:], events: [makeBucketingEntry()])]
+        )
+    }
+
+    /// Flattens a delivered/drained `[TrackingEvent]` to the visitorIds it carries, in envelope-then-
+    /// visitor order. Single owner of the `flatMap(\.visitors).map(\.visitorId)` chain so the
+    /// disk-first-ordering (AC3) and exactly-once (AC9) assertions express intent, not the traversal.
+    static func visitorIds(of batch: [TrackingEvent]) -> [String] {
+        batch.flatMap(\.visitors).map(\.visitorId)
     }
 
     /// Enqueues `count` bucketing entries for `visitorId` (segments `nil`) so the size-trigger
@@ -139,6 +178,23 @@ struct EventQueueTests {
     private func awaitUploadCount(_ uploader: MockEventUploader, reaches count: Int) async {
         for _ in 0..<200 {
             if await uploader.callCount >= count { return }
+            await Task.yield()
+        }
+    }
+
+    /// Generic sibling of ``awaitUploadCount(_:reaches:)`` for the Story-5.2 disk-side counters: yields
+    /// the cooperative thread until the awaited `actual` count reaches `count` (or the 200-yield budget
+    /// is spent). The failed-flush persist (AC1) and the failure-then-success cycle (AC9) complete on
+    /// the same UNSTRUCTURED flush `Task` the enqueue does not await, and the `store.persist(...)` /
+    /// `store.clear()` runs AFTER `uploader.upload(...)` returns/throws — so waiting on the upload count
+    /// alone can exit before the disk side effect lands. Polling a caller-supplied async getter (rather
+    /// than a second `MockEventUploader`-typed copy of this loop) keeps it reusable across the store's
+    /// distinct counters with no CPD-duplicate barrier. Same contract as the upload barrier: a
+    /// SCHEDULING guard over an EVENTUAL count, never an elapsed-duration threshold (NFR21); the
+    /// caller's `#expect` makes the real assertion.
+    private func awaitCount(reaches count: Int, _ actual: @Sendable () async -> Int) async {
+        for _ in 0..<200 {
+            if await actual() >= count { return }
             await Task.yield()
         }
     }
@@ -319,6 +375,112 @@ struct EventQueueTests {
         // launches a flush Task — so assert the zero count DIRECTLY (a `awaitUploadCount` barrier
         // would be a negative check burning its yield budget for an upload that can never happen).
         #expect(await harness.uploader.callCount == 0)
+        #expect(await harness.queue.drain().isEmpty)
+    }
+
+    // MARK: Scenario 9 — a failed flush persists the batch to DISK, not back into memory (AC1, 5.2)
+
+    /// Story-5.2 evolution of the AC1 failure path: where 5.1 re-buffered the drained entries in
+    /// memory (`buffer = drained + buffer`), the on-disk story instead persists the assembled batch
+    /// through ``EventQueueStore/persist(_:)`` and empties the buffer — so a process death after the
+    /// failed upload still has the batch durably on disk for the next cold start. `batchSize 1` trips
+    /// the flush on the lone enqueue; the uploader throws, so the catch path must hit `persist`.
+    @Test("a failed flush persists the assembled batch to disk and clears the in-memory buffer")
+    func failedFlushPersistsToDisk() async {
+        let harness = makeHarness(batchSize: 1, uploaderShouldFail: true)
+        await harness.queue.enqueue(Self.makeBucketingEntry(), for: "v1", segments: nil)
+        // The upload is ATTEMPTED (and throws); persist runs AFTER it on the same flush Task, so wait
+        // for the upload then for the disk write to land (NFR21: scheduling barriers, no wall clock).
+        await awaitUploadCount(harness.uploader, reaches: 1)
+        await awaitCount(reaches: 1) { await harness.store.persistCallCount }
+
+        #expect(await harness.store.persistCallCount >= 1)
+        // The assembled batch (one visitor, one event) is now on disk — not silently dropped.
+        let onDisk = await harness.store.storedEvents
+        #expect(onDisk.isEmpty == false)
+        #expect(Self.visitorIds(of: onDisk) == ["v1"])
+    }
+
+    // MARK: Scenario 10 — drain merges disk-first then memory and clears BOTH (AC3, 5.2)
+
+    /// AC3 disk-first merge: a `drain()` loads the persisted queue as its FIRST await, prepends those
+    /// `diskEvents` to `assemble(buffer)` (disk-first), then clears the buffer AND the store in the
+    /// same actor step. Two seeded disk envelopes (`disk-v1`, `disk-v2`) plus one in-memory entry
+    /// (`memory-v3`) must come back in disk-then-memory order, and a follow-up `drain()` is empty
+    /// (both surfaces were cleared). Seeding is post-construction because `seed` is actor-isolated
+    /// and `makeHarness` owns the store instance the queue was wired with.
+    @Test("drain returns disk events before memory events and clears both surfaces")
+    func drainMergesDiskFirstThenClearsBoth() async {
+        let harness = makeHarness()
+        await harness.store.seed([
+            Self.makeStoredEvent(visitorId: "disk-v1"),
+            Self.makeStoredEvent(visitorId: "disk-v2")
+        ])
+        await harness.queue.enqueue(Self.makeBucketingEntry(), for: "memory-v3", segments: nil)
+
+        let drained = await harness.queue.drain()
+        // Disk-first: the two persisted visitors precede the in-memory one, in seeded then enqueue order.
+        #expect(Self.visitorIds(of: drained) == ["disk-v1", "disk-v2", "memory-v3"])
+        // The store was cleared in the same actor step as the buffer…
+        #expect(await harness.store.clearCallCount >= 1)
+        // …so nothing remains: a second drain (empty disk + empty buffer) returns nothing.
+        #expect(await harness.queue.drain().isEmpty)
+    }
+
+    // MARK: Scenario 11 — cold-start start() re-expands the persisted queue into the buffer (AC5, 5.2)
+
+    /// AC5 cold-start recovery: `start()` loads the persisted queue and re-expands each loaded
+    /// ``TrackingEvent``'s visitors/events back into buffered rows, so a subsequent `drain()` returns
+    /// the recovered event — proving `start()` rehydrated the buffer from disk. Asserted via `drain()`
+    /// (not auto-flush timing) so no wall clock is involved (NFR21). `loadCallCount` after `start()`
+    /// confirms `start()` itself consulted the store (the re-expansion entry point), and `contains`
+    /// (rather than an exact count) keeps the assertion robust to the implementer's choice of whether
+    /// `start()` also clears disk — both variants deliver the recovered visitor through `drain()`.
+    @Test("start() loads the persisted queue so a later drain returns the recovered event")
+    func coldStartLoadsPersistedQueue() async {
+        let harness = makeHarness()
+        await harness.store.seed([Self.makeStoredEvent(visitorId: "persisted-1")])
+
+        await harness.queue.start()
+        #expect(await harness.store.loadCallCount >= 1)
+
+        let drained = await harness.queue.drain()
+        #expect(Self.visitorIds(of: drained).contains("persisted-1"))
+    }
+
+    // MARK: Scenario 12 — exactly-once across a crash (persist) → restart (success) cycle (AC9, 5.2)
+
+    /// AC9 exactly-once: a failure-then-success cycle must deliver every event exactly once — no loss,
+    /// no double-send — with the crash point simulated by the mock store's persist (NOT a real process
+    /// kill). `batchSize 1`: enqueue A while the uploader fails, so A's flush persists A to disk (the
+    /// "crashed before delivery" state). Flip the uploader to succeed, then enqueue B (a distinct
+    /// visitor): its flush `drain()` now loads A from disk + B from memory and delivers BOTH in one
+    /// upload. Exactly-once is asserted over the SUCCESSFULLY delivered batches only — the failed
+    /// attempt is recorded by the mock too (it appends before throwing), so the successful deliveries
+    /// are the attempts AFTER the captured failed-attempt count; flattening those to visitorIds must
+    /// yield each original exactly once (Set count == array count), and a final `drain()` is empty
+    /// (nothing stranded on disk or in memory).
+    @Test("a failure-then-success cycle delivers every event exactly once with no loss or duplication")
+    func exactlyOnceAcrossFailureThenSuccess() async {
+        let harness = makeHarness(batchSize: 1, uploaderShouldFail: true)
+        // Event A fails to upload and is persisted to disk (the simulated crash-before-delivery point).
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expA"), for: "vA", segments: nil)
+        await awaitUploadCount(harness.uploader, reaches: 1)
+        await awaitCount(reaches: 1) { await harness.store.persistCallCount }
+        let failedAttempts = await harness.uploader.callCount
+
+        // Restart: the uploader now succeeds. Event B's flush loads A (disk) + B (memory) and ships both.
+        await harness.uploader.setShouldFail(false)
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expB"), for: "vB", segments: nil)
+        await awaitUploadCount(harness.uploader, reaches: failedAttempts + 1)
+
+        // Count only the SUCCESSFUL deliveries (the attempts after the failed ones): each original
+        // visitorId must appear exactly once — no event lost, none delivered twice.
+        let succeeded = await harness.uploader.uploadedBatches().dropFirst(failedAttempts)
+        let deliveredIds = succeeded.flatMap { Self.visitorIds(of: $0) }
+        #expect(Set(deliveredIds).count == deliveredIds.count)
+        #expect(Set(deliveredIds) == ["vA", "vB"])
+        // Nothing stranded: the disk-clearing successful drain leaves both surfaces empty.
         #expect(await harness.queue.drain().isEmpty)
     }
 
