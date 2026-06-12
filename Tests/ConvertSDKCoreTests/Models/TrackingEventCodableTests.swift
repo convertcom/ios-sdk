@@ -50,6 +50,38 @@ struct TrackingEventCodableTests {
         return entry?["data"] as? [String: Any]
     }
 
+    /// The encoded `visitors` array of `event` as `[String: Any]` dicts, or `nil` on a shape
+    /// miss. Single owner of the `encodedObject(...)["visitors"]` cast so the multi-field and
+    /// multi-visitor envelope tests below share it rather than re-inlining the same drill (the
+    /// SonarQube CPD gate is token-based — the duplicated cast block, not the names, is what trips
+    /// it). Records an `Issue` and returns `nil` rather than force-unwrapping.
+    static func visitorsArray(of event: TrackingEvent) -> [[String: Any]]? {
+        guard let visitors = encodedObject(event)?["visitors"] as? [[String: Any]] else {
+            Issue.record("encoded event is missing a visitors array")
+            return nil
+        }
+        return visitors
+    }
+
+    /// The `eventType` strings of one encoded visitor dict's `events`, in wire order — the field
+    /// the envelope tests assert per visitor. Shared accessor so neither test re-inlines the
+    /// `events` → `eventType` map.
+    static func eventTypes(of visitor: [String: Any]) -> [String] {
+        let events = visitor["events"] as? [[String: Any]] ?? []
+        return events.compactMap { $0["eventType"] as? String }
+    }
+
+    /// A multi-entry single visitor (segments `[:]`) carrying every entry in `entries`, so the
+    /// AC5 multi-field envelope test builds its subject without re-spelling the
+    /// `TrackingEvent` → `Visitor` assembly that `event(visitorId:entry:)` only does for ONE entry.
+    static func event(visitorId: String, entries: [TrackingEventEntry]) -> TrackingEvent {
+        TrackingEvent(
+            accountId: "acc1",
+            projectId: "proj1",
+            visitors: [Visitor(visitorId: visitorId, segments: [:], events: entries)]
+        )
+    }
+
     @Test("bucketing event encodes the camelCase wire shape with hardcoded envelope")
     func bucketingWireShape() {
         let entry = TrackingEventEntry.bucketing(
@@ -142,5 +174,71 @@ struct TrackingEventCodableTests {
         #expect(object["goalId"] as? String == "g-1")
         #expect(object["goalData"] == nil)
         #expect(object["bucketingData"] == nil)
+    }
+
+    /// AC5 full canonical envelope — a single visitor (segments `[:]`) holding BOTH a bucketing
+    /// and a conversion entry must encode the complete multi-field shape: the hardcoded top-level
+    /// envelope (`accountId`/`projectId`/`enrichData:false`/`source:"ios-sdk"`), the visitor with
+    /// `visitorId`/`segments:{}`/`events:[…]`, and both entries with the correct `eventType` tag and
+    /// a flat `data` object. Inspected field-by-field through the parsed `[String: Any]` tree (the
+    /// shared `encodedObject`/`visitorsArray` helpers), since the envelope STRUCTURE — not a
+    /// substring — is the contract under test. This is the wire shape the `EventQueue` (Story 5.1)
+    /// assembles a drained batch into.
+    @Test("a single visitor with a bucketing and a conversion entry encodes the full AC5 envelope")
+    func fullEnvelopeEncodesCanonicalShape() {
+        let event = Self.event(
+            visitorId: "vis1",
+            entries: [
+                .bucketing(BucketingEventData(experienceId: "exp1", variationId: "var1")),
+                .conversion(ConversionEventData(goalId: "goal1"))
+            ]
+        )
+        guard let object = Self.encodedObject(event), let visitor = Self.visitorsArray(of: event)?.first else {
+            return  // encodedObject / visitorsArray already recorded the Issue on failure.
+        }
+        // Top-level hardcoded envelope.
+        #expect(object["accountId"] as? String == "acc1")
+        #expect(object["projectId"] as? String == "proj1")
+        #expect(object["enrichData"] as? Bool == false)
+        #expect(object["source"] as? String == "ios-sdk")
+        // The visitor: id, the canonical empty segments map, and BOTH entries in order.
+        #expect(visitor["visitorId"] as? String == "vis1")
+        #expect((visitor["segments"] as? [String: Any])?.isEmpty == true)
+        #expect(Self.eventTypes(of: visitor) == ["bucketing", "conversion"])
+        // The flat data of each entry (no nesting one level deeper).
+        let events = visitor["events"] as? [[String: Any]]
+        #expect((events?.first?["data"] as? [String: Any])?["experienceId"] as? String == "exp1")
+        #expect((events?.last?["data"] as? [String: Any])?["goalId"] as? String == "goal1")
+    }
+
+    /// AC5 grouping wire proof — a two-visitor `TrackingEvent` encodes `visitors` as a 2-element
+    /// array preserving CONSTRUCTION order with each visitor's own events, the on-the-wire shape
+    /// the `EventQueue`'s per-visitor grouping (FR43) produces. Reuses the shared `visitorsArray` /
+    /// `eventTypes` accessors so it adds no duplicated decode block (3% CPD gate).
+    @Test("a two-visitor event encodes visitors as an ordered 2-element array with per-visitor events")
+    func multiVisitorEncodesOrderedArray() {
+        let event = TrackingEvent(
+            accountId: "acc1",
+            projectId: "proj1",
+            visitors: [
+                Visitor(
+                    visitorId: "v1",
+                    segments: [:],
+                    events: [.bucketing(BucketingEventData(experienceId: "exp1", variationId: "var1"))]
+                ),
+                Visitor(
+                    visitorId: "v2",
+                    segments: [:],
+                    events: [.conversion(ConversionEventData(goalId: "goal1"))]
+                )
+            ]
+        )
+        guard let visitors = Self.visitorsArray(of: event) else { return }
+        #expect(visitors.count == 2)
+        // Order preserved: v1 (bucketing) then v2 (conversion).
+        #expect(visitors.first?["visitorId"] as? String == "v1")
+        #expect(Self.eventTypes(of: visitors[0]) == ["bucketing"])
+        #expect(visitors.last?["visitorId"] as? String == "v2")
+        #expect(Self.eventTypes(of: visitors[1]) == ["conversion"])
     }
 }
