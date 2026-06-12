@@ -50,6 +50,14 @@ public struct ProjectConfig: Decodable, Sendable {
     /// Experiences decoded tolerantly (wire `experiences`, D4): each element keeps its `id` and
     /// degrades an unknown ``Experience/type`` to `nil` rather than throwing, retaining every entry.
     public var experiences: [ProjectConfig.Experience]?
+    /// The FULL generated experiences (wire `experiences`), retained alongside the stripped
+    /// ``experiences`` so sticky-assignment lookups can reach `key` and the `variations` array that
+    /// the stripped ``Experience`` drops. Decoded PER-ELEMENT (each element under its own `try?` via
+    /// ``DegradingExperience``) so a single drifted element — e.g. the `"a/b_fullstack"` value absent
+    /// from the generated `ExperienceTypes` enum — degrades out alone WITHOUT a whole-array
+    /// `dataCorrupted` throw nulling its valid siblings. `nil` when the field is absent or every
+    /// element degraded. Queried via ``fullExperience(forKey:)``.
+    public var rawExperiences: [Components.Schemas.ConfigExperience]?
     /// Audiences (wire `audiences`) — the generated element type decodes cleanly in the baseline.
     public var audiences: [Components.Schemas.ConfigAudience]?
     /// Segments (wire `segments`) — the generated element type decodes cleanly in the baseline.
@@ -117,6 +125,22 @@ public struct ProjectConfig: Decodable, Sendable {
             [ProjectConfig.Experience].self,
             forKey: .experiences
         )
+        // PC-1: retain the FULL generated experiences too, decoded PER-ELEMENT. A whole-array
+        // `try? decode([ConfigExperience])` would throw on the first drifted element (e.g. the
+        // unknown `"a/b_fullstack"` type → `dataCorrupted`) and the `try?` would null the ENTIRE
+        // array, losing valid siblings. Decoding each element through `DegradingExperience` (whose
+        // `init` never throws — it `try?`s the real type) keeps the unkeyed-container index always
+        // advancing by exactly one, so the loop terminates and a bad element degrades out alone.
+        if var rawArray = try? container.nestedUnkeyedContainer(forKey: .experiences) {
+            var collected: [Components.Schemas.ConfigExperience] = []
+            while !rawArray.isAtEnd {
+                if let wrapped = try? rawArray.decode(DegradingExperience.self),
+                   let experience = wrapped.experience {
+                    collected.append(experience)
+                }
+            }
+            rawExperiences = collected.isEmpty ? nil : collected
+        }
         audiences = try? container.decodeIfPresent(
             [Components.Schemas.ConfigAudience].self,
             forKey: .audiences
@@ -133,6 +157,26 @@ public struct ProjectConfig: Decodable, Sendable {
             [Components.Schemas.ConfigFeature].self,
             forKey: .features
         )
+    }
+
+    /// The FULL generated experience whose `key` equals `key`, or `nil` when no retained experience
+    /// matches (an unknown key, or an element that degraded out of ``rawExperiences``). Returns the
+    /// FULL ``Components/Schemas/ConfigExperience`` — `key`, `variations`, and the rest — not the
+    /// stripped ``Experience``, so sticky-variation assignment can read the variations array.
+    public func fullExperience(forKey key: String) -> Components.Schemas.ConfigExperience? {
+        rawExperiences?.first { $0.key == key }
+    }
+
+    /// The audience whose `id` equals `id` in the decoded ``audiences`` array, or `nil` for an
+    /// unknown id (lookup miss, not a degrade).
+    public func audience(id: String) -> Components.Schemas.ConfigAudience? {
+        audiences?.first { $0.id == id }
+    }
+
+    /// The location whose `id` equals `id` in the decoded ``locations`` array, or `nil` for an
+    /// unknown id (lookup miss, not a degrade).
+    public func location(id: String) -> Components.Schemas.ConfigLocation? {
+        locations?.first { $0.id == id }
     }
 
     /// The degrading project sub-tree. Each field degrades independently so a drifted field
@@ -199,5 +243,23 @@ public struct ProjectConfig: Decodable, Sendable {
                 forKey: .type
             )
         }
+    }
+}
+
+/// Decodes ONE `experiences` array element permissively for ``ProjectConfig/rawExperiences``: its
+/// `init(from:)` ALWAYS succeeds (it `try?`s the real ``Components/Schemas/ConfigExperience`` decode),
+/// capturing the experience when the element decodes and leaving ``experience`` `nil` otherwise. That
+/// guarantee is load-bearing: when used with `UnkeyedDecodingContainer.decode(_:)`, a non-throwing
+/// element decode advances the container index by EXACTLY one per call, so the per-element retention
+/// loop in ``ProjectConfig/init(from:)`` always terminates (bounded by the array length) AND a single
+/// drifted element — e.g. an unknown `type` enum value that throws `dataCorrupted` — degrades to `nil`
+/// without aborting the whole array. File-private (depth 0) to stay within SwiftLint `nesting`.
+private struct DegradingExperience: Decodable {
+    /// The decoded experience, or `nil` when this element failed to decode (degraded out).
+    let experience: Components.Schemas.ConfigExperience?
+
+    init(from decoder: any Decoder) throws {
+        // Never rethrows: a failing `ConfigExperience` decode (e.g. unknown `type`) becomes `nil`.
+        experience = try? Components.Schemas.ConfigExperience(from: decoder)
     }
 }
