@@ -1,4 +1,14 @@
 // Tests/ConvertSDKTests/Adapters/URLSessionHTTPClientTests.swift
+//
+// MAINTENANCE NOTE (file length): this file is the canonical home for EVERY URLProtocolStub-driving
+// suite, because they must all nest under the ONE shared `.serialized` parent (URLProtocolStubBackedTests)
+// so they run serially relative to each other (the parent installs `isParallelizationEnabled = false` for
+// its whole subtree). Story 5.5 added the RecordedRequestCountTests child here, putting the file AT the
+// 400-line file-length limit. A future stub-backed suite added here will breach it — at that point add a
+// named file-length lint suppression at the top (mirroring TestFixtures.swift / ConvertContextTests.swift)
+// rather than splitting the stub-backed suites across files, which would re-introduce the cross-suite
+// reset() race the single parent exists to prevent. (Such a suppression is intentionally NOT present yet:
+// the linter rejects it as superfluous until the limit is actually exceeded.)
 import Testing
 import Foundation
 import ConvertSDK
