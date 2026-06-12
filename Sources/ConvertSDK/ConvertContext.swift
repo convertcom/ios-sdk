@@ -318,13 +318,18 @@ public final class ConvertContext: Sendable {
             // manager (AOD-6, no throw).
             return Feature.disabled(key: key)
         }
+        // AC11 (JS parity, bd-0ca): overlay the visitor's persisted segments onto the explicit attribute map
+        // so the carrying experience's audience gate can match on a `setDefaultSegments` value, exactly as
+        // runExperience does — JS context.ts calls getVisitorProperties identically on the feature path.
+        let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
+        let attributes = mergedAttributes(stringAttributes(), with: segments)
         return await featureManager.evaluateFeature(
             key: key,
             in: config,
             visitorId: visitorId,
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
-            attributes: stringAttributes(),
+            attributes: attributes,
             locationProperties: [:]
         )
     }
@@ -347,12 +352,17 @@ public final class ConvertContext: Sendable {
         guard let config = await sdk.configStore.getSnapshot() else {
             return []
         }
+        // AC11 (JS parity, bd-0ca): same segment overlay as the single-feature path (run-all mirrors
+        // run-single, not diverge) — each feature's carrying-experience audience gate sees the visitor's
+        // persisted segments.
+        let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
+        let attributes = mergedAttributes(stringAttributes(), with: segments)
         return await featureManager.evaluateAllFeatures(
             in: config,
             visitorId: visitorId,
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
-            attributes: stringAttributes(),
+            attributes: attributes,
             locationProperties: [:]
         )
     }
