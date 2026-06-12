@@ -61,6 +61,11 @@ struct SegmentationTests {
     /// The country the AC11 audience leaf gates on AND the segment value the positive case sets — one
     /// owner so the gate and the satisfying segment can never drift apart.
     private static let gatedCountry = "US"
+    /// The `key` of the sole feature the AC11/parity feature fixture carries — declared once so the
+    /// fixture build and the `runFeature(_:)` lookup never re-spell the literal (SonarQube 3% gate).
+    /// Matches `makeFeatureConfig`'s default feature key so the spliced fixture reuses that wire shape
+    /// verbatim (the feature `id`/change `feature_id` binding stays whatever `makeFeatureConfig` bakes).
+    private static let featureKey = "flag-1"
 
     /// The fully-wired segmentation system-under-test plus the collaborator a test observes. A named
     /// struct (not a large tuple) keeps the `large_tuple` lint rule satisfied. `Sendable` — `ConvertSDK`
@@ -130,6 +135,46 @@ struct SegmentationTests {
         let envelopeHead = #"{"account_id":"acc-seg","project":{"id":"proj-seg"},"#
         let envelope = envelopeHead + #""experiences":[\#(experience)],"audiences":[\#(audience)]}"#
         return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
+    }
+
+    /// A `ProjectConfig` whose feature-CARRYING experience is gated on a `country == countryEquals`
+    /// audience — the FEATURE twin of ``makeCountryGatedConfig``. It SPLICES two PROVEN wire shapes:
+    ///   * the `country`-`equals` audience graph from ``makeCountryGatedConfig`` (the `OR → AND →
+    ///     OR_WHEN` envelope `RuleAdapterTests` decodes end-to-end), referenced by id `"aud-1"`;
+    ///   * the single `fullStackFeature`-bearing experience + top-level `features` entry from
+    ///     `Support/TestFixtures.makeFeatureConfig` (id `"feat-exp"`/key `"feat-exp-key"`, the
+    ///     `{"id":1,"type":"fullStackFeature",…}` change whose INTEGER id is load-bearing — a quoted
+    ///     id degrades the whole experience out of `rawExperiences` — and the matching `features[]`
+    ///     entry whose STRING id is `String(featureIdInt)`).
+    /// The ONLY change versus `makeFeatureConfig`'s experience is `"audiences":["aud-1"]` in place of
+    /// `"audiences":[]`, so the carrier buckets IFF the audience sees `country == countryEquals`. Thus
+    /// `runFeature(featureKey)` returns `.enabled` ONLY when a `country` segment satisfying the gate is
+    /// in scope — which is exactly what the parity test asserts the FEATURE path must honour.
+    ///
+    /// `account_id`/`project.id` are `"acc-seg"`/`"proj-seg"` (this suite's owner) so the sticky store
+    /// key `"<accountId>-<projectId>-<visitorId>"` the context computes — and the segment overlay reads
+    /// under — is well-formed. Assembled in fragments (audience → feature → experience → envelope) so
+    /// each line stays ≤120 chars (SwiftLint `line_length`); the spliced shape is written ONCE here, the
+    /// sole owner of the feature+audience combination (SonarQube 3% gate; CPD is token-based, so a shared
+    /// builder — not renamed locals — holds the diff under it). `throws` only on malformed JSON.
+    /// - Parameter countryEquals: The country code the audience leaf matches with the `equals` operator.
+    private func makeCountryGatedFeatureConfig(countryEquals: String) throws -> ProjectConfig {
+        let leaf = #"{"rule_type":"country","value":"\#(countryEquals)","matching":{"match_type":"equals"}}"#
+        let rules = #"{"OR":[{"AND":[{"OR_WHEN":[\#(leaf)]}]}]}"#
+        let audience = #"{"id":"aud-1","key":"aud-1","type":"transient","rules":\#(rules)}"#
+        let variablesData = #"{"flag":true,"label":"hi"}"#
+        let variableTypes = #"[{"key":"flag","type":"boolean"},{"key":"label","type":"string"}]"#
+        let changeData = #""data":{"feature_id":10031,"variables_data":\#(variablesData)}"#
+        let change = #"{"id":1,"type":"fullStackFeature",\#(changeData)}"#
+        let variationHead = #"{"id":"feat-var","key":"feat-var-key","traffic_allocation":100,"#
+        let variation = variationHead + #""changes":[\#(change)]}"#
+        let experienceHead = #"{"id":"feat-exp","key":"feat-exp-key","type":"a/b","#
+        let experience = experienceHead + #""audiences":["aud-1"],"locations":[],"variations":[\#(variation)]}"#
+        let featureHead = #"{"id":"10031","name":"\#(Self.featureKey)-name","key":"\#(Self.featureKey)","#
+        let feature = featureHead + #""variables":\#(variableTypes)}"#
+        let envelopeHead = #"{"account_id":"acc-seg","project":{"id":"proj-seg"},"#
+        let envelopeTail = #""experiences":[\#(experience)],"features":[\#(feature)],"audiences":[\#(audience)]}"#
+        return try JSONDecoder().decode(ProjectConfig.self, from: Data((envelopeHead + envelopeTail).utf8))
     }
 
     /// Subscribes a counting observer for `SystemEvent.segments` on `sdk` and returns the live count cell
@@ -240,5 +285,44 @@ struct SegmentationTests {
         let controlContext = sut.sdk.createContext(visitorId: "v-none")
         let controlVariation = await controlContext.runExperience(Self.experienceKey)
         #expect(controlVariation == nil, "with no country segment the country audience fails — no bucketing")
+    }
+
+    // MARK: - AC11/parity: feature audience sees segments
+
+    /// AC11 (JS parity, bd-0ca): `runFeature` must overlay the visitor's segments onto the audience-rule
+    /// attribute map exactly as `runExperience` does — JS `context.ts` calls `getVisitorProperties`
+    /// identically on the experience AND feature paths, so a feature whose ENABLING experience is gated on
+    /// `country == "US"` becomes `.enabled` for a visitor whose `country` segment is `"US"`, and stays
+    /// `.disabled` for a visitor that set no such segment. The single feature is carried by an experience
+    /// gated on that audience (``makeCountryGatedFeatureConfig``):
+    ///   * POSITIVE — a context that sets ONLY `country: "US"` via `setDefaultSegments` (NOT via
+    ///     `createContext` attributes, so the SEGMENT is the genuine source of the country value) ⇒ the
+    ///     carrier's audience is satisfied ⇒ the feature buckets ⇒ `.enabled`.
+    ///   * CONTROL — a context that passes NO attributes and sets NO segment has no `country` at the gate
+    ///     ⇒ the audience fails ⇒ the carrier never buckets ⇒ `.disabled`.
+    /// RED today: `ConvertContext.runFeature` passes `stringAttributes()` RAW (no `mergedAttributes`
+    /// overlay — unlike `runExperience`), so even the positive case's `country` segment never reaches the
+    /// audience gate; the carrier's `country == "US"` audience is NOT satisfied and the feature stays
+    /// `.disabled`, so the positive `#expect(... == .enabled)` FAILS. The control already resolves to
+    /// `.disabled` (audience never satisfied), so the two assertions together prove the SEGMENT is what
+    /// must feed the FEATURE audience gate. GREEN overlays the segments on `runFeature`/`runFeatures`.
+    ///
+    /// `BucketedFeature` exposes the enabled-check as `status == .enabled` (there is NO `isEnabled`
+    /// property — see `BucketedFeature.swift`); this matches the proven `ConvertContextRunFeaturesTests`
+    /// assertion convention.
+    @Test("runFeature enables a feature when a segment satisfies its audience rule (JS parity)")
+    func featureSegmentSatisfyingAudienceEnables() async throws {
+        let sut = try await makeReadySDK(config: makeCountryGatedFeatureConfig(countryEquals: Self.gatedCountry))
+
+        // POSITIVE: country supplied ONLY via the default segment (no createContext attributes).
+        let context = sut.sdk.createContext(visitorId: "v-feat-us")
+        await context.setDefaultSegments(["country": Self.gatedCountry])
+        let feature = await context.runFeature(Self.featureKey)
+        #expect(feature.status == .enabled, "a segment satisfying the country audience enables the feature")
+
+        // CONTROL: no attributes and no segment ⇒ country absent at the gate ⇒ audience fails ⇒ disabled.
+        let control = sut.sdk.createContext(visitorId: "v-feat-none")
+        let disabled = await control.runFeature(Self.featureKey)
+        #expect(disabled.status == .disabled, "with no country segment the audience fails — feature disabled")
     }
 }
