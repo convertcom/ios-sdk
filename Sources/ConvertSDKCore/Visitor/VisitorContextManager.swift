@@ -24,11 +24,18 @@ import Foundation
 ///   5. If the Keychain read THROWS, the error is logged at `[WARN]`, NEVER rethrown, and the
 ///      flow falls back to generating a fresh UUID — a storage fault must degrade gracefully, not
 ///      surface to the caller.
-internal enum VisitorContextManager {
+///
+/// `public` (not `internal`) because the resolver lives in ``ConvertSDKCore`` but its sole caller is
+/// ``ConvertSDK/createContext(visitorId:attributes:)`` in the SEPARATE `ConvertSDK` module. The
+/// `@_exported import ConvertSDKCore` re-export surfaces only `public` symbols across the module
+/// boundary, so the platform target cannot reach an `internal` resolver — the public access level is
+/// what lets `createContext` call `resolveVisitorId`. `StorageKeys` stays `internal`: it appears only
+/// inside this method's body (never in its signature), so it need not cross the boundary.
+public enum VisitorContextManager {
     /// Returns the effective visitor ID per the precedence documented on the type. Total — it
     /// always returns a `String` and never throws; every storage write uses `try?` so a Keychain
     /// failure on the write path is swallowed exactly like a failure on the read path.
-    static func resolveVisitorId(
+    public static func resolveVisitorId(
         provided: String?,
         secureStore: SecureStore,
         keyValueStore: KeyValueStore,

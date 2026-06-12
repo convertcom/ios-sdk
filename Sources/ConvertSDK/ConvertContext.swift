@@ -6,20 +6,85 @@ import Foundation
 
 /// A visitor-scoped handle for running experiences/features and tracking conversions.
 ///
-/// Story 2.2 ships the public surface as a stub: every method returns its DEGRADED value and
-/// never throws (AOD-6 — the public API never surfaces a thrown error to callers), so an
-/// integration compiles and runs against the final signatures before the Epic 3–4 engines
-/// land. Holds its owning ``ConvertSDK`` by a `private let`; since the SDK does not hold the
-/// context back, the reference is acyclic, and because ``ConvertSDK`` is `Sendable` this class
-/// is `Sendable` with NO `@unchecked` and no suppression.
+/// Story 2.2 ships the public surface as a stub: every decisioning method returns its DEGRADED
+/// value and never throws (AOD-6 — the public API never surfaces a thrown error to callers), so an
+/// integration compiles and runs against the final signatures before the Epic 3–4 engines land.
+/// Story 3.1 makes the visitor identity REAL: the context carries the resolved ``visitorId``, the
+/// coerced ``attributes``, and the SDK's one canonical ``DecisionStore`` — while the decisioning
+/// stubs stay degraded until Epics 3–4 wire bucketing/feature resolution.
+///
+/// `Sendable` with NO `@unchecked` and no suppression: every stored property is an immutable `let`
+/// of a `Sendable` type — the owning ``ConvertSDK`` (`Sendable`, held acyclically since the SDK keeps
+/// no back-reference), the `String` ``visitorId``, the `[String: ConvertValue]` attribute storage
+/// (``ConvertValue`` is `Sendable`, so the dictionary is), and the ``DecisionStore`` `actor`
+/// (`Sendable`). The public ``attributes`` is a COMPUTED `[String: Any]` (no stored `Any`), so it
+/// does not weaken the conformance.
 public final class ConvertContext: Sendable {
     /// The SDK that created this context. Strong and immutable: acyclic (the SDK holds no
     /// back-reference) and `Sendable` (``ConvertSDK`` is `Sendable`).
     private let sdk: ConvertSDK
 
-    /// Binds the context to its creating SDK. Created only via ``ConvertSDK/createContext(visitorId:attributes:)``.
-    internal init(sdk: ConvertSDK) {
+    /// The effective visitor identifier resolved at creation by ``VisitorContextManager`` — an
+    /// explicit caller-supplied ID verbatim, else the persisted Keychain/mirror value, else a freshly
+    /// generated + persisted `UUID().uuidString`. Immutable for the context's lifetime (bucketing
+    /// parity depends on a stable per-context identity).
+    public let visitorId: String
+
+    /// The visitor attributes coerced into the closed ``ConvertValue`` scalar set. `Sendable` storage
+    /// (``ConvertValue`` is `Sendable`); the public ``attributes`` reconstructs the `[String: Any]`
+    /// view from it. Stored as `ConvertValue` rather than raw `Any` so the class stays `Sendable`
+    /// with no suppression.
+    private let attributesStorage: [String: ConvertValue]
+
+    /// The SDK's ONE canonical ``DecisionStore``, injected so every context from the same SDK shares
+    /// a single store (sticky variations / goal-dedup / segments converge on one instance). `internal`
+    /// — the decisioning engines (Stories 3.4 / 4.2) reach it from within the module; it is not part of
+    /// the public surface.
+    internal let decisionStore: DecisionStore
+
+    /// The visitor attributes as a loosely-typed `[String: Any]` map, reconstructed on each access
+    /// from the internal ``ConvertValue`` storage via ``ConvertValue/anyValue`` — so a value supplied
+    /// as `["age": 30]` reads back as `attributes["age"] as? Int == 30`. A COMPUTED property (no stored
+    /// `Any`), which is why it does not weaken the class's `Sendable` conformance. Values that could
+    /// not be coerced at creation (nested dictionaries/arrays/etc.) are absent here — they were dropped
+    /// because they are not segment-matchable scalars.
+    public var attributes: [String: Any] {
+        attributesStorage.mapValues { $0.anyValue }
+    }
+
+    /// Binds the context to its creating SDK and its resolved visitor identity. Created only via
+    /// ``ConvertSDK/createContext(visitorId:attributes:)``, which resolves `visitorId` through
+    /// ``VisitorContextManager`` and passes the SDK's canonical `decisionStore`.
+    ///
+    /// The loosely-typed `attributes` are coerced into the closed ``ConvertValue`` set via
+    /// ``ConvertValue/init(any:)``; per-key, any value that is not one of the four supported scalars
+    /// (e.g. a nested dictionary or array) is SILENTLY DROPPED — it is not a segment-matchable scalar,
+    /// while supported siblings in the same map survive (the coercion filters per key, never rejects
+    /// the whole map).
+    /// - Parameters:
+    ///   - sdk: The creating SDK (held acyclically).
+    ///   - visitorId: The already-resolved effective visitor identifier.
+    ///   - attributes: The caller-supplied attribute map, or `nil`; unsupported values are dropped.
+    ///   - decisionStore: The SDK's canonical decision store, shared across every context it creates.
+    internal init(
+        sdk: ConvertSDK,
+        visitorId: String,
+        attributes: [String: Any]?,
+        decisionStore: DecisionStore
+    ) {
         self.sdk = sdk
+        self.visitorId = visitorId
+        self.decisionStore = decisionStore
+        // Coerce [String: Any] -> [String: ConvertValue], dropping any value that is not one of the
+        // four supported scalars. Unsupported values (nested dict/array/object/NSNull) are silently
+        // omitted — they are not segment-matchable scalars, so they have no place in the stored map.
+        var storage: [String: ConvertValue] = [:]
+        for (key, value) in attributes ?? [:] {
+            if let convertValue = ConvertValue(any: value) {
+                storage[key] = convertValue
+            }
+        }
+        self.attributesStorage = storage
     }
 
     /// Whether event delivery is enabled for this context's SDK (FR6 static `network.tracking`).

@@ -32,6 +32,24 @@ public final class ConvertSDK: Sendable {
     /// starts a scheduler); ``deinit`` cancels through it.
     private let schedulerBox = SchedulerBox()
 
+    /// The secure (Keychain) store ``createContext`` hands to ``VisitorContextManager`` for visitor-ID
+    /// persistence. Injectable (the production default is ``KeychainSecureStore``; tests inject a mock
+    /// to assert write behaviour). The ``SecureStore`` port refines `Sendable`, so this `let` keeps the
+    /// class an all-`let` `Sendable final class` with no suppression.
+    private let secureStore: any SecureStore
+
+    /// The lightweight key/value (`UserDefaults`) mirror ``createContext`` hands to
+    /// ``VisitorContextManager`` for visitor-ID persistence. Injectable (the production default is
+    /// ``UserDefaultsKeyValueStore``). The ``KeyValueStore`` port refines `Sendable`, so this `let`
+    /// keeps the class `Sendable` with no suppression.
+    private let keyValueStore: any KeyValueStore
+
+    /// The ONE canonical ``DecisionStore`` this SDK injects into EVERY ``ConvertContext`` it creates,
+    /// so all contexts from this handle share a single store (sticky variations / goal-dedup / segments
+    /// converge on one instance — Stories 3.4 / 4.2). An `actor` is `Sendable`, so this `let` keeps the
+    /// class `Sendable` with no suppression. Injectable so a test can assert the shared-identity contract.
+    private let decisionStore: DecisionStore
+
     /// Developer-assigned convenience, nil until set; not a singleton and not installed by
     /// init. `nonisolated(unsafe)` because it is intended to be assigned once at app startup,
     /// not mutated concurrently (Story 2.2 Dev Notes Option A).
@@ -61,16 +79,29 @@ public final class ConvertSDK: Sendable {
     ///     TTL gate from. Defaults to ``SystemClock`` (the production wall clock); the wiring suite
     ///     injects a stepping clock so an interval tick is deterministic (NFR21). NOT stored — it is
     ///     captured by the load `Task` that constructs the scheduler.
+    ///   - secureStore: The Keychain-backed visitor-ID store handed to ``VisitorContextManager`` in
+    ///     ``createContext(visitorId:attributes:)``. Defaults to ``KeychainSecureStore`` (production);
+    ///     the visitor-identity suite injects a mock to assert write behaviour.
+    ///   - keyValueStore: The `UserDefaults`-backed visitor-ID mirror handed to
+    ///     ``VisitorContextManager``. Defaults to ``UserDefaultsKeyValueStore`` (production).
+    ///   - decisionStore: The ONE canonical ``DecisionStore`` injected into every context this SDK
+    ///     creates. Defaults to a fresh empty store; a test injects its own to assert shared identity.
     internal init(
         configuration: ConvertConfiguration,
         configProvider: (any ConfigProviding)? = nil,
         eventBus: EventBus = EventBus(),
         directData: Data? = nil,
-        clock: any Clock = SystemClock()
+        clock: any Clock = SystemClock(),
+        secureStore: any SecureStore = KeychainSecureStore(),
+        keyValueStore: any KeyValueStore = UserDefaultsKeyValueStore(),
+        decisionStore: DecisionStore = DecisionStore()
     ) {
         self.configuration = configuration
         self.eventBus = eventBus
         self.directData = directData
+        self.secureStore = secureStore
+        self.keyValueStore = keyValueStore
+        self.decisionStore = decisionStore
         let store = ConfigStore(eventBus: eventBus)
         self.configStore = store
 
@@ -222,13 +253,32 @@ public final class ConvertSDK: Sendable {
     }
 
     /// Creates a ``ConvertContext`` bound to this SDK. Synchronous and non-blocking: a context
-    /// can be created before `ready()` resolves (it does not wait on config load). The
-    /// `visitorId` and `attributes` are accepted now and wired into bucketing/segmentation in
-    /// Epics 3–4.
+    /// can be created before `ready()` resolves (it does not wait on config load).
+    ///
+    /// The effective visitor ID is resolved NOW through ``VisitorContextManager``: an explicit
+    /// `visitorId` is returned verbatim (no store access); otherwise the injected
+    /// Keychain/mirror stores are read, and on a miss a fresh `UUID().uuidString` is generated and
+    /// persisted. The `attributes` are coerced into the closed ``ConvertValue`` set inside the context
+    /// (unsupported values dropped). Every context receives this SDK's ONE canonical ``DecisionStore``.
+    /// The downstream bucketing/segmentation engines that CONSUME this identity arrive in Epics 3–4.
     /// - Parameters:
-    ///   - visitorId: Optional caller-supplied visitor identifier.
-    ///   - attributes: Optional visitor attributes for segmentation.
+    ///   - visitorId: Optional caller-supplied visitor identifier; when non-empty it is used verbatim.
+    ///   - attributes: Optional visitor attributes for segmentation; non-scalar values are dropped.
     public func createContext(visitorId: String? = nil, attributes: [String: Any]? = nil) -> ConvertContext {
-        ConvertContext(sdk: self)
+        // Resolve via the pure-logic manager: explicit ID verbatim, else persisted store value, else a
+        // freshly generated + persisted UUID. NoopLogger matches the SDK's production logging path
+        // (the real OSLog sink is not wired yet — see the config-load Task above, which also uses it).
+        let resolvedId = VisitorContextManager.resolveVisitorId(
+            provided: visitorId,
+            secureStore: secureStore,
+            keyValueStore: keyValueStore,
+            logger: NoopLogger()
+        )
+        return ConvertContext(
+            sdk: self,
+            visitorId: resolvedId,
+            attributes: attributes,
+            decisionStore: decisionStore
+        )
     }
 }
