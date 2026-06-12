@@ -28,16 +28,32 @@ import Foundation
 
 /// Evaluates feature flags for a visitor, delegating all bucketing to ``ExperienceManager``.
 ///
-/// `internal` (the SDK-facing surface composes this behind ``ConvertSDK``; the test target reaches
-/// it via `@testable import`). A plain `struct` of `Sendable` members (``ExperienceManager``,
-/// ``Logger``), so the type is `Sendable` with no suppression. `evaluateFeature` /
-/// `evaluateAllFeatures` are `async` only because the delegated `selectVariation` is; neither throws.
-struct FeatureManager: Sendable {
+/// `public` (mirroring ``ExperienceManager``'s public composition surface) because ``ConvertSDK`` is a
+/// SEPARATE module that depends on this `ConvertSDKCore` target: its composition root builds the one
+/// shared instance and ``ConvertContext`` delegates `runFeature` / `runFeatures` to it, both of which
+/// need this type — and the `evaluateFeature` / `evaluateAllFeatures` / `init` it calls — visible across
+/// the module boundary. A plain `struct` of `Sendable` members (``ExperienceManager``, ``Logger``), so
+/// the type is `Sendable` with no suppression. `evaluateFeature` / `evaluateAllFeatures` are `async`
+/// only because the delegated `selectVariation` is; neither throws.
+public struct FeatureManager: Sendable {
     /// Delegate that owns the single-experience bucketing pipeline (sticky → audience → location →
     /// bucket → persist → `.bucketing` fire). The ONLY collaborator this type calls into.
     let experienceManager: ExperienceManager
     /// Diagnostic sink for the population-layer warnings (feature-not-found, variable type mismatch).
     let logger: Logger
+
+    /// Composes the feature evaluator over its bucketing delegate. `public` (mirroring
+    /// ``ExperienceManager``'s public composition surface) so the separate `ConvertSDK` module's
+    /// composition root can build the one shared instance — the compiler-synthesized memberwise init
+    /// is `internal` and therefore invisible across the module boundary, so this explicit `public`
+    /// init is required for cross-module wiring.
+    /// - Parameters:
+    ///   - experienceManager: The bucketing delegate every evaluation routes through.
+    ///   - logger: Diagnostic sink for population-layer warnings.
+    public init(experienceManager: ExperienceManager, logger: Logger) {
+        self.experienceManager = experienceManager
+        self.logger = logger
+    }
 
     // The seven parameters are the pinned call contract (the feature key, the config, the
     // visitor/account/project triple, and the two gate data maps are each a distinct input the
@@ -64,7 +80,7 @@ struct FeatureManager: Sendable {
     ///   - attributes: The data map each carrying experience's audience gate evaluates against.
     ///   - locationProperties: The data map each carrying experience's location gate evaluates against.
     /// - Returns: The resolved ``BucketedFeature`` — `.enabled` with typed variables, or `.disabled`.
-    func evaluateFeature( // swiftlint:disable:this function_parameter_count
+    public func evaluateFeature( // swiftlint:disable:this function_parameter_count
         key: String,
         in config: ProjectConfig,
         visitorId: String,
@@ -130,7 +146,7 @@ struct FeatureManager: Sendable {
     ///   - attributes: The data map each feature's carrying experiences' audience gates evaluate against.
     ///   - locationProperties: The data map each feature's carrying experiences' location gates evaluate against.
     /// - Returns: One ``BucketedFeature`` per `config.features` entry, in config order; `[]` when empty.
-    func evaluateAllFeatures( // swiftlint:disable:this function_parameter_count
+    public func evaluateAllFeatures( // swiftlint:disable:this function_parameter_count
         in config: ProjectConfig,
         visitorId: String,
         accountId: String,

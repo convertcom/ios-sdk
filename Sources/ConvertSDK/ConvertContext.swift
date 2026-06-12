@@ -50,6 +50,14 @@ public final class ConvertContext: Sendable {
     /// `Sendable final class` with no suppression.
     private let experienceManager: ExperienceManager
 
+    /// The SDK's single, fully-wired ``FeatureManager`` that ``runFeature(_:enableTracking:)`` and
+    /// ``runFeatures(enableTracking:)`` delegate to (Story 4.1). Injected from ``ConvertSDK`` (built
+    /// once over the same ``ExperienceManager`` this context delegates experiences to), so feature
+    /// evaluation buckets through the SAME underlying manager — sticky decisions and `.bucketing` fires
+    /// converge on the shared instances. ``FeatureManager`` is a stateless `Sendable` `struct`, so
+    /// storing it as a `let` keeps this class an all-`let` `Sendable final class` with no suppression.
+    private let featureManager: FeatureManager
+
     /// The visitor attributes as a loosely-typed `[String: Any]` map, reconstructed on each access
     /// from the internal ``ConvertValue`` storage via ``ConvertValue/anyValue`` — so a value supplied
     /// as `["age": 30]` reads back as `attributes["age"] as? Int == 30`. A COMPUTED property (no stored
@@ -79,18 +87,22 @@ public final class ConvertContext: Sendable {
     ///   - decisionStore: The SDK's canonical decision store, shared across every context it creates.
     ///   - experienceManager: The SDK's single wired ``ExperienceManager`` this context delegates
     ///     `runExperience` to (Story 3.4), shared across every context the SDK creates.
+    ///   - featureManager: The SDK's single wired ``FeatureManager`` this context delegates
+    ///     `runFeature` / `runFeatures` to (Story 4.1), shared across every context the SDK creates.
     internal init(
         sdk: ConvertSDK,
         visitorId: String,
         attributes: [String: ConvertValue],
         decisionStore: DecisionStore,
-        experienceManager: ExperienceManager
+        experienceManager: ExperienceManager,
+        featureManager: FeatureManager
     ) {
         self.sdk = sdk
         self.visitorId = visitorId
         self.decisionStore = decisionStore
         self.attributesStorage = attributes
         self.experienceManager = experienceManager
+        self.featureManager = featureManager
     }
 
     /// Whether event delivery is enabled for this context's SDK (FR6 static `network.tracking`).
@@ -194,19 +206,75 @@ public final class ConvertContext: Sendable {
         )
     }
 
-    /// Resolves one feature flag and returns its ``BucketedFeature``. Non-optional by
-    /// contract, so the stub returns a DEGRADED feature — disabled, empty variables — rather
-    /// than throwing (AOD-6). Real resolution arrives in Epic 4.
+    /// Resolves one feature flag and returns its ``BucketedFeature`` — non-optional by contract, so
+    /// the degraded answer is a DISABLED feature (never a throw, AOD-6).
+    ///
+    /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready,
+    /// or a degraded load that resolved with no config) short-circuits to ``BucketedFeature/disabled(key:)``
+    /// WITHOUT touching the manager — the feature twin of ``runExperience(_:enableTracking:)`` returning
+    /// `nil` on an absent snapshot. Otherwise delegates to the injected ``FeatureManager``, which resolves
+    /// the feature by delegating bucketing to ``ExperienceManager`` (sticky / audience / location / traffic),
+    /// enabling it when the visitor buckets into a carrying experience and surfacing its typed variables.
+    /// Never throws.
+    ///
+    /// `accountId` / `projectId` come from the snapshot (defaulting to `""` when absent) and
+    /// `locationProperties` is empty on native — identical to ``runExperience(_:enableTracking:)``.
+    /// `enableTracking` is NOT threaded into the evaluation: ``FeatureManager``'s `evaluateFeature`
+    /// takes no such parameter and always lets the underlying experience bucketing track per its own
+    /// contract. The public `enableTracking` parameter is retained (callers depend on the signature) but
+    /// currently has no effect on the feature path.
+    /// - Parameters:
+    ///   - key: The feature `key` to look up and resolve.
+    ///   - enableTracking: Retained for signature stability; not currently threaded into feature
+    ///     evaluation (the underlying experience bucketing tracks per its own contract). Defaults to `true`.
+    /// - Returns: The resolved ``BucketedFeature`` — `.enabled` with typed variables, or `.disabled` on a
+    ///   missing snapshot / miss.
     public func runFeature(_ key: String, enableTracking: Bool = true) async -> BucketedFeature {
-        // [WARN] ConvertContext.runFeature: not yet implemented (Epic 4).
-        BucketedFeature(id: "", key: key, status: .disabled, variables: [:])
+        guard let config = await sdk.configStore.getSnapshot() else {
+            // Pre-ready / degraded: a nil snapshot resolves to a disabled feature without reaching the
+            // manager (AOD-6, no throw).
+            return BucketedFeature.disabled(key: key)
+        }
+        return await featureManager.evaluateFeature(
+            key: key,
+            in: config,
+            visitorId: visitorId,
+            accountId: config.accountId ?? "",
+            projectId: config.project?.id ?? "",
+            attributes: stringAttributes(),
+            locationProperties: [:]
+        )
     }
 
-    /// Resolves every feature flag and returns its ``BucketedFeature``s. Stub: returns `[]`
-    /// (degraded) until Epic 4 wires feature resolution.
+    /// Resolves every feature in the config and returns its ``BucketedFeature``, in config order.
+    ///
+    /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready /
+    /// degraded) returns `[]` WITHOUT touching the manager (AOD-6 — degraded returns empty, never throws),
+    /// the feature twin of ``runExperiences(enableTracking:)``. Otherwise delegates to the injected
+    /// ``FeatureManager/evaluateAllFeatures(in:visitorId:accountId:projectId:attributes:locationProperties:)``,
+    /// which enumerates `config.features` and resolves each through the single-feature path. `accountId` /
+    /// `projectId` come from the snapshot (defaulting to `""` when absent) and `locationProperties` is
+    /// empty on native — identical to the single-feature path. Never throws.
+    ///
+    /// As with ``runFeature(_:enableTracking:)``, `enableTracking` is NOT threaded into the evaluation
+    /// (the bulk `evaluateAllFeatures` takes no such parameter); the parameter is retained for signature
+    /// stability and currently has no effect on the feature path.
+    /// - Parameter enableTracking: Retained for signature stability; not currently threaded into feature
+    ///   evaluation. Defaults to `true`.
+    /// - Returns: One ``BucketedFeature`` per `config.features` entry, in config order; `[]` on a missing
+    ///   snapshot.
     public func runFeatures(enableTracking: Bool = true) async -> [BucketedFeature] {
-        // [WARN] ConvertContext.runFeatures: not yet implemented (Epic 4).
-        []
+        guard let config = await sdk.configStore.getSnapshot() else {
+            return []
+        }
+        return await featureManager.evaluateAllFeatures(
+            in: config,
+            visitorId: visitorId,
+            accountId: config.accountId ?? "",
+            projectId: config.project?.id ?? "",
+            attributes: stringAttributes(),
+            locationProperties: [:]
+        )
     }
 
     /// Tracks a conversion for `goalKey` with optional ``GoalData``. Stub: no-op until Epic 4

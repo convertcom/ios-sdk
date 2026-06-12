@@ -60,6 +60,15 @@ public final class ConvertSDK: Sendable {
     /// (cheap) wiring happens exactly once.
     private let experienceManager: ExperienceManager
 
+    /// The single, fully-wired ``FeatureManager`` every ``ConvertContext`` from this handle delegates
+    /// `runFeature` / `runFeatures` to (Story 4.1). Built ONCE in `init` over the SDK's canonical
+    /// ``experienceManager`` (so feature bucketing reads/persists on the one shared sticky store and its
+    /// `.bucketing` deliveries reach `sdk.on(.bucketing)` subscribers) with a `NoopLogger` matching the
+    /// SDK's production logging path. ``FeatureManager`` is a stateless `Sendable` `struct`, so storing it
+    /// as a `let` keeps the class an all-`let` `Sendable final class` with no suppression. Stored rather
+    /// than rebuilt per `createContext` so the (cheap) wiring happens exactly once.
+    private let featureManager: FeatureManager
+
     /// Developer-assigned convenience, nil until set; not a singleton and not installed by
     /// init. `nonisolated(unsafe)` because it is intended to be assigned once at app startup,
     /// not mutated concurrently (Story 2.2 Dev Notes Option A).
@@ -118,8 +127,15 @@ public final class ConvertSDK: Sendable {
         // RuleManager / BucketingManager(NoopEventSink) inside ConvertSDKCore, so this target never
         // names those internal types. NoopLogger matches the SDK's production logging path (the real
         // OSLog sink is not wired yet — same default the config-load Task and createContext use).
-        self.experienceManager = ExperienceManager
+        // Captured in a LOCAL first so the FeatureManager below can be built from the SAME instance
+        // without reading `self.experienceManager` before every stored property is initialized.
+        let experienceManager = ExperienceManager
             .makeDefault(decisionStore: decisionStore, eventBus: eventBus, logger: NoopLogger())
+        self.experienceManager = experienceManager
+        // Wire the ONE FeatureManager every context delegates `runFeature` / `runFeatures` to, over the
+        // SAME ExperienceManager just built (so feature evaluation buckets through the shared sticky
+        // store / event bus). NoopLogger matches the EM's production logging path above.
+        self.featureManager = FeatureManager(experienceManager: experienceManager, logger: NoopLogger())
         let store = ConfigStore(eventBus: eventBus)
         self.configStore = store
 
@@ -331,7 +347,8 @@ public final class ConvertSDK: Sendable {
             visitorId: resolvedId,
             attributes: coercedAttributes,
             decisionStore: decisionStore,
-            experienceManager: experienceManager
+            experienceManager: experienceManager,
+            featureManager: featureManager
         )
     }
 }
