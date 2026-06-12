@@ -195,6 +195,22 @@ public actor EventQueue: EventSink {
         ensureTimerStarted()
     }
 
+    // MARK: - Background persistence
+
+    /// Persists the in-memory buffer to the on-disk store and empties it, so the on-disk file is the
+    /// authoritative record before the app is suspended (Story 5.3 / AC10 / FR36). Called by
+    /// `LifecycleObserver` on a background transition, BEFORE the background upload task is enqueued
+    /// from that same file. A no-op when the buffer is empty (a clean background with nothing pending
+    /// leaves no `[]` file behind — `store.persist([])` would clear, but the guard skips the call
+    /// entirely). `try?`: a store error degrades to "left in memory" rather than throwing out of the
+    /// lifecycle hook, matching the no-throw store philosophy used by `flush()`/`drain()`.
+    /// [Source: architecture.md#Durable Background Delivery — persist file on background]
+    func persistBeforeBackground() async {
+        guard !buffer.isEmpty else { return }
+        try? await store.persist(assemble(buffer))
+        buffer = []
+    }
+
     // MARK: - Drain
 
     /// Merges the persisted (on-disk) queue with the in-memory buffer — DISK-FIRST — and clears BOTH
