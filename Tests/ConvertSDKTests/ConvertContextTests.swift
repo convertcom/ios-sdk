@@ -216,3 +216,121 @@ struct ConvertContextVisitorIdentityTests {
         #expect(sdk.createContext().decisionStore === sdk.createContext().decisionStore)
     }
 }
+
+// MARK: - ConvertContext runExperience wiring (Story 3.4)
+
+/// Story 3.4 (Epic 3) RED phase: asserts the REAL behaviour CX-1 must produce when it replaces the
+/// `runExperience(_:enableTracking:)` STUB with a wired ``ExperienceManager`` delegation. The
+/// contract CX-1 implements:
+///   * read the config snapshot from the SDK's ``ConfigStore``; a `nil` snapshot (pre-ready / no
+///     config) → return `nil` WITHOUT touching the manager;
+///   * otherwise delegate to an injected `ExperienceManager.selectVariation(forKey:in:visitorId:
+///     accountId:projectId:attributes:locationProperties:enableTracking:)`, returning its
+///     ``Variation?`` verbatim; never throw.
+///
+/// Two of these tests FAIL against the current stub — that compile-passing, runtime-failing state is
+/// the correct RED signal for a WIRING task (cleaner than a compile-fail): the suite calls only the
+/// EXISTING public surface (`ConvertSDK(...)`, `ready()`, `createContext`, `runExperience`) plus the
+/// new ``makeExperienceConfig`` fixture, so it COMPILES today; the assertions on a non-`nil`,
+/// concretely-identified ``Variation`` are what the nil-returning stub cannot satisfy.
+///   * ``runExperiencePreReadyReturnsNil`` — PASSES today (the stub returns `nil`, which is ALSO the
+///     wired no-snapshot answer), so it pins the degraded path across the wiring change.
+///   * ``runExperienceReadyBucketsVariation`` + ``runExperienceStickyReturnsSameVariation`` — FAIL
+///     today (stub returns `nil` ⇒ `v != nil`, `v?.id == "v1"`, and the sticky-equality assertions
+///     all fail); they pass once CX-1 wires the real ``ExperienceManager``.
+///
+/// A 100%-traffic experience keyed `"hero"` (built by ``makeExperienceConfig``) buckets EVERY visitor
+/// into its sole variation (weight `100 × 100 == 10000` covers the whole `0..<10000` space), so the
+/// resolved variation is deterministically `id == "v1"`, `experienceKey == "hero"` for any visitor —
+/// which is why these tests can assert a CONCRETE identity, not just non-`nil`. Event/enqueue counts
+/// are deliberately NOT asserted here: ``ConvertSDK`` wires its own (internal) `EventSink`, not
+/// injectable through this seam — the exactly-once enqueue is covered at the ``ExperienceManager``
+/// level by `ExperienceManagerTests`. This suite owns the runExperience RETURN VALUE (nil vs a
+/// concrete ``Variation``) and the sticky-stability contract.
+@Suite("ConvertContext runExperience wiring")
+@MainActor
+struct ConvertContextRunExperienceTests {
+    /// The experience key both ready-path tests look up — declared once so the fixture build and the
+    /// `runExperience(_:)` call never re-spell the literal (SonarQube 3% new-duplicated-lines gate).
+    private static let experienceKey = "hero"
+    /// The sole-variation id the 100%-traffic fixture buckets every visitor into; the ready test
+    /// asserts the resolved variation carries exactly this id.
+    private static let variationId = "v1"
+
+    /// Builds a READY off-network SDK whose live config is the single 100%-traffic `"hero"` experience,
+    /// then awaits `ready()` so a subsequent `createContext().runExperience("hero")` sees a NON-`nil`
+    /// snapshot and buckets through the wired manager. Centralised so the ready-path tests
+    /// (bucketing + sticky) never copy-paste the provider build + `ready()` await (SonarQube 3% gate).
+    /// Mirrors `ConvertSDKTests`' `makeSut`-style off-network construction: a `MockConfigProvider`
+    /// canned `(cached: nil, live: <hero config>)` keeps the SDK off the network and resolves
+    /// `ready()` non-degraded with that snapshot.
+    private func makeReadySDK() async throws -> ConvertSDK {
+        let sdk = ConvertSDK(
+            configuration: ConvertConfiguration(sdkKey: "test-key"),
+            configProvider: MockConfigProvider.ungated(
+                cached: nil,
+                live: try makeExperienceConfig(
+                    experienceKey: Self.experienceKey,
+                    variationId: Self.variationId,
+                    variationKey: "control"
+                )
+            )
+        )
+        try await sdk.ready()
+        return sdk
+    }
+
+    /// AC10: a context whose SDK has NO usable config snapshot resolves `runExperience` to `nil`
+    /// without throwing. Built with `MockConfigProvider.ungated(cached: nil, live: nil)` — the SDK
+    /// resolves `ready()` DEGRADED with a `nil` snapshot, so the wired `runExperience` short-circuits
+    /// on the absent snapshot BEFORE reaching the manager (and the current stub also returns `nil`).
+    /// This therefore PASSES both today and after wiring — it pins the no-config degraded path across
+    /// the change. `"any"` is deliberately an UNKNOWN key, so even a ready SDK would return `nil` for
+    /// it; here the point is the missing snapshot, asserted without an `await ready()`.
+    @Test("runExperience on a config-less (pre-ready / degraded) context returns nil and does not throw")
+    func runExperiencePreReadyReturnsNil() async throws {
+        let sdk = ConvertSDK(
+            configuration: ConvertConfiguration(sdkKey: "test-key"),
+            configProvider: MockConfigProvider.ungated(cached: nil, live: nil)
+        )
+        let context = sdk.createContext()
+        #expect(await context.runExperience("any") == nil)
+    }
+
+    /// RED driver (AC1–AC4): a READY SDK holding the 100%-traffic `"hero"` experience buckets a context
+    /// into its sole variation, so `runExperience("hero")` returns a NON-`nil` ``Variation`` whose
+    /// `experienceKey == "hero"` and `id == "v1"`. The current stub returns `nil`, so all three
+    /// assertions FAIL today — the expected RED signal; CX-1's real ``ExperienceManager`` delegation
+    /// makes them pass. The variation id is deterministic for ANY visitor (full-traffic single
+    /// variation), so a fixed `visitorId` is asserted on a concrete id, not merely non-`nil`.
+    @Test("runExperience on a ready 100%-traffic experience returns the bucketed variation")
+    func runExperienceReadyBucketsVariation() async throws {
+        let sdk = try await makeReadySDK()
+        let context = sdk.createContext(visitorId: "user-1")
+
+        let variation = await context.runExperience(Self.experienceKey)
+
+        #expect(variation != nil, "a ready 100%-traffic experience must bucket, not return nil")
+        #expect(variation?.experienceKey == Self.experienceKey)
+        #expect(variation?.id == Self.variationId)
+    }
+
+    /// RED driver (AC5 — sticky): two `runExperience("hero")` calls for the SAME visitor return the
+    /// SAME variation id. The first call buckets + persists a decision into the SDK's canonical
+    /// ``DecisionStore``; the second is a sticky hit returning the stored variation. Proves stickiness
+    /// flows through the FULL wiring (context → manager → shared `DecisionStore`), not just the
+    /// manager in isolation. FAILS today: the stub returns `nil` for both calls, so both unwrapped ids
+    /// are `nil` and the non-`nil` precondition fails — the expected RED signal until CX-1 wires the
+    /// real delegation.
+    @Test("runExperience is sticky — a second call returns the same variation id for the same visitor")
+    func runExperienceStickyReturnsSameVariation() async throws {
+        let sdk = try await makeReadySDK()
+        let context = sdk.createContext(visitorId: "user-1")
+
+        let first = await context.runExperience(Self.experienceKey)
+        let second = await context.runExperience(Self.experienceKey)
+
+        #expect(first?.id != nil, "the first run must bucket a variation to make stickiness observable")
+        #expect(first?.id == second?.id, "a sticky second run must return the same variation id")
+    }
+}

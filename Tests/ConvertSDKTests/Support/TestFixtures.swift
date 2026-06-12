@@ -159,6 +159,35 @@ func makeRefreshConfig(accountId: String = "acc-refresh") throws -> ProjectConfi
     )
 }
 
+/// A valid ``ProjectConfig`` carrying exactly ONE 100%-traffic experience — the fixture the Story 3.4
+/// `runExperience` WIRING suite (``ConvertContextRunExperienceTests``) buckets through. Decodes the
+/// SAME wire shape `ProjectConfigFixtures.experienceJSON` pins for `ExperienceManagerTests`:
+/// `account_id` / `project.id` present (so the sticky store key `"<accountId>-<projectId>-<visitorId>"`
+/// is well-formed) and one `type:"a/b"` experience with a sole `traffic_allocation:100` variation.
+/// That sole variation maps to weight `100 × 100 == 10000`, covering the entire `0..<10000` bucket
+/// space, so `selectBucket` returns it for EVERY visitor hash — `runExperience(experienceKey)` against
+/// the REAL wiring deterministically resolves THIS variation (`id == variationId`, `experienceKey ==
+/// experienceKey`) regardless of `visitorId`, which is why the wiring tests assert a CONCRETE id, not
+/// merely non-nil. Re-declared here (not reaching `ConvertSDKCoreTests`' identical `ProjectConfigFixtures`,
+/// which compiles into the OTHER target and is invisible across the boundary); the decode literal is
+/// written ONCE and shared by every wiring test (SonarQube 3% new-duplicated-lines gate; CPD is
+/// token-based, so the shared builder — not renamed locals — holds the diff under it). `throws` only on
+/// malformed JSON (`ProjectConfig.init(from:)` degrades per-field). `experienceKey` is what
+/// `runExperience(_:)` looks up; `variationId` is the id the resolved variation carries.
+func makeExperienceConfig(
+    experienceKey: String,
+    variationId: String,
+    variationKey: String,
+    experienceId: String = "exp-1"
+) throws -> ProjectConfig {
+    // Assembled in fragments (variation → experience → envelope) so each line stays ≤120 chars.
+    let variation = #"{"id":"\#(variationId)","key":"\#(variationKey)","traffic_allocation":100}"#
+    let experienceHead = #"{"id":"\#(experienceId)","key":"\#(experienceKey)","type":"a/b","#
+    let experience = experienceHead + #""audiences":[],"locations":[],"variations":[\#(variation)]}"#
+    let envelope = #"{"account_id":"acc-run","project":{"id":"proj-run"},"experiences":[\#(experience)]}"#
+    return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
+}
+
 /// Sentinel marking the `live` argument of `makeSchedulerSut(...)` as OMITTED — distinct from an
 /// explicit `live: nil` (which the failure suites pass to force a failing fetch).
 ///
