@@ -41,6 +41,36 @@ public final class ConvertSDK: Sendable {
     /// starts a scheduler); ``deinit`` cancels through it.
     private let schedulerBox = SchedulerBox()
 
+    /// Owns the durable background ``URLSession`` (Epic 5 / Story 5.3) that ships the queued tracking
+    /// batch after the app is suspended or terminated, and holds the integrator-forwarded background
+    /// completion handler. Built unconditionally in `init` over the SDK's real ``EventQueueStore`` and
+    /// shared ``EventBus``, so the standard key path always wires it. The integrator's
+    /// `application(_:handleEventsForBackgroundURLSession:completionHandler:)` lands on it through
+    /// ``handleEventsForBackgroundURLSession(identifier:completionHandler:)``.
+    ///
+    /// internal (NOT private): the wiring test reads ``BackgroundSessionManager/backgroundCompletionHandler``
+    /// through this property to assert the handler landed — mirroring the ``configStore`` precedent. The
+    /// manager is `@unchecked Sendable` (the ONE sanctioned carve-out for the type that owns the
+    /// background session), so this `let` keeps ``ConvertSDK`` an all-`let` `Sendable final class` with NO
+    /// new suppression on the class itself.
+    ///
+    /// Optional-TYPED (though built unconditionally, so always non-nil on every real path) so the wiring
+    /// test's `backgroundSessionManager != nil` assertion and `backgroundSessionManager?.…` reads are
+    /// warning-clean — mirroring the assumed-GREEN seam the RED test documents (`internal let
+    /// backgroundSessionManager: BackgroundSessionManager?`).
+    internal let backgroundSessionManager: BackgroundSessionManager?
+
+    #if canImport(UIKit)
+    /// Observes app-lifecycle transitions to drive durable background delivery (persist-on-background,
+    /// flush-on-foreground — Story 5.3). HELD as a `let` so its synchronously-registered
+    /// `NotificationCenter` observers stay alive for the SDK's lifetime (a dropped observer deinits and
+    /// removes them); the observer's own `deinit` removes them when this `let` is released, so no explicit
+    /// teardown is needed in ``deinit``. UIKit-gated because ``LifecycleObserver`` is `#if canImport(UIKit)`.
+    /// Optional + nil on the injected-mock path (no concrete production ``EventQueue`` to drive there). A
+    /// `Sendable final class`, so the `let` keeps ``ConvertSDK`` `Sendable` with no suppression.
+    private let lifecycleObserver: LifecycleObserver?
+    #endif
+
     /// The secure (Keychain) store ``createContext`` hands to ``VisitorContextManager`` for visitor-ID
     /// persistence. Injectable (the production default is ``KeychainSecureStore``; tests inject a mock
     /// to assert write behaviour). The ``SecureStore`` port refines `Sendable`, so this `let` keeps the
@@ -186,6 +216,35 @@ public final class ConvertSDK: Sendable {
             injected: eventSink, configuration: configuration, eventBus: eventBus, store: eventQueueStore
         )
         self.eventSink = resolvedSink
+        // Durable background delivery (Epic 5 / Story 5.3) — wired SYNCHRONOUSLY here in the composition
+        // root (not in the detached load `Task`), so the manager is available the instant `init` returns;
+        // it does NOT depend on config being loaded. Build the manager UNCONDITIONALLY over the SAME
+        // `eventQueueStore` already built above (never a second store) and the shared `eventBus`, so the
+        // standard key path always wires it non-nil. `@unchecked Sendable`, so the `let` adds no
+        // suppression to this class.
+        let bgManager = BackgroundSessionManager(
+            sdkVersion: SDKVersion.current, store: eventQueueStore, eventBus: eventBus
+        )
+        self.backgroundSessionManager = bgManager
+        // The lifecycle observer drives the CONCRETE production `EventQueue`'s persist-on-background /
+        // flush-on-foreground, so it is built only when `resolveEventSink` produced a real `EventQueue`
+        // (the injected-mock test path yields a `MockEventSink`, so `productionQueue` is nil there — that
+        // path skips the observer, which is correct: those suites do not exercise lifecycle). UIKit-gated
+        // because `LifecycleObserver` is `#if canImport(UIKit)`; `start()` is implicit (the observer
+        // registers SYNCHRONOUSLY in its own `init`, so no separate start call exists on this type).
+        #if canImport(UIKit)
+        if let productionQueue = resolvedSink as? EventQueue {
+            let trackEndpoint = "\(configuration.apiTrackEndpoint)/track/\(configuration.sdkKey)"
+            self.lifecycleObserver = LifecycleObserver(
+                eventQueue: productionQueue,
+                sessionManager: bgManager,
+                queueFileURL: CoordinatedFileEventQueueStore.queueFileURL(),
+                trackEndpoint: trackEndpoint
+            )
+        } else {
+            self.lifecycleObserver = nil
+        }
+        #endif
         // Wire the ONE ExperienceManager every context delegates `runExperience` to, over the CANONICAL
         // decisionStore (sticky parity), the SHARED eventBus (so `.bucketing` subscribers fire), and the
         // RESOLVED sink (so the bucketing enqueue lands on the SAME queue/mock as the conversion seam).
@@ -414,6 +473,30 @@ public final class ConvertSDK: Sendable {
     /// resolves degraded. Latches: once resolved, subsequent calls return immediately.
     public func ready() async throws {
         try await configStore.waitForReady()
+    }
+
+    /// Lands the integrator-forwarded background-session completion handler on the SDK's
+    /// ``BackgroundSessionManager`` (Epic 5 / Story 5.3 — AC5 / FR62).
+    ///
+    /// OPTIONAL — NOT required for correctness. Forward your
+    /// `UIApplicationDelegate.application(_:handleEventsForBackgroundURLSession:completionHandler:)`
+    /// here ONLY for prompt background-wake completion (the OS can release the relaunch sooner once the
+    /// session's events are acknowledged). The SDK reconciles persisted uploads on the next `init`
+    /// regardless of whether this is wired (the zero-config durability guarantee), so an integrator that
+    /// never calls it loses no events.
+    ///
+    /// The guard rejects any identifier other than the SDK's canonical background-session id, so a
+    /// handler for an UNRELATED `URLSession` is never stored on our manager — it is left for whoever owns
+    /// that session.
+    /// - Parameters:
+    ///   - identifier: The relaunched background session's identifier (from the AppDelegate callback).
+    ///   - completionHandler: The OS-supplied completion to invoke once our session's events finish.
+    public func handleEventsForBackgroundURLSession(
+        identifier: String,
+        completionHandler: @escaping @Sendable () -> Void
+    ) {
+        guard identifier == BackgroundSessionManager.sessionIdentifier else { return }
+        backgroundSessionManager?.backgroundCompletionHandler = completionHandler
     }
 
     /// Subscribes `callback` to `event` on the SDK's event bus. Returns a token to pass to
