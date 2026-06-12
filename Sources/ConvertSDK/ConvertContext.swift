@@ -160,13 +160,38 @@ public final class ConvertContext: Sendable {
         }
     }
 
-    /// Runs every applicable experience and returns the bucketed ``Variation``s. Stub: returns
-    /// `[]` (degraded) until Epic 3 wires bucketing.
+    /// Runs every configured experience for this visitor and returns the bucketed ``Variation`` for
+    /// each eligible one, in config order. Reads the SDK's current config snapshot from its
+    /// ``ConfigStore``; a `nil` snapshot (pre-ready / degraded) returns `[]` WITHOUT touching the
+    /// manager (AOD-6 — degraded returns empty, never throws). Otherwise delegates to the injected
+    /// ``ExperienceManager/selectVariations(...)`` bulk path, which evaluates every experience through
+    /// the full single-experience pipeline (sticky /
+    /// audience / location / bucket / persist / event) and returns only the eligible variations. A thin
+    /// bulk twin of ``runExperience(_:enableTracking:)``.
+    ///
+    /// `enableTracking` is threaded straight through to the bulk path (per-call FR19), exactly as
+    /// ``runExperience(_:enableTracking:)`` threads it — the global `network.tracking` gate is NOT
+    /// applied here (it is an Epic 5 concern; `runExperience` does not apply it either, and run-all
+    /// must mirror run-single, not diverge). `accountId` / `projectId` come from the snapshot
+    /// (defaulting to `""` when absent), and `locationProperties` is empty on native — identical to
+    /// the single-experience path. Never throws.
+    /// - Parameter enableTracking: When `false`, variations are still computed but the per-experience
+    ///   bucketing enqueue is suppressed (passed through to the bulk path); defaults to `true`.
+    /// - Returns: The bucketed ``Variation`` for each eligible experience in config order, or `[]`
+    ///   on a missing snapshot.
     public func runExperiences(enableTracking: Bool = true) async -> [Variation] {
-        // [WARN] ConvertContext.runExperiences: not yet implemented (Epic 3).
-        // tracking toggle guard (FR6): guard trackingEnabled() else { return [] }
-        //   — wired when Epics 3-4 add eventSink.enqueue
-        []
+        guard let config = await sdk.configStore.getSnapshot() else {
+            return []
+        }
+        return await experienceManager.selectVariations(
+            in: config,
+            visitorId: visitorId,
+            accountId: config.accountId ?? "",
+            projectId: config.project?.id ?? "",
+            attributes: stringAttributes(),
+            locationProperties: [:],
+            enableTracking: enableTracking
+        )
     }
 
     /// Resolves one feature flag and returns its ``BucketedFeature``. Non-optional by
