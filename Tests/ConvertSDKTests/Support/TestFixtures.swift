@@ -284,6 +284,50 @@ func makeFeatureConfig(
     return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
 }
 
+// MARK: - Goal-carrying ProjectConfig builder (Story 4.2 conversion tracking)
+
+/// The `account_id` the conversion fixture and the store-key assertion share — declared once so the
+/// fixture's wire JSON and the test's `"\(accountId)-\(projectId)-\(visitorId)"` key never re-spell it
+/// (SonarQube 3% gate; the seeded sticky decision must land under the SAME key the wired
+/// `trackConversion` computes from `config.accountId`).
+let conversionFixtureAccountId = "acc1"
+/// The `project.id` the conversion fixture and the store-key assertion share (paired with
+/// ``conversionFixtureAccountId`` — see that doc).
+let conversionFixtureProjectId = "p1"
+
+/// A ``ProjectConfig`` carrying ONE goal (`id`/`key`/`name`/`type:"advanced"`) plus the shared
+/// `account_id` / `project.id` — the fixture the Story 4.2 `trackConversion` WIRING suite
+/// (``ConversionTrackingTests``) maps a caller's goalKey → wire goalId through. Decodes the SAME
+/// `goals[]` wire shape the live CDN ships: each goal carries `type` as the bare String `"advanced"`,
+/// so it ALWAYS lands on `ConfigGoalOrSentinel.sentinel` (the D3 drift), and `ProjectConfig.goal(forKey:)`
+/// reconstructs the base from the retained sentinel payload's `id`/`key`/`name` — so the goal is
+/// resolvable by key and yields its `id` as the wire goalId. `account_id` / `project.id` are present
+/// (the shared constants above) so the sticky store key `"<accountId>-<projectId>-<visitorId>"` the
+/// context computes is well-formed AND predictable, which is what lets the AC6 bucketing-data test seed
+/// a decision under the matching key.
+///
+/// Re-declared here (not reaching `ConvertSDKCoreTests`' `ProjectConfigFixtures.goalJSON`, which compiles
+/// into the OTHER target and is invisible across the boundary); the decode literal is written ONCE and
+/// shared by every conversion test (SonarQube 3% new-duplicated-lines gate; CPD is token-based, so the
+/// shared builder — not renamed locals — holds the diff under it). `throws` only on malformed JSON
+/// (`ProjectConfig.init(from:)` degrades per-field, so this shape never throws). `goalKey` is what
+/// `trackConversion(_:)` looks up; `goalId` is the wire id the resolved goal carries (and the id the
+/// conversion event's `goalId` must equal).
+func makeGoalConfig(
+    goalKey: String,
+    goalId: String,
+    goalName: String = "Purchase"
+) throws -> ProjectConfig {
+    // The goal's wire `type` is the bare String "advanced" (NOT an array): this is the D3 drift that
+    // makes the goal sentinel-decode, the path `goal(forKey:)` reconstructs `id`/`key` from.
+    let goal = #"{"id":"\#(goalId)","key":"\#(goalKey)","name":"\#(goalName)","type":"advanced"}"#
+    // Assembled in fragments (account → project → envelope) so each line stays ≤120 chars.
+    let account = #""account_id":"\#(conversionFixtureAccountId)""#
+    let project = #""project":{"id":"\#(conversionFixtureProjectId)"}"#
+    let envelope = #"{\#(account),\#(project),"goals":[\#(goal)]}"#
+    return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
+}
+
 /// Sentinel marking the `live` argument of `makeSchedulerSut(...)` as OMITTED — distinct from an
 /// explicit `live: nil` (which the failure suites pass to force a failing fetch).
 ///
