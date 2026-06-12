@@ -223,6 +223,67 @@ func makeMultiExperienceConfig(count: Int) throws -> ProjectConfig {
     return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
 }
 
+/// A ``ProjectConfig`` carrying ONE feature plus the experience that enables it — the fixture the
+/// Story 4.1 `runFeature`/`runFeatures` WIRING suite (``ConvertContextRunFeaturesTests``) resolves
+/// through. Built so a READY SDK buckets EVERY visitor into the carrier and the feature comes back
+/// `.enabled` with two typed variables (`flag: Bool == true`, `label: String == "hi"`):
+///   * ONE `type:"a/b"` experience (id `"feat-exp"`, key `"feat-exp-key"`, no audiences/locations so
+///     the gates are bypassed) whose SOLE `traffic_allocation:\#(alloc)` variation (id `"feat-var"`,
+///     key `"feat-var-key"`) carries ONE `fullStackFeature` change. `alloc:100` (the default) ⇒ the
+///     variation covers the whole `0..<10000` bucket space ⇒ buckets for EVERY visitor hash, so the
+///     feature is enabled regardless of `visitorId`.
+///   * A top-level `features` array with ONE entry whose STRING `id` is `String(featureIdInt)` and
+///     whose `variables` declare the two types the feature path reads to type `variables_data`.
+///
+/// ── The change `id` MUST be an INTEGER (load-bearing trap) ──────────────────────────────────────
+/// `ExperienceChangeIdReadOnly.id` is `Swift.Int?` ("the unique numerical identifier"). The change is
+/// written `{"id":1,"type":"fullStackFeature",…}` — an INTEGER, NOT a quoted string. A string id makes
+/// the FULL ``ConfigExperience`` decode throw `typeMismatch`, which silently degrades the whole
+/// experience out of `ProjectConfig.rawExperiences` (the per-element `try?`), so its variation can
+/// never carry the feature and the feature can never enable. This was already discovered and fixed in
+/// the core-target fixture (`ProjectConfigFixtures.fullStackFeatureExperienceJSON`); this builder
+/// mirrors that exact wire shape.
+///
+/// ── The cross-type binding ───────────────────────────────────────────────────────────────────────
+/// The change's `data.feature_id` is the INT `\#(featureIdInt)` while `features[].id` is the STRING
+/// `String(featureIdInt)`; `FeatureManager` binds them via `String(feature_id) == feature.id`, so the
+/// integer change value and the quoted feature id are deliberately the SAME number in two types. The
+/// variable VALUES live in the change's `variables_data`; their TYPES come from `features[].variables`.
+///
+/// Re-declared here (not reaching `ConvertSDKCoreTests`' `ProjectConfigFixtures`, which compiles into
+/// the OTHER target and is invisible across the boundary). Assembled in fragments (variation → change
+/// → experience → envelope) so each line stays ≤120 chars (SwiftLint `line_length`); `account_id` /
+/// `project.id` are `"acc-run"` / `"proj-run"` to match the other run-* builders. `throws` only on
+/// malformed JSON (`ProjectConfig.init(from:)` degrades per-field, so this shape never throws).
+///
+/// - Parameters:
+///   - featureKey: The feature's `key` — what `runFeature(_:)` looks up (default `"flag-1"`).
+///   - featureIdInt: The feature id as an INT; the feature's wire `id` is its string form, and the
+///     change's `feature_id` is this same integer (default `10031`).
+///   - alloc: The carrier variation's 0–100 traffic percentage (`100` ⇒ always buckets ⇒ enabled).
+func makeFeatureConfig(
+    featureKey: String = "flag-1",
+    featureIdInt: Int = 10031,
+    alloc: Int = 100
+) throws -> ProjectConfig {
+    // The variable VALUES (in the change) and their declared TYPES (in `features[].variables`) — the
+    // feature path joins the two by name, yielding `flag: Bool == true` and `label: String == "hi"`.
+    let variablesData = #"{"flag":true,"label":"hi"}"#
+    let variableTypes = #"[{"key":"flag","type":"boolean"},{"key":"label","type":"string"}]"#
+    // INTEGER change id (the trap above): a quoted id degrades the whole experience out of rawExperiences.
+    let changeData = #""data":{"feature_id":\#(featureIdInt),"variables_data":\#(variablesData)}"#
+    let change = #"{"id":1,"type":"fullStackFeature",\#(changeData)}"#
+    let variationHead = #"{"id":"feat-var","key":"feat-var-key","traffic_allocation":\#(alloc),"#
+    let variation = variationHead + #""changes":[\#(change)]}"#
+    let experienceHead = #"{"id":"feat-exp","key":"feat-exp-key","type":"a/b","#
+    let experience = experienceHead + #""audiences":[],"locations":[],"variations":[\#(variation)]}"#
+    let featureHead = #"{"id":"\#(featureIdInt)","name":"\#(featureKey)-name","key":"\#(featureKey)","#
+    let feature = featureHead + #""variables":\#(variableTypes)}"#
+    let envelopeHead = #"{"account_id":"acc-run","project":{"id":"proj-run"},"#
+    let envelope = envelopeHead + #""experiences":[\#(experience)],"features":[\#(feature)]}"#
+    return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
+}
+
 /// Sentinel marking the `live` argument of `makeSchedulerSut(...)` as OMITTED — distinct from an
 /// explicit `live: nil` (which the failure suites pass to force a failing fetch).
 ///
