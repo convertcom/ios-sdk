@@ -29,12 +29,26 @@
 //
 // ── Determinism WITHOUT wall-clock sleeps (NFR21) ───────────────────────────────────────────
 // Two async seams: (1) the interval loop parks on `clock.sleep`, advanced one iteration per
-// `clock.tick()` (the continuation-gated `MockClock` — see `MockPorts.swift`); (2) the
-// notification observers deliver on their OWN `Task` (the `notifications(named:)` AsyncSequence).
-// For (2) there is no continuation to release, so the test yields the cooperative thread a BOUNDED
-// number of times (`drainUntil`) until the observed effect (a fetch-count increment) lands — a
-// delivery drain, never a timing assert. `.configUpdated` deliveries (a `MainActor` task) are
-// flushed with `drainMainActor()` before the count is read. No test measures elapsed time.
+// `clock.tick()` (the continuation-gated `MockClock` — see `MockPorts.swift`); (2) the foreground
+// and power-state observers, registered via `NotificationCenter.addObserver(forName:queue:using:)`,
+// run their attempt in a DETACHED `Task` the block spawns. Seam (2) is the one that flaked: a
+// bounded `drainUntil` poll (N `MainActor` hops) RACED that detached `Task` — under cooperative-pool
+// contention (the full ~27-suite parallel run) the `Task`'s `fetchLiveConfig()` had not landed when
+// the count was read, so the boundary case saw 1 fetch instead of 2 (~20% of runs under load).
+//
+// The fix replaces "poll and hope it settled" with a REAL happens-before on the awaited event:
+//   * `await sut.fetch.waitForFetchCount(n)` — parks a continuation the fetch double resumes the
+//     instant its Nth `fetchLiveConfig()` runs. Used for every wait whose count WILL reach the
+//     target (incl. failed fetches, which still increment).
+//   * `await sut.logger.waitForEntry(...)` — parks a continuation the matching `log(...)` resumes.
+//     Used where the awaited observable is a LOG, not a fetch: the within-TTL `.debug` skip line and
+//     the LPM-skip `.debug` line (the gated attempt RAN but performs no fetch, so the count never
+//     moves), and the failed-refresh `.warn` line.
+// Both are pure continuation handoffs (NFR21 — no wall-clock wait), mirroring `MockConfigProvider`'s
+// gate and `ConfigStore.waitForReady()`. `.configUpdated` deliveries (a `MainActor` task) are still
+// flushed with `drainMainActor()` before the bus count is read. The ONE remaining bounded
+// `drainUntil` is in the cancel test, a NEGATIVE assertion (no event to await — see its doc). No
+// test measures elapsed time.
 import Testing
 import Foundation
 @testable import ConvertSDK
@@ -69,10 +83,13 @@ struct ConfigRefreshSchedulerTests {
         let updates = await countEvents(.configUpdated, on: sut.bus)
         await sut.scheduler.start()
 
-        // Release exactly one interval sleep so the loop runs ONE iteration, then let the resulting
-        // fetch + setConfig land (bounded yield drain — not a timing wait).
+        // Release exactly one interval sleep so the loop runs ONE iteration, then AWAIT the fetch
+        // actually happening (a real happens-before via the fetch double's continuation, not a
+        // bounded poll). `setConfig` fires `.configUpdated` on the `MainActor` AFTER the fetch
+        // returns, so a `drainMainActor()` barrier still flushes that delivery before `firings` is
+        // read.
         sut.clock.tick()
-        await drainUntil { await sut.fetch.fetchLiveConfigCallCount == 1 }
+        await sut.fetch.waitForFetchCount(1)
         await drainMainActor()
 
         #expect(await sut.fetch.fetchLiveConfigCallCount == 1)
@@ -83,39 +100,68 @@ struct ConfigRefreshSchedulerTests {
         await sut.bus.off(updates.token)
     }
 
-    // MARK: Scenario 2 — lazy TTL boundary (parameterized: within vs beyond)
+    // MARK: Scenario 2 — lazy TTL boundary (within vs beyond)
 
-    /// AC4: a second attempt WITHIN the TTL window is skipped (1 fetch); a second attempt at/AFTER
-    /// the TTL boundary proceeds (2 fetches). Parameterized over `(elapsedMs, expectedFetches)` so
-    /// the within/beyond cases share one body (SonarQube new-duplicated-lines gate) — the only
-    /// difference is how far the clock advances before the second foreground attempt.
-    @Test(
-        "the lazy TTL skips a second attempt within the window and allows it at the boundary",
-        arguments: [
-            (elapsedMs: ConfigRefreshSchedulerTests.withinTtlMs, expectedFetches: 1),
-            (elapsedMs: ConfigRefreshSchedulerTests.beyondTtlMs, expectedFetches: 2)
-        ]
-    )
-    func ttlBoundaryGovernsSecondAttempt(elapsedMs: Int, expectedFetches: Int) async throws {
+    /// Shared first-attempt setup for the two TTL cases: build the TTL-interval SUT, start it, fire
+    /// the FIRST foreground attempt (no prior fetch → it always refreshes, stamping
+    /// `lastSuccessfulFetchAt = epoch`), and AWAIT that first fetch landing via a real happens-before.
+    /// Then advance the clock by `elapsedMs` and fire the SECOND foreground attempt — WITHOUT waiting
+    /// on its outcome, because the two cases observe DIFFERENT outcomes (beyond → a second fetch
+    /// lands; within → the attempt is gated and logs a skip, the count never moving). Factored to one
+    /// owner so the within/beyond bodies do not re-inline the identical first-attempt block (SonarQube
+    /// new-duplicated-lines gate; CPD is token-based, so sharing the block — not renaming locals — is
+    /// what keeps the diff under the threshold). Returns the SUT so each case drives its own wait +
+    /// assertion + teardown.
+    private func startedSutAfterSecondForegroundAttempt(elapsedByMs elapsedMs: Int) async throws -> SchedulerSUT {
         let sut = try await makeSchedulerSut(refreshIntervalMs: Self.ttlIntervalMs)
         await sut.scheduler.start()
 
         // First attempt: no prior fetch → always refreshes, stamping lastSuccessfulFetchAt = epoch.
+        // Await the fetch itself (continuation handoff), not a bounded poll, so the stamp is in place
+        // before the clock moves.
         triggerForeground(center: sut.center)
-        await drainUntil { await sut.fetch.fetchLiveConfigCallCount == 1 }
+        await sut.fetch.waitForFetchCount(1)
 
         // Move time, then a SECOND foreground attempt (TTL applies on foreground, AC4/Task 2.2).
         advanceClock(sut.clock, byMs: elapsedMs)
         triggerForeground(center: sut.center)
-        // Drain toward the BEYOND outcome (2 fetches): for the beyond case this returns once the
-        // legitimate second fetch lands; for the within case the condition never holds, so the bound
-        // is fully spent — giving a (wrongly) un-gated second fetch every chance to land before the
-        // assertion. Either way the count has SETTLED when asserted, so a TTL regression can't slip
-        // through a too-early check. (The first fetch already made `== 1` true, so a `== 1` drain
-        // here would return instantly and mask a buggy second fetch.)
-        await drainUntil { await sut.fetch.fetchLiveConfigCallCount >= 2 }
+        return sut
+    }
 
-        #expect(await sut.fetch.fetchLiveConfigCallCount == expectedFetches)
+    /// AC4: a second foreground attempt at/AFTER the TTL boundary (`elapsed == interval`, so NOT
+    /// `< interval`) PROCEEDS — exactly two fetches. Awaiting `waitForFetchCount(2)` is a genuine
+    /// happens-before on the second fetch (the fix for the prior ~20%-under-load flake: a bounded
+    /// `drainUntil` RACED the detached `Task` the foreground `NotificationCenter` block spawns, and
+    /// under cooperative-pool contention the second fetch had not landed when the count was read).
+    @Test("the lazy TTL allows a second attempt at the boundary")
+    func ttlBoundaryAllowsSecondAttempt() async throws {
+        let sut = try await startedSutAfterSecondForegroundAttempt(elapsedByMs: Self.beyondTtlMs)
+
+        // Await the legitimate second fetch landing — a real event, not a settled-by-timeout poll.
+        await sut.fetch.waitForFetchCount(2)
+        #expect(await sut.fetch.fetchLiveConfigCallCount == 2)
+
+        await sut.scheduler.cancel()
+    }
+
+    /// AC4: a second foreground attempt WITHIN the TTL window is SKIPPED — the count stays 1. The
+    /// skipped attempt cannot be awaited via `waitForFetchCount(2)` (that threshold never arrives and
+    /// would park forever); instead this awaits the scheduler's `.debug` TTL-skip line — the
+    /// deterministic proof the second attempt RAN and was GATED — via `MockLogger.waitForEntry`, THEN
+    /// asserts the count is still 1. (`messageContains: "last fetch"` pins it to the TTL skip, not the
+    /// LPM skip, which shares the same `.debug`/`checkRefresh` coordinates.)
+    @Test("the lazy TTL skips a second attempt within the window")
+    func ttlWindowSkipsSecondAttempt() async throws {
+        let sut = try await startedSutAfterSecondForegroundAttempt(elapsedByMs: Self.withinTtlMs)
+
+        // Await the skip log (the gated second attempt's observable), not a count that won't move.
+        await sut.logger.waitForEntry(
+            level: .debug,
+            type: "ConfigRefreshScheduler",
+            method: "checkRefresh",
+            messageContains: "last fetch"
+        )
+        #expect(await sut.fetch.fetchLiveConfigCallCount == 1)
 
         await sut.scheduler.cancel()
     }
@@ -133,7 +179,7 @@ struct ConfigRefreshSchedulerTests {
         await sut.scheduler.start()
 
         triggerForeground(center: sut.center)
-        await drainUntil { await sut.fetch.fetchLiveConfigCallCount == 1 }
+        await sut.fetch.waitForFetchCount(1)
 
         #expect(await sut.fetch.fetchLiveConfigCallCount == 1)
 
@@ -150,9 +196,18 @@ struct ConfigRefreshSchedulerTests {
         let sut = try await makeSchedulerSut(powerMode: true)
         await sut.scheduler.start()
 
-        // Drive one interval iteration; the LPM guard must skip the fetch.
+        // Drive one interval iteration; the LPM guard must skip the fetch. Await the LPM-skip
+        // `.debug` line — the deterministic proof the interval-fired attempt RAN and was GATED (a
+        // real happens-before via `MockLogger.waitForEntry`) — rather than polling a clock-sleep
+        // count, which only INDIRECTLY implies the gated attempt completed. The skip never fetches,
+        // so `waitForFetchCount` is not applicable (the count stays 0); the log is the right signal.
         sut.clock.tick()
-        await drainUntil { sut.clock.sleeps.count >= 2 }
+        await sut.logger.waitForEntry(
+            level: .debug,
+            type: "ConfigRefreshScheduler",
+            method: "checkRefresh",
+            messageContains: "Low Power Mode"
+        )
 
         #expect(await sut.fetch.fetchLiveConfigCallCount == 0)
 
@@ -173,7 +228,7 @@ struct ConfigRefreshSchedulerTests {
 
         sut.setPowerMode(false)
         triggerPowerStateChange(center: sut.center)
-        await drainUntil { await sut.fetch.fetchLiveConfigCallCount == 1 }
+        await sut.fetch.waitForFetchCount(1)
 
         #expect(await sut.fetch.fetchLiveConfigCallCount == 1)
 
@@ -191,8 +246,13 @@ struct ConfigRefreshSchedulerTests {
         await sut.scheduler.start()
 
         triggerForeground(center: sut.center)
-        await drainUntil { await sut.fetch.fetchLiveConfigCallCount >= 1 }
-        await drainMainActor()
+        // Await the WARN itself landing — the actual asserted observable on this (failure) path —
+        // via a genuine happens-before (`MockLogger.waitForEntry` parks a continuation the WARN's
+        // `log(...)` resumes), replacing the bounded `drainUntil` poll. The WARN is emitted in
+        // `performRefresh` AFTER the (failed) `fetchLiveConfig()` increments the count, so first
+        // awaiting the fetch and then the WARN orders the two observables the assertions read.
+        await sut.fetch.waitForFetchCount(1)
+        await sut.logger.waitForEntry(level: .warn, type: "ConfigRefreshScheduler")
 
         #expect(await sut.fetch.fetchLiveConfigCallCount >= 1)
         // Store untouched → still the pre-ready snapshot, never overwritten to the (nil) live result.
@@ -215,7 +275,10 @@ struct ConfigRefreshSchedulerTests {
         await sut.scheduler.start()
 
         triggerForeground(center: sut.center)
-        await drainUntil { await sut.fetch.fetchLiveConfigCallCount >= 1 }
+        // A FAILED fetch still increments the call count, so awaiting it is a real happens-before on
+        // the refresh attempt completing; then `drainMainActor()` flushes any (here: none) pending
+        // `.configUpdated` delivery before `firings` is read.
+        await sut.fetch.waitForFetchCount(1)
         await drainMainActor()
 
         #expect(updates.firings == 0)
@@ -234,6 +297,17 @@ struct ConfigRefreshSchedulerTests {
     /// WITHOUT a trailing `attemptRefreshIfDue`. The post-cancel `tick()` would resume any sleeper
     /// that somehow re-parked; the bounded drain then gives a (wrongly) surviving loop turns to run,
     /// so a teardown regression surfaces as a count increase rather than being masked by timing.
+    ///
+    /// Why this test KEEPS the bounded `drainUntil` while every fetch-DRIVEN wait in this suite became
+    /// a `waitForFetchCount`/`waitForEntry` continuation await: this is a NEGATIVE assertion — the
+    /// correct behavior emits NO event (no fetch, no log), so there is no positive signal to park a
+    /// continuation on, and `waitForFetchCount` would hang forever waiting for a count that must never
+    /// move. A bounded drain is the right instrument for proving a non-event: it can only fail by a
+    /// FALSE PASS (a real teardown bug whose spurious fetch did not land in the bound) — never the
+    /// FALSE FAIL that the ~20%-under-load flake was (correct production, fetch not yet landed). The
+    /// only way to make this a happens-before would be to make `cancel()`'s loop-exit observable from
+    /// production, which is out of scope (no production-dispatch change). The bound stays at the
+    /// shared default — it is NOT bumped as part of the flake fix.
     @Test("cancel stops the interval loop so no further fetch occurs")
     func cancelStopsAllTasks() async throws {
         let sut = try await makeSchedulerSut()

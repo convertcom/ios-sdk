@@ -54,6 +54,14 @@ actor MockConfigFetchService: ConfigProviding {
     private let cached: ProjectConfig?
     private var fetchCount = 0
     private var loadCachedCount = 0
+    /// Awaiters parked by ``waitForFetchCount(_:)``, each keyed to the fetch-count THRESHOLD it is
+    /// waiting for. ``fetchLiveConfig()`` resumes (and removes) every awaiter whose threshold the
+    /// new count has reached. A named struct keeps the `large_tuple` lint rule satisfied.
+    private struct FetchAwaiter {
+        let threshold: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+    private var fetchAwaiters: [FetchAwaiter] = []
 
     init(cached: ProjectConfig? = nil, live: ProjectConfig?) {
         self.cached = cached
@@ -65,6 +73,23 @@ actor MockConfigFetchService: ConfigProviding {
 
     /// How many times ``loadCachedConfig()`` has been invoked.
     var loadCachedConfigCallCount: Int { loadCachedCount }
+
+    /// Suspends until ``fetchLiveConfig()`` has been CALLED at least `target` times, then resumes — a
+    /// genuine happens-before on "the Nth fetch has run", replacing the bounded `drainUntil` poll
+    /// that RACED the detached `Task` a `NotificationCenter` foreground/power-state block (or the
+    /// interval-loop continuation) spawns to perform the fetch. Returns immediately if the count is
+    /// already ≥ `target`; otherwise parks a continuation keyed to that threshold, which
+    /// ``fetchLiveConfig()`` resumes the instant the count reaches it. A pure continuation handoff —
+    /// no wall-clock wait (NFR21) — mirroring ``MockConfigProvider``'s gate and the
+    /// ``ConfigStore/waitForReady()`` pattern. ONLY use for a count that WILL be reached; a
+    /// threshold that never arrives (e.g. the within-TTL second attempt that is correctly SKIPPED)
+    /// would park forever — those tests await the skip log via ``MockLogger/waitForEntry`` instead.
+    func waitForFetchCount(_ target: Int) async {
+        if fetchCount >= target { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            fetchAwaiters.append(FetchAwaiter(threshold: target, continuation: continuation))
+        }
+    }
 
     /// Replaces the live result (e.g. flip to `nil` to simulate a network/decode failure on the
     /// NEXT fetch).
@@ -79,6 +104,15 @@ actor MockConfigFetchService: ConfigProviding {
 
     func fetchLiveConfig() async -> ProjectConfig? {
         fetchCount += 1
+        // Resume (and drop) every awaiter whose threshold the new count has now reached. Actor
+        // isolation is the mutual exclusion here, so the continuations are resumed directly — there
+        // is no lock to step outside of (unlike the `final class` mocks). Each parked continuation
+        // is resumed exactly once because it is removed from `fetchAwaiters` as it is collected.
+        let ready = fetchAwaiters.filter { $0.threshold <= fetchCount }
+        fetchAwaiters.removeAll { $0.threshold <= fetchCount }
+        for awaiter in ready {
+            awaiter.continuation.resume()
+        }
         return live
     }
 }
@@ -125,6 +159,24 @@ func makeRefreshConfig(accountId: String = "acc-refresh") throws -> ProjectConfi
     )
 }
 
+/// Sentinel marking the `live` argument of `makeSchedulerSut(...)` as OMITTED — distinct from an
+/// explicit `live: nil` (which the failure suites pass to force a failing fetch).
+///
+/// Why a sentinel, not a plain `nil` default: a defaulted `ProjectConfig?` parameter cannot tell
+/// "caller omitted `live`" from "caller passed `live: nil`" — Swift makes BOTH the value `nil`, so
+/// the success suites (which omit `live` and expect a real `acc-live` config) and the failure suites
+/// (which pass `live: nil` and expect a `nil` fetch) would be indistinguishable. (The double-optional
+/// `ProjectConfig??` idiom does NOT help: Swift collapses a passed `nil` onto the OUTERMOST optional,
+/// so `live: nil` still binds to the same case as omission — verified.) A sentinel value carrying a
+/// reserved ``ProjectConfig/accountId`` that no real or test config uses lets the factory branch on
+/// identity-by-id: the sentinel means "omitted → use the default `acc-live`", any other value
+/// (including an explicit `nil`) is honored verbatim. Built with `try?` (never actually nil here:
+/// ``makeRefreshConfig(accountId:)`` does not throw on this static literal — see its doc), and even
+/// an impossible `nil` would only mean an omitted `live` is treated as a failing fetch, never the
+/// reverse, so the sentinel cannot silently corrupt the success path.
+private let omittedLiveSentinelAccountId = "__omitted_live_sentinel__"
+private let omittedLiveSentinel: ProjectConfig? = try? makeRefreshConfig(accountId: omittedLiveSentinelAccountId)
+
 // MARK: - Scheduler SUT factory
 
 /// The fully-wired scheduler system-under-test plus every collaborator a test needs to drive and
@@ -170,23 +222,29 @@ struct SchedulerSUT: Sendable {
 /// - Parameters:
 ///   - cachedReady: pre-ready the store with a valid config so a scheduler refresh is observable as
 ///     a `.configUpdated` (and `getSnapshot()` identity changes). `false` leaves the store pending.
-///   - live: the config the fetch double returns; `nil` simulates a failing refresh.
+///   - live: the config the fetch double returns. OMIT it for a successful refresh (a fresh
+///     `acc-live` config is supplied); pass an explicit `live: nil` to simulate a FAILING refresh.
+///     The default is the ``omittedLiveSentinel`` (NOT `nil`), so an explicit `nil` is distinguishable
+///     from omission — see that sentinel's doc for why a plain `nil` default cannot tell them apart.
 ///   - powerMode: the INITIAL Low-Power-Mode state the `powerModeProvider` reports.
 ///   - refreshIntervalMs: the interval the scheduler sleeps between loop ticks.
 func makeSchedulerSut(
     cachedReady: Bool = true,
-    live: ProjectConfig? = nil,
+    live: ProjectConfig? = omittedLiveSentinel,
     powerMode: Bool = false,
     refreshIntervalMs: Int = Defaults.dataRefreshIntervalMs,
     clock: MockClock = MockClock(),
     center: NotificationCenter = NotificationCenter()
 ) async throws -> SchedulerSUT {
-    // The fetch double's live result: an explicit `live` (incl. an intentional `nil` for the
-    // failure suites) wins; otherwise a fresh valid config carrying a distinct accountId so a
-    // refresh is a genuine snapshot change rather than a no-op re-set.
+    // The fetch double's live result: OMITTED `live` (the sentinel, matched by its reserved
+    // accountId) → a fresh valid config carrying a distinct accountId so a refresh is a genuine
+    // snapshot change. An explicitly-passed `live` (incl. an intentional `nil` for the failure
+    // suites) is honored verbatim — a `nil` here drives the failing-refresh path.
     let liveConfig: ProjectConfig? = try {
-        if let live { return live }
-        return try makeRefreshConfig(accountId: "acc-live")
+        if live?.accountId == omittedLiveSentinelAccountId {
+            return try makeRefreshConfig(accountId: "acc-live")
+        }
+        return live
     }()
     let fetch = MockConfigFetchService(live: liveConfig)
 
@@ -287,16 +345,27 @@ func drainMainActor() async {
     await MainActor.run { }
 }
 
-/// Bounded cooperative-yield drain: yields the cooperative thread up to `maxYields` times,
-/// breaking as soon as `condition` holds. Used to let an ASYNC notification observer (the
-/// `notifications(named:)` AsyncSequence delivers on its OWN observer Task) deliver and the
-/// scheduler act on it, WITHOUT a wall-clock sleep (NFR21). This is a DELIVERY DRAIN — it asserts
-/// nothing about elapsed time; it only gives the runtime turns to run already-enqueued work, then
-/// the CALLER asserts the count. The bound prevents a runaway loop if the awaited effect never
-/// happens (the subsequent `#expect` then fails loudly rather than hanging).
-func drainUntil(maxYields: Int = 200, _ condition: @Sendable () async -> Bool) async {
-    for _ in 0..<maxYields {
+/// Bounded executor-barrier drain: drives a `MainActor` executor hop up to `maxRounds` times,
+/// breaking as soon as `condition` holds. Used to let a notification observer deliver and the
+/// scheduler act on it (its async refresh attempt: fetch → store write OR WARN log), WITHOUT a
+/// wall-clock sleep (NFR21). This is a DELIVERY DRAIN — it asserts nothing about elapsed time; it
+/// only gives the runtime turns to run already-enqueued work, then the CALLER asserts. The bound
+/// prevents a runaway loop if the awaited effect never happens (the subsequent `#expect` then fails
+/// loudly rather than hanging).
+///
+/// Each round hops the SERIAL `MainActor` executor (via ``drainMainActor()``), NOT a bare
+/// `Task.yield()`. `Task.yield()` reschedules THIS task on the cooperative pool and does not
+/// reliably give a DIFFERENT actor's already-enqueued continuation a turn — so when the awaited
+/// effect is the tail of the scheduler actor's refresh attempt (e.g. the synchronous WARN log that
+/// runs one continuation AFTER the awaited `fetchLiveConfig()` returns), a yield-only drain can spend
+/// its whole budget before that continuation is scheduled, and the effect lands only after the
+/// assertion. A `MainActor.run { }` barrier forces a real suspension onto a serial executor, which
+/// lets every pending continuation — including the scheduler's — get scheduled before the next
+/// round, making notification-driven effects observable deterministically. It remains a pure
+/// executor barrier, never a wall-clock wait (NFR21).
+func drainUntil(maxRounds: Int = 200, _ condition: @Sendable () async -> Bool) async {
+    for _ in 0..<maxRounds {
         if await condition() { return }
-        await Task.yield()
+        await drainMainActor()
     }
 }
