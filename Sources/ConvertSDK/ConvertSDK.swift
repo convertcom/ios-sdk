@@ -94,7 +94,7 @@ public final class ConvertSDK: Sendable {
         clock: any Clock = SystemClock(),
         secureStore: any SecureStore = KeychainSecureStore(),
         keyValueStore: any KeyValueStore = UserDefaultsKeyValueStore(),
-        decisionStore: DecisionStore = DecisionStore(logger: NoopLogger(), fileStore: EphemeralFileStore())
+        decisionStore: DecisionStore = DecisionStore(logger: NoopLogger(), fileStore: ApplicationSupportFileStore())
     ) {
         self.configuration = configuration
         self.eventBus = eventBus
@@ -117,7 +117,17 @@ public final class ConvertSDK: Sendable {
         // only reach.
         let schedulerBox = self.schedulerBox
         let clock = clock
+        // Capture the decision store as a local so the `Task` closure picks up THIS (not `self`),
+        // matching the `store`/`schedulerBox`/`clock` capture discipline that keeps the closure off
+        // `self`. `DecisionStore` is an `actor` (Sendable), so it crosses into the `Task` data-race-clean.
+        let decisionStore = self.decisionStore
         Task {
+            // Hydrate persisted sticky decisions from disk FIRST (AC5/FR50/FR51), independent of
+            // config: runs on BOTH the key path AND the directData path (placed before the
+            // `directData` early `return` below), since a direct-data SDK still wants its persisted
+            // decisions restored. Awaited INSIDE the detached `Task`, so init stays non-blocking; the
+            // store degrades to empty (it never throws) on a first-launch miss or corrupt bytes.
+            await decisionStore.loadFromDisk()
             if let directData {
                 // Direct-data path: validate the payload (empty/invalid → ready() throws).
                 await store.validateAndSetConfig(data: directData)
