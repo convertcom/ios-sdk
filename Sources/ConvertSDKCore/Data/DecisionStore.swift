@@ -34,6 +34,14 @@ public actor DecisionStore {
     /// Fixed filename for the persisted decision map under Application Support.
     private static let storeFileName = "convert-decision-store.json"
 
+    /// The on-disk shape: the decision map PLUS the LRU access order, so eviction recency
+    /// survives app restarts (the in-memory `accessOrder` would otherwise be reseeded from
+    /// `Dictionary.keys`, whose order is non-deterministic across launches).
+    private struct PersistedStore: Codable {
+        let store: [String: StoreData]
+        let order: [String]
+    }
+
     /// Injects the log sink, the file-I/O port, and the LRU capacity.
     ///
     /// The persistence URL is resolved once here: Application Support if available, falling back
@@ -51,18 +59,26 @@ public actor DecisionStore {
         self.fileURL = Self.resolveStoreURL()
     }
 
-    /// Hydrates the in-memory store from disk. Reads via ``fileStore``, decodes
-    /// `[String: StoreData]`, and seeds ``store`` / ``accessOrder``.
+    /// Hydrates the in-memory store from disk. Reads via ``fileStore``, decodes a
+    /// ``PersistedStore`` (the decision map plus the persisted LRU access order), and seeds
+    /// ``store`` / ``accessOrder``. Because the access order is persisted, eviction recency
+    /// survives app restarts rather than being reseeded from non-deterministic `Dictionary.keys`.
     ///
-    /// On ANY failure — a missing file on first launch (`CocoaError`) or corrupt / truncated
-    /// bytes that fail to decode — it logs a `warn`-level line and leaves the store EMPTY. It
-    /// never throws and never crashes.
+    /// On ANY failure — a missing file on first launch (`CocoaError`), corrupt / truncated bytes,
+    /// or an old / hand-edited file that no longer decodes as ``PersistedStore`` — it logs a
+    /// `warn`-level line and leaves the store EMPTY. It never throws and never crashes.
     public func loadFromDisk() async {
         do {
             let data = try await fileStore.read(from: fileURL)
-            let decoded = try JSONDecoder().decode([String: StoreData].self, from: data)
-            store = decoded
-            accessOrder = Array(decoded.keys)
+            let decoded = try JSONDecoder().decode(PersistedStore.self, from: data)
+            store = decoded.store
+            // Rebuild a consistent accessOrder: keep persisted order entries that still exist in
+            // store (preserving recency), then append any store keys missing from order (defensive
+            // — e.g. a legacy file or a hand-edited one), and drop any order keys absent from store.
+            var rebuilt = decoded.order.filter { store[$0] != nil }
+            let known = Set(rebuilt)
+            for key in store.keys where !known.contains(key) { rebuilt.append(key) }
+            accessOrder = rebuilt
         } catch {
             logger.log(
                 level: .warn,
@@ -89,11 +105,12 @@ public actor DecisionStore {
     }
 
     /// Merges `variationId` into `storeKey`'s `StoreData.bucketing[experienceId]`, refreshes LRU
-    /// recency, and persists the whole decision map to disk.
+    /// recency, and persists the whole decision map — together with the LRU access order — to disk.
     ///
     /// When the cache is at ``maxEntries`` and `storeKey` is NEW, the least-recently-accessed key
     /// is evicted BEFORE the insert. The eviction + merge + recency bump run as one non-suspending
-    /// actor step; only the disk write is awaited afterwards (AR12). Persistence is best-effort —
+    /// actor step; only the disk write is awaited afterwards (AR12). The persisted ``PersistedStore``
+    /// carries ``accessOrder`` so eviction recency survives restarts. Persistence is best-effort —
     /// an encode or write failure is swallowed, never crashing the caller.
     public func saveDecision(variationId: String, experienceId: String, storeKey: String) async {
         if store[storeKey] == nil, store.count >= maxEntries, let oldest = accessOrder.first {
@@ -112,7 +129,7 @@ public actor DecisionStore {
         )
         touch(storeKey)
 
-        guard let data = try? JSONEncoder().encode(store) else {
+        guard let data = try? JSONEncoder().encode(PersistedStore(store: store, order: accessOrder)) else {
             return
         }
         try? await fileStore.write(data, to: fileURL)

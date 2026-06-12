@@ -105,6 +105,38 @@ struct DecisionStoreTests {
         #expect(key2Evicted == nil)
     }
 
+    @Test("LRU recency survives a reload: the persisted access order, not Dictionary.keys, drives post-reload eviction")
+    func lruOrderSurvivesReload() async {
+        // One shared backing store: two DecisionStores over the SAME MockFileStore instance read
+        // and write the same persisted bytes, because the on-disk URL the store resolves is stable.
+        let fileStore = MockFileStore()
+        let first = makeDecisionStore(fileStore: fileStore, maxEntries: 2)
+        await first.loadFromDisk()
+
+        // Establish the persisted LRU order purely through saves (which DO persist): saving k1
+        // again after k2 bumps k1 to most-recently-used, so the persisted access order is [k2, k1]
+        // — k2 is least-recently-used. (A read would bump recency in memory but is NOT persisted,
+        // so the order must be driven by saves to be observable post-reload.)
+        await first.saveDecision(variationId: "var-1", experienceId: "exp-1", storeKey: "k1")
+        await first.saveDecision(variationId: "var-2", experienceId: "exp-1", storeKey: "k2")
+        await first.saveDecision(variationId: "var-1b", experienceId: "exp-1", storeKey: "k1")
+
+        // Second store over the SAME backing: hydrates from the bytes the first store wrote,
+        // INCLUDING the persisted access order [k2, k1] (once accessOrder is persisted).
+        let second = makeDecisionStore(fileStore: fileStore, maxEntries: 2)
+        await second.loadFromDisk()
+
+        // Inserting a NEW key at cap must evict the least-recently-used PERSISTED key (k2), not an
+        // arbitrary key picked from Dictionary.keys order. Against the unfixed impl this is
+        // nondeterministic (it may evict k1); after persisting accessOrder it is deterministic.
+        await second.saveDecision(variationId: "var-3", experienceId: "exp-1", storeKey: "k3")
+
+        let k2Evicted = await second.stickyVariationId(forExperience: "exp-1", storeKey: "k2")
+        let k1StillPresent = await second.stickyVariationId(forExperience: "exp-1", storeKey: "k1")
+        #expect(k2Evicted == nil)
+        #expect(k1StillPresent == "var-1b")
+    }
+
     // MARK: Corruption recovery
 
     @Test("loadFromDisk on corrupt bytes leaves the store empty, logs warn, and never throws")
