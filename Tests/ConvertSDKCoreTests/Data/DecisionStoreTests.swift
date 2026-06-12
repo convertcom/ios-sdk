@@ -194,4 +194,82 @@ struct DecisionStoreTests {
 
         #expect(decoded.bucketing["exp-1"] == "var-a")
     }
+
+    // MARK: - Goal dedup (Story 4.3)
+
+    /// RED-phase contract for the NEW `markGoalTriggeredIfNeeded(goalId:forVisitorKey:)` (does NOT
+    /// exist yet): `func markGoalTriggeredIfNeeded(goalId: String, forVisitorKey: String) async -> Bool`.
+    /// It returns `true` the FIRST time a `(visitorKey, goalId)` pair is seen — marking the goal in
+    /// that key's `StoreData.goalTriggered[goalId]` and persisting the whole store exactly like
+    /// ``saveDecision(variationId:experienceId:storeKey:)`` — and `false` on every repeat. The dedup
+    /// key is the `(visitorKey, goalId)` PAIR: different goals under one visitor, and the same goal
+    /// under different visitors, are independent (matching the Android dedup-key semantics).
+
+    /// One call site for the method under test so no test inline-repeats the await (SonarQube CPD is
+    /// token-based; this keeps the three first/false/independence cases from sharing a duplicate block).
+    private func markGoal(_ goalId: String, on store: DecisionStore, key: String) async -> Bool {
+        await store.markGoalTriggeredIfNeeded(goalId: goalId, forVisitorKey: key)
+    }
+
+    @Test("markGoalTriggeredIfNeeded returns true first call, false second")
+    func goalDedupFirstTrueSecondFalse() async {
+        let store = makeDecisionStore()
+        let key = "acc-proj-v1"
+
+        let firstMark = await markGoal("g-1", on: store, key: key)
+        let repeatMark = await markGoal("g-1", on: store, key: key)
+
+        #expect(firstMark == true)
+        #expect(repeatMark == false)
+    }
+
+    @Test("a different goal on the same visitor is independent")
+    func goalDedupPerGoalWithinVisitor() async {
+        let store = makeDecisionStore()
+        let key = "acc-proj-v1"
+
+        #expect(await markGoal("g-1", on: store, key: key) == true)
+        // g-2 is a distinct goal for the same visitor → not yet triggered.
+        #expect(await markGoal("g-2", on: store, key: key) == true)
+        // g-1 was already marked above → repeat is deduped.
+        #expect(await markGoal("g-1", on: store, key: key) == false)
+    }
+
+    @Test("the same goal under a different visitor key is independent")
+    func goalDedupPerVisitorKey() async {
+        let store = makeDecisionStore()
+
+        #expect(await markGoal("g-1", on: store, key: "k-A") == true)
+        // Same goal id, different visitor key → the dedup key includes the visitor, so not deduped.
+        #expect(await markGoal("g-1", on: store, key: "k-B") == true)
+    }
+
+    @Test("markGoalTriggeredIfNeeded persists across a DecisionStore reload")
+    func goalDedupSurvivesReload() async {
+        // Two DecisionStores over ONE MockFileStore read/write the same persisted bytes, because
+        // the on-disk URL the store resolves is stable. Mirrors `lruOrderSurvivesReload`.
+        let fileStore = MockFileStore()
+        let first = makeDecisionStore(fileStore: fileStore)
+        await first.loadFromDisk()
+        _ = await first.markGoalTriggeredIfNeeded(goalId: "g-1", forVisitorKey: "k")
+
+        let second = makeDecisionStore(fileStore: fileStore)
+        await second.loadFromDisk()
+
+        // The goal is already triggered in the bytes the first store wrote → still deduped.
+        let result = await second.markGoalTriggeredIfNeeded(goalId: "g-1", forVisitorKey: "k")
+        #expect(result == false)
+    }
+
+    @Test("StoreData.goalTriggered survives a JSON encode/decode round-trip")
+    func storeDataGoalTriggeredRoundTrips() throws {
+        // `makeStoreData` only seeds bucketing; this case needs a goalTriggered flag, so construct
+        // the four-field `StoreData` directly (the one place a test re-inlines the init, by necessity).
+        let original = StoreData(bucketing: [:], goalTriggered: ["g-1": true], segments: Segments(), locations: [:])
+
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(StoreData.self, from: encoded)
+
+        #expect(decoded.goalTriggered["g-1"] == true)
+    }
 }
