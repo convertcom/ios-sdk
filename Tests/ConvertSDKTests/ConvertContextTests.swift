@@ -74,3 +74,145 @@ struct ConvertContextTrackingToggleTests {
         #expect(await context.runExperiences().isEmpty)
     }
 }
+
+// MARK: - ConvertContext Visitor Identity
+
+/// Story 3.1 (Epic 3) RED phase: asserts that ``ConvertSDK/createContext(visitorId:attributes:)``
+/// resolves a visitor ID through ``VisitorContextManager`` (honouring an explicit ID, else reading
+/// the injected stores, else generating + persisting a UUID), coerces the loosely-typed `attributes`
+/// into the closed ``ConvertValue`` set (dropping unsupported values), and injects ONE canonical
+/// ``DecisionStore`` into every context.
+///
+/// NONE of the surface this suite touches exists yet, so every reference is EXPECTED to fail
+/// compilation — that compile-fail is the correct outcome of the RED phase. The GREEN step ADDS:
+///   * `ConvertContext.visitorId: String`, `ConvertContext.attributes: [String: Any]` (reconstructed
+///     from private `[String: ConvertValue]` storage), and `internal ConvertContext.decisionStore`,
+///     plus the additive `init(sdk:visitorId:attributes:decisionStore:)`.
+///   * `secureStore:` / `keyValueStore:` (+ a canonical `decisionStore`) params on `ConvertSDK`'s
+///     internal test-seam init, with `createContext` calling `VisitorContextManager.resolveVisitorId`.
+/// The existing `ConvertContext tracking toggle` suite above already compiles from Stories 2.2–2.4
+/// and is intentionally left untouched.
+@Suite("ConvertContext Visitor Identity")
+@MainActor
+struct ConvertContextVisitorIdentityTests {
+    /// The canonical UUID shape `UUID().uuidString` emits — upper-case hex, 8-4-4-4-12. The
+    /// generated-ID test matches `visitorId` against this so "an empty store → a real UUID" is
+    /// asserted on FORMAT, not on a specific (non-deterministic) value.
+    private static let uuidPattern =
+        "^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$"
+
+    /// Single construction site for the off-network SDK, reused by every test so the
+    /// `ConvertConfiguration` build + `ConvertSDK(...)` wiring is never copy-pasted per case
+    /// (SonarQube 3% new-duplicated-lines gate). The config provider is `ungated(cached: nil,
+    /// live: nil)` — no network, the detached load resolves degraded in the background — which is
+    /// irrelevant here because `createContext` is synchronous and usable pre-`ready()`. The two
+    /// stores are PARAMETERS (defaulting to fresh empty mocks) so a test that needs to read a
+    /// call-counter injects its own instance and inspects it afterwards; tests that only care about
+    /// the returned context take the defaults.
+    ///
+    /// `@MainActor` (matching the toggle suite) so `@Test` bodies may drive it directly; the SDK's
+    /// internal init is synchronous, so the factory does not `await`.
+    private func makeSDK(
+        secureStore: MockSecureStore = MockSecureStore(),
+        keyValueStore: MockKeyValueStore = MockKeyValueStore()
+    ) -> ConvertSDK {
+        ConvertSDK(
+            configuration: ConvertConfiguration(sdkKey: "test-key"),
+            configProvider: MockConfigProvider.ungated(cached: nil, live: nil),
+            secureStore: secureStore,
+            keyValueStore: keyValueStore
+        )
+    }
+
+    /// AC8 baseline: a no-argument `createContext()` returns a usable context with a non-empty
+    /// visitor ID (the empty injected stores drive the resolver to generate one).
+    @Test("createContext() with no args returns a non-nil context with a non-empty visitorId")
+    func createContextNoArgReturnsNonNil() async throws {
+        let context = makeSDK().createContext()
+        #expect(context.visitorId.isEmpty == false)
+    }
+
+    /// With empty stores the resolver generates `UUID().uuidString`, so `visitorId` must match the
+    /// canonical 8-4-4-4-12 upper-case-hex UUID shape (AC3 — a real UUID, not a placeholder).
+    @Test("createContext() with no args produces a canonical-UUID visitorId")
+    func createContextNoArgProducesUUIDFormat() async throws {
+        let visitorId = makeSDK().createContext().visitorId
+        #expect(
+            visitorId.range(of: Self.uuidPattern, options: .regularExpression) != nil,
+            "expected a canonical UUID, got \(visitorId)"
+        )
+    }
+
+    /// An explicit caller-supplied ID is returned VERBATIM (precedence rule 1 — never normalised,
+    /// no store access).
+    @Test("createContext(visitorId:) uses the supplied id verbatim")
+    func createContextWithExplicitIdUsesIt() async throws {
+        #expect(makeSDK().createContext(visitorId: "v1").visitorId == "v1")
+    }
+
+    /// THE load-bearing assertion (story line 207): `attributes` is readable as `[String: Any]`,
+    /// so `attributes["age"] as? Int == 30`. This compiles ONLY if `attributes` is `[String: Any]`
+    /// (NOT `[String: ConvertValue]`) — the GREEN step reconstructs the `Any` map from the internal
+    /// `ConvertValue` storage via `ConvertValue.anyValue`.
+    @Test("createContext(attributes:) preserves a supported scalar attribute")
+    func createContextPreservesAttributes() async throws {
+        #expect(makeSDK().createContext(attributes: ["age": 30]).attributes["age"] as? Int == 30)
+    }
+
+    /// Unsupported attribute values (a nested dictionary, etc.) are DROPPED by the
+    /// `ConvertValue.init?(any:)` coercion, while a supported sibling scalar in the same map
+    /// SURVIVES — proving the coercion filters per-key rather than rejecting the whole map.
+    @Test("createContext(attributes:) drops unsupported values but keeps supported ones")
+    func createContextDropsUnsupportedAttributes() async throws {
+        let attributes = makeSDK()
+            .createContext(attributes: ["age": 30, "nested": ["x": 1]])
+            .attributes
+        #expect(attributes["age"] as? Int == 30)
+        #expect(attributes["nested"] == nil)
+    }
+
+    /// AC6: two contexts created with DISTINCT explicit IDs keep those distinct IDs (no shared or
+    /// cached identity collapses them).
+    @Test("two contexts with distinct explicit ids keep them distinct")
+    func twoContextsHaveDistinctExplicitIds() async throws {
+        let sdk = makeSDK()
+        #expect(sdk.createContext(visitorId: "A").visitorId != sdk.createContext(visitorId: "B").visitorId)
+    }
+
+    /// AC8: a context is usable BEFORE `ready()` resolves — `createContext()` is synchronous and
+    /// does not wait on config load, so its `visitorId` is non-empty without any `await ready()`.
+    @Test("createContext() works before ready() with a non-empty visitorId")
+    func createContextBeforeReadyStillWorks() async throws {
+        // Deliberately do NOT `await sdk.ready()` — the context must be usable pre-ready.
+        let context = makeSDK().createContext()
+        #expect(context.visitorId.isEmpty == false)
+    }
+
+    /// AC7: a developer-supplied ID is returned verbatim with ZERO Keychain access — so the
+    /// injected secure store sees NO write (precedence rule 1: explicit ID, no store touch).
+    @Test("explicit visitorId does not write the Keychain")
+    func explicitIdDoesNotWriteKeychain() async throws {
+        let secureStore = MockSecureStore()
+        _ = makeSDK(secureStore: secureStore).createContext(visitorId: "explicit")
+        #expect(secureStore.writeCallCount == 0)
+    }
+
+    /// AC3: a `nil` ID with empty stores generates a UUID and PERSISTS it to the Keychain, so the
+    /// injected secure store observes exactly ONE write.
+    @Test("nil visitorId persists a generated UUID to the injected secure store")
+    func nilIdPersistsToInjectedStores() async throws {
+        let secureStore = MockSecureStore()
+        _ = makeSDK(secureStore: secureStore).createContext()
+        #expect(secureStore.writeCallCount == 1)
+    }
+
+    /// AC9 + Dev Notes ("ConvertSDK creates one canonical instance injected into every
+    /// ConvertContext"): every context from the SAME SDK holds the SAME `DecisionStore`. The store
+    /// is an `actor` (a reference type), so identity (`===`) proves the canonical-injection
+    /// contract — two contexts share ONE instance, not two equal ones.
+    @Test("contexts from one SDK share the SDK's canonical decisionStore")
+    func createContextHoldsDecisionStore() async throws {
+        let sdk = makeSDK()
+        #expect(sdk.createContext().decisionStore === sdk.createContext().decisionStore)
+    }
+}
