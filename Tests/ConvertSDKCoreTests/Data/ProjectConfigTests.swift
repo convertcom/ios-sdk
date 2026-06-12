@@ -159,4 +159,132 @@ struct ProjectConfigTests {
         let project = try #require(config.project, "clean payload must carry a decoded project")
         #expect(project.id == "proj-7", "clean project.id must populate")
     }
+
+    // MARK: - PC-1 shared builders (full-experience retention + audience/location lookups)
+    // (DRY: the `{"account_id":…,"experiences":[…],…}` envelope and the valid-experience JSON
+    // each appear ONCE here so no test body repeats a ≥10-line literal — SonarQube CPD is
+    // token-based, so the shared envelope/experience literals are what keep the diff under the
+    // 3% `new_duplicated_lines_density` gate. Each test passes only the array fragment it needs.)
+
+    /// Wraps array fragments in the `ConfigResponseData` wire envelope so each PC-1 test supplies
+    /// only the slice it exercises. Defaults keep the unrelated arrays empty (`[]` decodes to an
+    /// empty typed array, never a degrade) so a test that cares only about experiences need not
+    /// spell out audiences/locations, and vice-versa.
+    static func makeConfigData(
+        experiencesJSON: String = "[]",
+        audiencesJSON: String = "[]",
+        locationsJSON: String = "[]"
+    ) -> Data {
+        Data(
+            """
+            {"account_id":"acc","project":{"id":"p"},\
+            "experiences":\(experiencesJSON),\
+            "audiences":\(audiencesJSON),\
+            "locations":\(locationsJSON)}
+            """.utf8
+        )
+    }
+
+    /// A single well-formed `ConfigExperience` JSON object carrying the FULL shape PC-1 must
+    /// retain (`id`, `key`, a known `type`, and a `variations` array) — the part the stripped
+    /// `ProjectConfig.Experience` drops. Shared by the valid-type and per-element-degrade tests
+    /// so the variations literal is written once.
+    static func validExperienceJSON(id: String, key: String) -> String {
+        """
+        {"id":"\(id)","key":"\(key)","type":"a/b",\
+        "variations":[{"id":"var-a","key":"control","traffic_allocation":100}]}
+        """
+    }
+
+    // MARK: - PC-1: fullExperience(forKey:) returns the FULL generated experience
+
+    /// `fullExperience(forKey:)` returns the FULL generated `ConfigExperience` — with `key` and
+    /// the `variations` array — not the stripped `ProjectConfig.Experience` (which carries only
+    /// `id`/`type`). Proves the new raw retention exposes variations for sticky assignment.
+    @Test("fullExperience returns the full generated type (with variations) for a valid experience")
+    func fullExperienceReturnsFullTypeForValidExperience() throws {
+        let data = Self.makeConfigData(
+            experiencesJSON: "[\(Self.validExperienceJSON(id: "exp-100", key: "valid-exp"))]"
+        )
+
+        let config = try Self.decode(data)
+
+        let full = try #require(
+            config.fullExperience(forKey: "valid-exp"),
+            "the valid experience must be retrievable by key from the raw retention"
+        )
+        #expect(full.id == "exp-100", "the full experience must carry its wire id")
+        #expect(full.key == "valid-exp", "the full experience must carry its wire key")
+        let variation = try #require(
+            full.variations?.first,
+            "the FULL type must retain variations (the stripped Experience drops them)"
+        )
+        #expect(variation.id == "var-a", "the retained variation must carry its wire id")
+    }
+
+    /// THE critical PC-1 test: per-element-degrade, NOT whole-array-throw. The array holds one
+    /// valid experience and one drifted `a/b_fullstack` element (unknown `ExperienceTypes` →
+    /// `dataCorrupted`). A naive whole-array `[ConfigExperience]` decode throws on the drifted
+    /// element and loses BOTH; the contract requires each element to decode under its own `try?`,
+    /// so the valid sibling SURVIVES (with variations) and only the drifted element degrades out.
+    @Test("fullExperience per-element degrade keeps the valid sibling, drops the drifted one")
+    func fullExperiencePerElementDegradeKeepsValidSibling() throws {
+        let drifted = #"{"id":"exp-bad","key":"bad","type":"a/b_fullstack"}"#
+        let data = Self.makeConfigData(
+            experiencesJSON: "[\(Self.validExperienceJSON(id: "exp-good", key: "good")),\(drifted)]"
+        )
+
+        let config = try Self.decode(data)
+
+        // The valid sibling survived per-element decode — proves NOT a whole-array throw-to-nil.
+        let good = try #require(
+            config.fullExperience(forKey: "good"),
+            "the valid sibling must survive when a drifted element shares the array"
+        )
+        #expect(
+            good.variations?.first?.id == "var-a",
+            "the surviving sibling must retain its variations intact"
+        )
+        // The drifted element degraded out of the raw retention — proves per-element `try?`.
+        #expect(
+            config.fullExperience(forKey: "bad") == nil,
+            "the drifted a/b_fullstack element must degrade out, not be retained"
+        )
+    }
+
+    /// A key with no matching experience returns nil (lookup miss, not a degrade).
+    @Test("fullExperience returns nil for an unknown key")
+    func fullExperienceReturnsNilForUnknownKey() throws {
+        let data = Self.makeConfigData(
+            experiencesJSON: "[\(Self.validExperienceJSON(id: "exp-100", key: "valid-exp"))]"
+        )
+
+        let config = try Self.decode(data)
+
+        #expect(
+            config.fullExperience(forKey: "no-such") == nil,
+            "an unmatched key must return nil"
+        )
+    }
+
+    // MARK: - PC-1: audience(id:) / location(id:) lookups over the existing typed arrays
+
+    /// `audience(id:)` and `location(id:)` look up by id in the already-decoded `audiences` /
+    /// `locations` arrays; an unknown id returns nil. Audience/location JSON is kept minimal
+    /// (`rules` is optional on both generated types, so it is omitted — only id/key are needed
+    /// to decode through `ConfigAudience` / `ConfigLocation`).
+    @Test("audience(id:) and location(id:) resolve by id, and miss to nil for unknown ids")
+    func audienceAndLocationLookupById() throws {
+        let data = Self.makeConfigData(
+            audiencesJSON: #"[{"id":"aud-1","key":"k"}]"#,
+            locationsJSON: #"[{"id":"loc-1","key":"k"}]"#
+        )
+
+        let config = try Self.decode(data)
+
+        #expect(config.audience(id: "aud-1")?.id == "aud-1", "audience must resolve by id")
+        #expect(config.location(id: "loc-1")?.id == "loc-1", "location must resolve by id")
+        #expect(config.audience(id: "missing") == nil, "unknown audience id must miss to nil")
+        #expect(config.location(id: "missing") == nil, "unknown location id must miss to nil")
+    }
 }
