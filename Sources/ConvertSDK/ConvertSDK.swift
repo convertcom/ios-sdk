@@ -1,6 +1,15 @@
 // ConvertSDK.swift
 // Public entry point for the Convert iOS SDK (Epic 2 / Story 2).
 // Re-exports ConvertSDKCore so consumers need only `import ConvertSDK`.
+//
+// `file_length` is disabled file-wide (a single named rule — NOT a blanket `disable all`): this is the
+// SDK's public-surface composition root, and its DocC-heavy house style (each public member + the
+// wiring decisions carry full rationale) pushed it past the 400-line default once Story 5.1 wired the
+// real `EventQueue` into both the conversion and bucketing seams (the `resolveEventSink` helper and its
+// rationale). Trimming the mandated rationale to chase the line count would trade documentation rigor
+// for a cosmetic number; the named-rule suppression keeps every other rule — and the 400-line gate on
+// every OTHER file — enforced. Mirrors the same documented suppression on `ConvertContext.swift`.
+// swiftlint:disable file_length
 
 @_exported import ConvertSDKCore
 import Foundation
@@ -50,13 +59,13 @@ public final class ConvertSDK: Sendable {
     /// class `Sendable` with no suppression. Injectable so a test can assert the shared-identity contract.
     private let decisionStore: DecisionStore
 
-    /// The ``EventSink`` every ``ConvertContext`` from this handle enqueues CONVERSION entries through
-    /// (Story 4.2). Defaults to ``NoopEventSink`` (the production stand-in until Epic 5's `EventQueue`
-    /// is wired); a test injects a `MockEventSink` to observe the enqueue. This is the CONVERSION seam
-    /// ONLY — the bucketing path keeps its own ``NoopEventSink`` built inside
-    /// ``ExperienceManager/makeDefault(decisionStore:eventBus:logger:)`` and is untouched. The
-    /// ``EventSink`` port refines `Sendable`, so this `let` keeps the class an all-`let`
-    /// `Sendable final class` with no suppression.
+    /// The ONE ``EventSink`` every ``ConvertContext`` from this handle enqueues entries through —
+    /// shared by BOTH the conversion seam (Story 4.2) AND the bucketing path. In production it is the
+    /// real ``EventQueue`` (Epic 5 / Story 1), built in `init` and passed to BOTH
+    /// ``ExperienceManager/makeDefault(decisionStore:eventBus:logger:eventSink:)`` and every context;
+    /// a test injects a `MockEventSink` (via the optional `eventSink:` init parameter) to observe the
+    /// enqueue on both paths. The ``EventSink`` port refines `Sendable`, so this `let` keeps the class
+    /// an all-`let` `Sendable final class` with no suppression.
     private let eventSink: any EventSink
 
     /// The ``Logger`` this SDK's ``createContext`` hands to ``ConvertContext`` (so a context's
@@ -120,17 +129,28 @@ public final class ConvertSDK: Sendable {
     ///     the visitor-identity suite injects a mock to assert write behaviour.
     ///   - keyValueStore: The `UserDefaults`-backed visitor-ID mirror handed to
     ///     ``VisitorContextManager``. Defaults to ``UserDefaultsKeyValueStore`` (production).
-    ///   - eventSink: The ``EventSink`` every context enqueues CONVERSION entries through (Story 4.2).
-    ///     Defaults to ``NoopEventSink`` (production); the conversion-tracking suite injects a
-    ///     `MockEventSink` to observe the enqueue. The bucketing path is unaffected (it has its own
-    ///     internal sink inside ``ExperienceManager/makeDefault(decisionStore:eventBus:logger:)``).
+    ///   - eventSink: The ``EventSink`` every context enqueues entries through (conversion AND
+    ///     bucketing — Story 4.2 / Epic 5). `nil` (the production default) builds the real
+    ///     ``EventQueue`` and uses it for BOTH paths; the tracking suites inject a `MockEventSink`
+    ///     (non-`nil`) to observe the enqueue, which then also makes the bucketing path observable
+    ///     since the same injected sink flows into
+    ///     ``ExperienceManager/makeDefault(decisionStore:eventBus:logger:eventSink:)``.
     ///   - logger: The ``Logger`` handed to every context (so `trackConversion` drop-path WARNs are
     ///     observable) and used by ``createContext`` for visitor-ID resolution / attribute coercion.
     ///     Defaults to ``NoopLogger`` (the production logging path); the conversion-tracking suite
     ///     injects a `MockLogger`.
     ///   - decisionStore: The ONE canonical ``DecisionStore`` injected into every context this SDK
     ///     creates. Defaults to a fresh empty store; a test injects its own to assert shared identity.
-    internal init(
+    ///
+    /// The body exceeds the 50-line `function_body_length` default by a small margin because it wires
+    /// the SDK's full collaborator graph (config store, the resolved `EventSink`, the shared
+    /// `ExperienceManager`/`FeatureManager`) AND launches the detached, non-blocking config-load `Task`
+    /// inline — splitting the load `Task` into a separate method would either leak the capture
+    /// discipline (the `store`/`schedulerBox`/`decisionStore` locals that keep the closure off `self`)
+    /// or hide the non-blocking-init contract behind an indirection. Targeted disable on this one
+    /// initializer (precedent: `ExperienceManager.selectVariation`'s `function_parameter_count` disable)
+    /// rather than raising the project-wide threshold.
+    internal init( // swiftlint:disable:this function_body_length
         configuration: ConvertConfiguration,
         configProvider: (any ConfigProviding)? = nil,
         eventBus: EventBus = EventBus(),
@@ -138,7 +158,7 @@ public final class ConvertSDK: Sendable {
         clock: any Clock = SystemClock(),
         secureStore: any SecureStore = KeychainSecureStore(),
         keyValueStore: any KeyValueStore = UserDefaultsKeyValueStore(),
-        eventSink: any EventSink = NoopEventSink(),
+        eventSink: (any EventSink)? = nil,
         logger: any Logger = NoopLogger(),
         decisionStore: DecisionStore = DecisionStore(logger: NoopLogger(), fileStore: ApplicationSupportFileStore())
     ) {
@@ -148,18 +168,23 @@ public final class ConvertSDK: Sendable {
         self.secureStore = secureStore
         self.keyValueStore = keyValueStore
         self.decisionStore = decisionStore
-        self.eventSink = eventSink
         self.logger = logger
-        // Wire the ONE ExperienceManager every context delegates `runExperience` to, over the
-        // CANONICAL decisionStore (sticky parity) and the SHARED eventBus (so `.bucketing`
-        // subscribers fire). `makeDefault` is the single public factory — it builds the internal
-        // RuleManager / BucketingManager(NoopEventSink) inside ConvertSDKCore, so this target never
-        // names those internal types. NoopLogger matches the SDK's production logging path (the real
-        // OSLog sink is not wired yet — same default the config-load Task and createContext use).
-        // Captured in a LOCAL first so the FeatureManager below can be built from the SAME instance
-        // without reading `self.experienceManager` before every stored property is initialized.
-        let experienceManager = ExperienceManager
-            .makeDefault(decisionStore: decisionStore, eventBus: eventBus, logger: NoopLogger())
+        // Resolve the ONE EventSink shared by the conversion seam AND the bucketing path: an injected
+        // mock flows into both; production builds the real `EventQueue` (see `resolveEventSink`).
+        // Held in a LOCAL so it flows into BOTH `self.eventSink` and `makeDefault` below.
+        let resolvedSink = ConvertSDK.resolveEventSink(
+            injected: eventSink, configuration: configuration, eventBus: eventBus
+        )
+        self.eventSink = resolvedSink
+        // Wire the ONE ExperienceManager every context delegates `runExperience` to, over the CANONICAL
+        // decisionStore (sticky parity), the SHARED eventBus (so `.bucketing` subscribers fire), and the
+        // RESOLVED sink (so the bucketing enqueue lands on the SAME queue/mock as the conversion seam).
+        // `makeDefault` builds the internal RuleManager / BucketingManager(resolvedSink) inside
+        // ConvertSDKCore, so this target never names those internal types. NoopLogger matches the SDK's
+        // production logging path. A LOCAL first so the FeatureManager below reuses the SAME instance.
+        let experienceManager = ExperienceManager.makeDefault(
+            decisionStore: decisionStore, eventBus: eventBus, logger: NoopLogger(), eventSink: resolvedSink
+        )
         self.experienceManager = experienceManager
         // Wire the ONE FeatureManager every context delegates `runFeature` / `runFeatures` to, over the
         // SAME ExperienceManager just built (so feature evaluation buckets through the shared sticky
@@ -257,6 +282,60 @@ public final class ConvertSDK: Sendable {
             await scheduler.start()
             await schedulerBox.set(scheduler)
         }
+    }
+
+    /// Resolves the ONE ``EventSink`` shared by the conversion seam AND the bucketing path.
+    ///
+    /// When `injected` is non-`nil` (the test seam — a `MockEventSink`) it is used verbatim for BOTH
+    /// paths, so the bucketing enqueue becomes observable on the same instance the conversion suite
+    /// inspects. When `injected` is `nil` (production) the real ``EventQueue`` (Epic 5 / Story 1) is
+    /// built and returned: it batches by ``ConvertConfiguration/eventsBatchSize`` and the
+    /// ``ConvertConfiguration/eventsReleaseIntervalMs`` interval, ships through a
+    /// ``URLSessionEventUploader`` over a ``URLSessionHTTPClient`` (which applies the non-overridable
+    /// `ConvertAgent/<version>` User-Agent), fires ``SystemEvent/apiQueueReleased`` on the SHARED
+    /// `eventBus`, and honours the static ``ConvertConfiguration/networkTracking`` gate.
+    ///
+    /// The `accountId`/`projectId` stamped on the envelope are `""` here: they live on the config
+    /// SNAPSHOT (loaded asynchronously after init), not on ``ConvertConfiguration``, so at construction
+    /// they default to empty — the same pre-config default ``ConvertContext`` applies to the sticky
+    /// store key. Threading the resolved snapshot's account/project into the queue is a later-story
+    /// concern; Story 5.1 delivers the foreground queue with the empty pre-config attribution.
+    ///
+    /// A `static` helper (not an instance method) so it can run BEFORE every stored property of `self`
+    /// is initialized — the `init` calls it to build a LOCAL that flows into both `self.eventSink` and
+    /// ``ExperienceManager/makeDefault(decisionStore:eventBus:logger:eventSink:)``. The production
+    /// ``EventQueue`` uses ``SystemClock`` (the wall clock); the injectable `clock` on `init` drives
+    /// the config refresh scheduler, not this queue (the queue's determinism is exercised at the
+    /// `EventQueue` unit level with a stepping clock, not through the SDK composition root).
+    ///
+    /// - Parameters:
+    ///   - injected: An explicit sink (tests pass a `MockEventSink`), or `nil` for the production queue.
+    ///   - configuration: The SDK configuration carrying the batch size, release interval, track
+    ///     endpoint, SDK key, and the `network.tracking` gate.
+    ///   - eventBus: The SDK's shared bus the queue fires ``SystemEvent/apiQueueReleased`` on.
+    /// - Returns: The injected sink, or a freshly-built real ``EventQueue``.
+    private static func resolveEventSink(
+        injected: (any EventSink)?,
+        configuration: ConvertConfiguration,
+        eventBus: EventBus
+    ) -> any EventSink {
+        if let injected {
+            return injected
+        }
+        let uploader = URLSessionEventUploader(
+            httpClient: URLSessionHTTPClient(sdkVersion: SDKVersion.current),
+            trackEndpoint: configuration.apiTrackEndpoint,
+            sdkKey: configuration.sdkKey
+        )
+        return EventQueue(
+            accountId: "",
+            projectId: "",
+            batchSize: configuration.eventsBatchSize,
+            releaseIntervalMs: configuration.eventsReleaseIntervalMs,
+            uploader: uploader,
+            eventBus: eventBus,
+            trackingEnabled: configuration.networkTracking
+        )
     }
 
     /// Cancels the refresh scheduler when this handle is released.
