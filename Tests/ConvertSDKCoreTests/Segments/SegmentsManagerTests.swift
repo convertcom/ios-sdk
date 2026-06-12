@@ -127,4 +127,28 @@ struct SegmentsManagerTests {
         #expect(segs.customSegments == ["c1"])  // the default-segment write left customSegments intact
         #expect(segs.country == "US")           // and the custom-segment write did not block the six
     }
+
+    // MARK: setDefaultSegments — persistence round-trip (AC5)
+
+    /// AC5 names `setDefaultSegments` (the manager entry point) for the round-trip, whereas the
+    /// store-level sibling `DecisionStoreTests.setSegmentsSurvivesReload` exercises it at
+    /// `DecisionStore.setSegments`. This proves the manager's write — which delegates to
+    /// `DecisionStore.setSegments` → `FileStore.write` — survives a fresh `DecisionStore` reload
+    /// over the SAME `MockFileStore`. Two stores share one file store so the second observes the
+    /// bytes the first (via the manager) persisted; `makeManager()`'s own store is unusable here
+    /// because it owns a private store, so this scenario wires the two-store reload explicitly.
+    @Test("setDefaultSegments persists across DecisionStore reload (AC5)")
+    func setDefaultSegmentsSurvivesReload() async {
+        let fileStore = MockFileStore()
+        let store1 = DecisionStore(logger: MockLogger(), fileStore: fileStore)
+        await store1.loadFromDisk()
+        let mgr = makeManager(decisionStore: store1)
+        await mgr.setDefaultSegments(["country": "DE"], forVisitorKey: "acct-proj-visitor")
+
+        let store2 = DecisionStore(logger: MockLogger(), fileStore: fileStore)
+        await store2.loadFromDisk()
+
+        // The country the first store persisted (through the manager) must be observed after reload.
+        #expect(await store2.currentSegments(forVisitorKey: "acct-proj-visitor").country == "DE")
+    }
 }
