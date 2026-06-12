@@ -146,6 +146,42 @@ public actor DecisionStore {
         try? await fileStore.write(data, to: fileURL)
     }
 
+    /// Atomically checks whether `goalId` has already been triggered for `forVisitorKey` and, if not,
+    /// marks it triggered and persists. Returns `true` when the goal was NOT yet triggered (caller
+    /// should proceed with the conversion enqueue), `false` when it was already triggered (caller
+    /// should suppress). The contains-check AND the insert are one NON-SUSPENDING step — there is no
+    /// `await` between the boolean read and the `goalTriggered` write — so two concurrent calls on the
+    /// same goal cannot both observe "not triggered" (actor-reentrancy caveat, AR12). The only suspend
+    /// point is the trailing best-effort disk write, which runs AFTER the in-memory mark is committed.
+    /// [Source: data-manager.ts:1058-1072,851]
+    func markGoalTriggeredIfNeeded(goalId: String, forVisitorKey storeKey: String) async -> Bool {
+        if store[storeKey]?.goalTriggered[goalId] == true {
+            return false
+        }
+
+        if store[storeKey] == nil, store.count >= maxEntries, let oldest = accessOrder.first {
+            store[oldest] = nil
+            accessOrder.removeFirst()
+        }
+
+        let existing = store[storeKey]
+        var mergedGoals = existing?.goalTriggered ?? [:]
+        mergedGoals[goalId] = true
+        store[storeKey] = StoreData(
+            bucketing: existing?.bucketing ?? [:],
+            goalTriggered: mergedGoals,
+            segments: existing?.segments ?? Segments(),
+            locations: existing?.locations ?? [:]
+        )
+        touch(storeKey)
+
+        guard let data = try? JSONEncoder().encode(PersistedStore(store: store, order: accessOrder)) else {
+            return true
+        }
+        try? await fileStore.write(data, to: fileURL)
+        return true
+    }
+
     /// Moves `storeKey` to the most-recently-used end of the LRU order.
     private func touch(_ storeKey: String) {
         accessOrder.removeAll { $0 == storeKey }
