@@ -283,7 +283,17 @@ struct ConvertContextRunExperienceTests {
                     variationId: Self.variationId,
                     variationKey: "control"
                 )
-            )
+            ),
+            // Test isolation (bd-ilx): inject a FRESH in-memory `DecisionStore` over a `MockFileStore`
+            // so each SDK gets its own sticky-decision state. The default store wires a real on-disk
+            // `ApplicationSupportFileStore` at a process-shared path; without this, a sticky decision
+            // persisted by a SIBLING suite (`ConvertContextRunExperiencesTests` buckets the SAME
+            // `acc-run`/`proj-run`/`user-1` key, mapping experience `exp-1` → `var-1`) hydrates here via
+            // `ready()` → `loadFromDisk`, so the sticky short-circuit returns `var-1` and overrides this
+            // fixture's fresh `exp-1 → v1` bucketing — failing `variation?.id == "v1"`. A per-call
+            // `MockFileStore` keeps every run's decisions in-process. Mirrors the injection precedent in
+            // the `ConvertContextNetworkTrackingTests.makeReadySDK` factory below and across the suite.
+            decisionStore: DecisionStore(logger: MockLogger(), fileStore: MockFileStore())
         )
         try await sdk.ready()
         return sdk
