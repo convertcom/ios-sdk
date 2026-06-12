@@ -447,7 +447,9 @@ actor MockClock: Clock {
 
     /// Moves the virtual clock forward by `seconds`, for tests that also assert on ``now``.
     func advanceNow(by seconds: TimeInterval) {
-        instant.withLock { $0.addingTimeInterval(seconds) }
+        // `addingTimeInterval` returns a NEW Date (it does not mutate the receiver), so the result
+        // must be assigned back into the locked storage — otherwise the advance is silently discarded.
+        instant.withLock { $0 = $0.addingTimeInterval(seconds) }
     }
 
     /// The durations every ``sleep(milliseconds:)`` was asked for, in call order.

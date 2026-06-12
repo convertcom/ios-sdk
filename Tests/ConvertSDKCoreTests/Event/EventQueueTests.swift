@@ -143,6 +143,20 @@ struct EventQueueTests {
         }
     }
 
+    /// Polls `recorder` until the `apiQueueReleased` callback has recorded a count, DRAINING the
+    /// MainActor on every iteration so the callback's `Task { @MainActor in … }` job actually runs
+    /// before each check (the fire hops to the MainActor executor, so a cooperative `Task.yield()`
+    /// alone would never advance it). Returns the recorded count, or `nil` if the bounded budget is
+    /// spent (a deadlock guard, not a deadline — NFR21: no elapsed-duration threshold is asserted).
+    private func awaitReleasedCount(_ recorder: ReleasedCountRecorder) async -> Int? {
+        for _ in 0..<200 {
+            if let count = await recorder.recorded { return count }
+            await drainMainActor()
+            await Task.yield()
+        }
+        return await recorder.recorded
+    }
+
     // MARK: Scenario 1 — drain assembles the envelope and empties the buffer atomically (AC1)
 
     @Test("drain returns the buffered batch once, then empties (a second drain is empty)")
@@ -223,8 +237,9 @@ struct EventQueueTests {
     func sizeTriggerFlushesExactlyAtThreshold() async {
         let harness = makeHarness(batchSize: Defaults.batchSize)
         await enqueueBucketing(Defaults.batchSize - 1, for: "v1", on: harness.queue)
-        // Below threshold: even after letting any (non-existent) flush task run, zero uploads.
-        await awaitUploadCount(harness.uploader, reaches: 1)
+        // Below threshold: NO flush Task is ever launched (the size trigger fires only AT batchSize),
+        // so assert the zero count DIRECTLY — a `awaitUploadCount` barrier here would be a negative
+        // check that just burns its yield budget and could mask a slow-but-real flush on loaded CI.
         #expect(await harness.uploader.callCount == 0)
 
         // The batchSize-th enqueue trips the flush: exactly one upload carrying batchSize events.
@@ -271,17 +286,22 @@ struct EventQueueTests {
     @Test("a successful flush fires apiQueueReleased carrying the delivered event count")
     func successfulFlushFiresApiQueueReleased() async {
         let harness = makeHarness(batchSize: Defaults.batchSize)
-        await confirmation("apiQueueReleased is delivered once with eventCount == batchSize") { released in
-            _ = await harness.bus.on(.apiQueueReleased) { payload in
-                #expect(Self.releasedCount(of: payload) == Defaults.batchSize)
-                released()
-            }
-            await enqueueBucketing(Defaults.batchSize, for: "v1", on: harness.queue)
-            // Let the flush Task finish its upload, then drain the MainActor so the fired
-            // callback runs before the confirmation body exits — no wall-clock wait (NFR21).
-            await awaitUploadCount(harness.uploader, reaches: 1)
-            await drainMainActor()
+        // An actor-isolated sink the callback writes the delivered count into. Polling THIS (rather
+        // than `uploader.callCount`) closes a race: `flush` fires `apiQueueReleased` only AFTER its
+        // `await uploader.upload(...)` returns, and `EventBus.fire` then dispatches the callback as a
+        // separate `Task { @MainActor in … }`. So the upload completing does NOT mean the callback has
+        // run — waiting on the upload count and draining the MainActor once can exit before the fire is
+        // even enqueued. `awaitReleasedCount` drains the MainActor on every poll, so the callback's
+        // MainActor job is guaranteed to have run once the recorded count appears. No wall-clock wait.
+        let recorder = ReleasedCountRecorder()
+        _ = await harness.bus.on(.apiQueueReleased) { payload in
+            let count = Self.releasedCount(of: payload)
+            Task { await recorder.record(count) }
         }
+        await enqueueBucketing(Defaults.batchSize, for: "v1", on: harness.queue)
+        let delivered = await awaitReleasedCount(recorder)
+        // Fired exactly once, carrying the delivered event count (== batchSize for one full batch).
+        #expect(delivered == Defaults.batchSize)
     }
 
     // MARK: Scenario 8 — tracking disabled drops every entry: no upload, empty drain (AC9)
@@ -290,8 +310,9 @@ struct EventQueueTests {
     func trackingDisabledDropsEntries() async {
         let harness = makeHarness(batchSize: Defaults.batchSize, trackingEnabled: false)
         await enqueueBucketing(Defaults.batchSize, for: "v1", on: harness.queue)
-        // Even at batchSize enqueues, nothing flushes and nothing buffers.
-        await awaitUploadCount(harness.uploader, reaches: 1)
+        // A disabled queue drops every entry at the `enqueue` guard — it never buffers and never
+        // launches a flush Task — so assert the zero count DIRECTLY (a `awaitUploadCount` barrier
+        // would be a negative check burning its yield budget for an upload that can never happen).
         #expect(await harness.uploader.callCount == 0)
         #expect(await harness.queue.drain().isEmpty)
     }
@@ -302,5 +323,20 @@ struct EventQueueTests {
     private static func releasedCount(of payload: EventPayloadValue) -> Int? {
         guard case let .apiQueueReleased(released) = payload else { return nil }
         return released.eventCount
+    }
+}
+
+/// Actor sink the `apiQueueReleased` callback records the delivered event count into, so the AC8
+/// test can poll for the fire deterministically (the callback runs on a `MainActor` hop off the
+/// `EventBus.fire`, not synchronously). An `actor` satisfies the `Sendable` capture the `@Sendable`
+/// bus callback requires with no suppression; `recorded` is `nil` until the first fire lands.
+private actor ReleasedCountRecorder {
+    private(set) var recorded: Int?
+
+    /// Stores the first delivered count; ignores any subsequent fire so a double-delivery would be
+    /// caught by the count check rather than silently overwritten.
+    func record(_ count: Int?) {
+        guard recorded == nil else { return }
+        recorded = count
     }
 }

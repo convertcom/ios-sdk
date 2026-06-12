@@ -176,6 +176,12 @@ public actor EventQueue: EventSink {
     /// The first time a `visitorId` is seen its position and `segments` are captured; subsequent
     /// entries for that visitor append to its event list without disturbing order. Returns `[]` for
     /// an empty input so a flush of nothing is a no-op. Shared by ``drain()`` and ``flush()`` so the
+    ///
+    /// SEGMENTS WIRE NOTE: every ``Visitor`` always carries a `segments` object — `{}` when no
+    /// segments were provided (the `nil → [:]` resolution happens at enqueue). This is the canonical
+    /// AC5 shape (`"segments": {}`, never absent), and INTENTIONALLY differs from the JS SDK's
+    /// `api-manager.ts` `push`, which omits the field entirely when `segments` is falsy (`if (segments)
+    /// visitor.segments = segments`). The iOS wire follows the spec's explicit empty-object form.
     /// assembly lives in one place.
     private func assemble(_ entries: [BufferedEntry]) -> [TrackingEvent] {
         guard !entries.isEmpty else { return [] }
