@@ -109,6 +109,32 @@ struct RuleManagerTests {
         #expect(logger.entries().contains { $0.level == .warn })
     }
 
+    // MARK: - Absent-key dispatch (AC2 — nil must reach the comparator)
+
+    /// AC2 regression guard at the RuleManager level: an absent attribute key resolves to nil and
+    /// that nil must flow through to `Comparisons` so `doesNotExist` returns true. Guards against a
+    /// future `guard let` short-circuit that would skip dispatch for missing keys.
+    @Test("absent key with doesNotExist returns true (nil flows to comparator)")
+    func absentKeyDoesNotExistReturnsTrue() {
+        let manager = makeRuleManager()
+        let group = RuleGroup(conditions: [
+            RuleCondition(key: "missingAttr", matchType: "doesNotExist", value: nil, negation: false)
+        ])
+        #expect(manager.evaluate(rules: [group], against: ["country": "US"]) == true)
+    }
+
+    /// AC2 regression guard at the RuleManager level: an absent attribute key resolves to nil and
+    /// that nil must flow through to `Comparisons` so `exists` returns false. Guards against a
+    /// future `guard let` short-circuit that would skip dispatch for missing keys.
+    @Test("absent key with exists returns false (nil flows to comparator)")
+    func absentKeyExistsReturnsFalse() {
+        let manager = makeRuleManager()
+        let group = RuleGroup(conditions: [
+            RuleCondition(key: "missingAttr", matchType: "exists", value: nil, negation: false)
+        ])
+        #expect(manager.evaluate(rules: [group], against: ["country": "US"]) == false)
+    }
+
     // MARK: - Audience × Location composition (AC6)
 
     /// `RuleManager` is attribute-set-agnostic: the same evaluator runs the audience group

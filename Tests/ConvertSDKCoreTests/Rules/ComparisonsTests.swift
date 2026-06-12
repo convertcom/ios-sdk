@@ -112,6 +112,10 @@ struct ComparisonsTests {
                      expected: false, description: "isIn: D not in A|B|C"),
         OperatorCase(matchType: "isIn", value: "B", testAgainst: "A|B|C", negated: false,
                      expected: false, description: "isIn asymmetry: value B stays uppercase vs allowed [a,b,c]"),
+        OperatorCase(matchType: "isIn", value: "", testAgainst: "a|b|", negated: false,
+                     expected: true, description: "isIn empty value matches empty trailing segment (JS split parity)"),
+        OperatorCase(matchType: "isIn", value: "", testAgainst: "a|b", negated: false,
+                     expected: false, description: "isIn empty value no match when no empty segment"),
 
         // --- startsWith / endsWith: case-INSENSITIVE ---
         OperatorCase(matchType: "startsWith", value: "Hello", testAgainst: "HE", negated: false,

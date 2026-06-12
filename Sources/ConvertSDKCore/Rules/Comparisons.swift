@@ -147,9 +147,18 @@ internal enum Comparisons {
 
     /// Pipe-delimited membership. Candidates (from `value`) are NOT lowercased; the allow-list
     /// (from `testAgainst`) IS lowercased (JS 95-108) — an intentional asymmetry.
+    ///
+    /// Splitting uses `components(separatedBy:)`, NOT `split(separator:)`, specifically to
+    /// PRESERVE empty segments and so match JS `String.prototype.split` semantics
+    /// (JS `comparisons.ts` line 96 `String(values).split(splitter)`, line 101
+    /// `testAgainst.split(splitter)`). Swift's `split(separator:)` omits empty subsequences by
+    /// default, so `"".split` → `[]` and `"a|b|".split` → `["a","b"]` — both diverge from JS,
+    /// where `"".split("|")` → `[""]` and `"a|b|".split("|")` → `["a","b",""]`.
+    /// `components(separatedBy:)` matches JS exactly for empty, leading, trailing, and
+    /// middle-empty pipes. Pinned by the empty-segment vectors in ComparisonsTests.swift.
     private static func isIn(_ value: String?, _ testAgainst: String?) -> Bool {
-        let candidates = (value ?? "").split(separator: "|").map(String.init)
-        let allowed = (testAgainst ?? "").lowercased().split(separator: "|").map(String.init)
+        let candidates = (value ?? "").components(separatedBy: "|")          // NOT lowercased (JS parity)
+        let allowed = (testAgainst ?? "").lowercased().components(separatedBy: "|")
         return candidates.contains { allowed.contains($0) }
     }
 
