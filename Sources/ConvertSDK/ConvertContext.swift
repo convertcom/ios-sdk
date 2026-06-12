@@ -32,7 +32,7 @@ public final class ConvertContext: Sendable {
     /// back-reference) and `Sendable` (``ConvertSDK`` is `Sendable`).
     private let sdk: ConvertSDK
 
-    /// The effective visitor identifier resolved at creation by ``VisitorContextManager`` — an
+    /// The effective visitor identifier resolved at creation by `VisitorContextManager` — an
     /// explicit caller-supplied ID verbatim, else the persisted Keychain/mirror value, else a freshly
     /// generated + persisted `UUID().uuidString`. Immutable for the context's lifetime (bucketing
     /// parity depends on a stable per-context identity).
@@ -176,7 +176,7 @@ public final class ConvertContext: Sendable {
     /// or a degraded load that resolved with no config) short-circuits to `nil` WITHOUT touching the
     /// manager (AC10 / AOD-6 — the degraded path returns `nil`, never throws). Otherwise delegates to
     /// the injected ``ExperienceManager``, which honours sticky assignment, the audience / location
-    /// gates, and `enableTracking`, returning its ``Variation?`` verbatim. Never throws.
+    /// gates, and `enableTracking`, returning its ``Variation`` (or `nil`) verbatim. Never throws.
     ///
     /// `accountId` / `projectId` come from the snapshot (`account_id` / `project.id`), defaulting to
     /// `""` when absent — they form the sticky store key `"<accountId>-<projectId>-<visitorId>"`, so an
@@ -514,7 +514,7 @@ public final class ConvertContext: Sendable {
     ///
     /// `async` but NEVER throws (AOD-6). Delegates the merge to ``SegmentsManager`` (each of the six
     /// recognised string keys overlays the visitor's existing segments; unknown keys WARN and are
-    /// ignored), reads the resolved ``Segments`` back from the shared ``decisionStore``, and fires
+    /// ignored), reads the resolved ``Segments`` back from the shared `decisionStore`, and fires
     /// ``SystemEvent/segments`` ONCE with a ``SegmentsPayload`` carrying them (AC12). A `nil` config
     /// snapshot (pre-ready / degraded) means there is no account/project to form the sticky store key —
     /// it WARNs and returns WITHOUT firing, the same degrade ``trackConversion(_:goalData:forceMultipleTransactions:)``
@@ -543,7 +543,7 @@ public final class ConvertContext: Sendable {
     ///
     /// `async` but NEVER throws (AOD-6). Delegates the append to ``SegmentsManager`` (the ids are added to
     /// the visitor's existing `customSegments`; backend owns dedup, matching JS), reads the resolved
-    /// ``Segments`` back from the shared ``decisionStore``, and fires ``SystemEvent/segments`` ONCE with a
+    /// ``Segments`` back from the shared `decisionStore`, and fires ``SystemEvent/segments`` ONCE with a
     /// ``SegmentsPayload`` (AC12). A `nil` config snapshot (pre-ready / degraded) WARNs and returns WITHOUT
     /// firing — the same not-ready degrade as ``setDefaultSegments(_:)``.
     /// - Parameter segmentIds: The custom segment identifiers to append to the visitor's `customSegments`.

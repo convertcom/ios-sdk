@@ -476,7 +476,7 @@ public final class ConvertSDK: Sendable {
     }
 
     /// Lands the integrator-forwarded background-session completion handler on the SDK's
-    /// ``BackgroundSessionManager`` (Epic 5 / Story 5.3 — AC5 / FR62).
+    /// `BackgroundSessionManager` (Epic 5 / Story 5.3 — AC5 / FR62).
     ///
     /// OPTIONAL — NOT required for correctness. Forward your
     /// `UIApplicationDelegate.application(_:handleEventsForBackgroundURLSession:completionHandler:)`
@@ -517,7 +517,7 @@ public final class ConvertSDK: Sendable {
     /// Creates a ``ConvertContext`` bound to this SDK. Synchronous and non-blocking: a context
     /// can be created before `ready()` resolves (it does not wait on config load).
     ///
-    /// The effective visitor ID is resolved NOW through ``VisitorContextManager``: an explicit
+    /// The effective visitor ID is resolved NOW through `VisitorContextManager`: an explicit
     /// `visitorId` is returned verbatim (no store access); otherwise the injected
     /// Keychain/mirror stores are read, and on a miss a fresh `UUID().uuidString` is generated and
     /// persisted. The `attributes` are coerced into the closed ``ConvertValue`` set HERE in

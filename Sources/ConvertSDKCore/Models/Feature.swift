@@ -6,7 +6,9 @@ import Foundation
 
 /// Lifecycle status of a bucketed feature.
 public enum FeatureStatus: String, Codable, Sendable, Equatable {
+    /// The feature is on for this visitor — its variables carry the bucketed values.
     case enabled
+    /// The feature is off for this visitor — the default, no-variables state.
     case disabled
 }
 
@@ -23,10 +25,15 @@ public enum FeatureStatus: String, Codable, Sendable, Equatable {
 /// encoded via `Data`'s default `Codable` (a base64 `String`), which round-trips the exact
 /// bytes losslessly. `Equatable` synthesizes (every associated type is `Equatable`).
 public enum FeatureVariable: Codable, Sendable, Equatable {
+    /// A boolean variable.
     case boolean(Bool)
+    /// An integer variable.
     case integer(Int)
+    /// A floating-point variable.
     case float(Double)
+    /// A string variable.
     case string(String)
+    /// A JSON variable, carried as raw `Data` for callers to decode at the use site.
     case json(Data)
 
     /// Explicit wire keys: a `type` discriminator and the `value` payload. Pinned by hand
@@ -45,6 +52,8 @@ public enum FeatureVariable: Codable, Sendable, Equatable {
         case json
     }
 
+    /// Decodes a feature variable from its `{type, value}` wire object, dispatching on the
+    /// `type` discriminator.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let tag = try container.decode(TypeTag.self, forKey: .type)
@@ -62,6 +71,8 @@ public enum FeatureVariable: Codable, Sendable, Equatable {
         }
     }
 
+    /// Encodes a feature variable as its `{type, value}` wire object, writing the matching
+    /// `type` discriminator and payload.
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {

@@ -21,13 +21,21 @@ import Foundation
 /// lint rule forbids). Every case name below is itself the exact camelCase wire string, so
 /// the parity contract is preserved and `GoalDataKeyTests` asserts each `rawValue` directly.
 public enum GoalDataKey: String, Codable, Sendable, CaseIterable {
+    /// The monetary amount (e.g. revenue) for the conversion.
     case amount
+    /// The number of products in the conversion.
     case productsCount
+    /// The transaction identifier for the conversion.
     case transactionId
+    /// The first custom dimension carried with the conversion.
     case customDimension1
+    /// The second custom dimension carried with the conversion.
     case customDimension2
+    /// The third custom dimension carried with the conversion.
     case customDimension3
+    /// The fourth custom dimension carried with the conversion.
     case customDimension4
+    /// The fifth custom dimension carried with the conversion.
     case customDimension5
 }
 
@@ -37,8 +45,11 @@ public enum GoalDataKey: String, Codable, Sendable, CaseIterable {
 /// **bare** value (not wrapped in an object) via a single-value container, so a `.double`
 /// emits `12.5`, a `.string` emits `"abc"`, and a `.strings` emits `["a","b"]`.
 public enum GoalDataValue: Codable, Sendable {
+    /// A numeric metric value.
     case double(Double)
+    /// A string metric value.
     case string(String)
+    /// An array-of-strings metric value.
     case strings([String])
 
     /// Encodes the bare underlying value into a single-value container.
