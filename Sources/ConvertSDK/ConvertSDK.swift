@@ -37,6 +37,13 @@ public final class ConvertSDK: Sendable {
     /// not mutated concurrently (Story 2.2 Dev Notes Option A).
     nonisolated(unsafe) public static var shared: ConvertSDK?
 
+    /// Whether config-level network tracking is enabled (`network.tracking`, FR6). Exposed
+    /// `internal` so a same-module ``ConvertContext`` can gate its (future) event-enqueue calls on
+    /// the toggle without making ``configuration`` public. Reads the immutable config flag set at init.
+    internal var networkTrackingEnabled: Bool {
+        configuration.networkTracking
+    }
+
     /// Dependency-injecting initializer (the test seam). Stores its dependencies, creates the
     /// ``ConfigStore`` over the shared ``EventBus``, then launches the detached config-load
     /// task. Non-throwing and non-blocking — validation and the real config fetch happen in the

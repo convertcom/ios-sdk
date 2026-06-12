@@ -22,10 +22,22 @@ public final class ConvertContext: Sendable {
         self.sdk = sdk
     }
 
+    /// Whether event delivery is enabled for this context's SDK (FR6 static `network.tracking`).
+    ///
+    /// The real gate a future `eventSink.enqueue` call site checks: when `false`, bucketing/decisioning
+    /// still runs and returns decisions, but produced tracking events are NOT enqueued (suppression is a
+    /// CALLER concern here, not an `EventQueue` concern). The enqueue sites arrive in Epics 3-4; this hook
+    /// is scaffolded now so the toggle is already in place when they do (Story 2.4 Task 4 / AC8).
+    internal func trackingEnabled() -> Bool {
+        sdk.networkTrackingEnabled
+    }
+
     /// Runs one experience and returns the bucketed ``Variation``, or `nil` when none applies.
     /// Stub: returns `nil` (degraded) until Epic 3 wires bucketing.
     public func runExperience(_ key: String, enableTracking: Bool = true) async -> Variation? {
         // [WARN] ConvertContext.runExperience: not yet implemented (Epic 3).
+        // tracking toggle guard (FR6): guard trackingEnabled() else { return nil }
+        //   — wired when Epics 3-4 add eventSink.enqueue
         nil
     }
 
@@ -33,6 +45,8 @@ public final class ConvertContext: Sendable {
     /// `[]` (degraded) until Epic 3 wires bucketing.
     public func runExperiences(enableTracking: Bool = true) async -> [Variation] {
         // [WARN] ConvertContext.runExperiences: not yet implemented (Epic 3).
+        // tracking toggle guard (FR6): guard trackingEnabled() else { return [] }
+        //   — wired when Epics 3-4 add eventSink.enqueue
         []
     }
 
@@ -55,6 +69,8 @@ public final class ConvertContext: Sendable {
     /// wires the tracking pipeline.
     public func trackConversion(_ goalKey: String, goalData: GoalData? = nil) async {
         // [WARN] ConvertContext.trackConversion: not yet implemented (Epic 4).
+        // tracking toggle guard (FR6): guard trackingEnabled() else { return }
+        //   — wired when Epics 3-4 add eventSink.enqueue
     }
 
     /// Sets the default visitor ``Segments``. Stub: no-op until Epic 4 wires segmentation.
