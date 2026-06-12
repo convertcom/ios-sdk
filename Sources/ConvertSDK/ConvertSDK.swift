@@ -258,8 +258,9 @@ public final class ConvertSDK: Sendable {
     /// The effective visitor ID is resolved NOW through ``VisitorContextManager``: an explicit
     /// `visitorId` is returned verbatim (no store access); otherwise the injected
     /// Keychain/mirror stores are read, and on a miss a fresh `UUID().uuidString` is generated and
-    /// persisted. The `attributes` are coerced into the closed ``ConvertValue`` set inside the context
-    /// (unsupported values dropped). Every context receives this SDK's ONE canonical ``DecisionStore``.
+    /// persisted. The `attributes` are coerced into the closed ``ConvertValue`` set HERE in
+    /// `createContext` (unsupported values dropped and logged at DEBUG) before the context is
+    /// constructed. Every context receives this SDK's ONE canonical ``DecisionStore``.
     /// The downstream bucketing/segmentation engines that CONSUME this identity arrive in Epics 3–4.
     /// - Parameters:
     ///   - visitorId: Optional caller-supplied visitor identifier; when non-empty it is used verbatim.
