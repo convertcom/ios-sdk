@@ -9,6 +9,11 @@ jobs:
   build-test:
     name: Build, Lint & Test
     runs-on: macos-26
+    # Healthy runs finish in <5 min. A runner-side xcodebuild wedge once burned 73 min
+    # before cancellation (2026-06-12, run 27446158533 — destination resolution hung while
+    # the sibling run of the SAME commit passed in 4m48s). Cap the job so a wedge fails
+    # fast and visibly instead of eating macOS minutes.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
@@ -46,7 +51,10 @@ jobs:
         run: |
           DEVICE=$(xcrun simctl list devices available | grep -E '^[[:space:]]+iPhone' | head -1 | sed -E 's/^[[:space:]]+//; s/ \([0-9A-F-]+\).*$//')
           echo "Resolved simulator device: ${DEVICE}"
-          xcodebuild test -scheme ConvertSDK -destination "platform=iOS Simulator,name=${DEVICE}" -enableCodeCoverage YES -enableThreadSanitizer YES -resultBundlePath TestResults.xcresult -quiet
+          # arch=arm64 pins the destination: the runner offers the same simulator UDID as
+          # both arm64 and Rosetta x86_64, and the ambiguous dual-match ("Using the first
+          # of multiple matching destinations") was implicated in the 2026-06-12 73-min hang.
+          xcodebuild test -scheme ConvertSDK -destination "platform=iOS Simulator,name=${DEVICE},arch=arm64" -enableCodeCoverage YES -enableThreadSanitizer YES -resultBundlePath TestResults.xcresult -quiet
       - name: Coverage gates (core >=85% / platform >=70%) — ADVISORY (generated-code drag)
         continue-on-error: true
         # Coverage measured at Story 5.5: ConvertSDK (platform) 89.2% — clears the 70% gate.
