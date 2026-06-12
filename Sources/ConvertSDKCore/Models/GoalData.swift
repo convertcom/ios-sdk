@@ -101,3 +101,13 @@ public struct GoalDataEntry: Codable, Sendable {
         case value
     }
 }
+
+public extension GoalData {
+    /// Maps this developer-facing key→value dictionary to the array-of-`{key, value}` wire form
+    /// (`[GoalDataEntry]`) the conversion event carries. The wire schema is an ARRAY of
+    /// `{key, value}` objects (per the JS SDK `types.gen.ts:2811-2820`), not a flat object, so a
+    /// dictionary cannot serialize to it directly — each pair becomes one `GoalDataEntry`.
+    func toEntries() -> [GoalDataEntry] {
+        map { GoalDataEntry(key: $0.key, value: $0.value) }
+    }
+}
