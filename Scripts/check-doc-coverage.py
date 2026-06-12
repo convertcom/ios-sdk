@@ -198,10 +198,12 @@ def main():
                     _symbol_source(symbol),
                 )
             )
+        # stdout (not stderr): GitHub Actions renders ::error:: annotations from the
+        # step's stdout. Keeping the aggregate summary on stdout — alongside the
+        # per-symbol annotations above — makes it a PR annotation too, not just a log line.
         print(
             "::error::Doc-coverage gate FAILED: {0} of {1} in-scope public "
-            "symbol(s) undocumented.".format(len(undocumented), len(symbols)),
-            file=sys.stderr,
+            "symbol(s) undocumented.".format(len(undocumented), len(symbols))
         )
         sys.exit(1)
 
