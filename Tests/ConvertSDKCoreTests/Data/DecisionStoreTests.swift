@@ -331,4 +331,66 @@ struct DecisionStoreTests {
 
         #expect(decoded.goalTriggered["g-1"] == true)
     }
+
+    // MARK: - Segment accessors (AC5, AC10, bd-aqw)
+
+    /// RED-phase contract for the TWO NEW segment accessors on `DecisionStore` (neither exists yet):
+    /// - `func currentSegments(forVisitorKey key: String) -> Segments` — returns that key's
+    ///   `StoreData.segments`, or `Segments()` when the store holds no entry. A NON-async in-memory
+    ///   actor read, mirroring ``bucketingDecisions(forStoreKey:)``.
+    /// - `func setSegments(_ segments: Segments, forVisitorKey key: String) async` — replaces that
+    ///   key's `StoreData.segments` (reconstructing the full `StoreData` so bucketing / goalTriggered /
+    ///   locations are PRESERVED), updates the in-memory map, and persists via `fileStore` (one trailing
+    ///   await) — mirroring the ``markGoalTriggeredIfNeeded(goalId:forVisitorKey:)`` write pattern.
+    ///
+    /// These tests MUST FAIL to COMPILE today ("value of type 'DecisionStore' has no member
+    /// 'currentSegments' / 'setSegments'"), which is valid RED for not-yet-existing members. They reuse
+    /// the `makeDecisionStore(...)` factory and the shared-`MockFileStore` reload pattern (no copied
+    /// setup blocks — SonarQube CPD is token-based).
+
+    @Test("setSegments persists and currentSegments retrieves (AC10 accessor round-trip)")
+    func setSegmentsThenCurrentSegmentsRoundTrips() async {
+        let store = makeDecisionStore()
+
+        await store.setSegments(Segments(country: "JP"), forVisitorKey: "acct-proj-visitor")
+        let segs = await store.currentSegments(forVisitorKey: "acct-proj-visitor")
+
+        #expect(segs == Segments(country: "JP"))
+    }
+
+    @Test("currentSegments returns empty Segments for an unknown key")
+    func currentSegmentsReturnsEmptyForUnknownKey() async {
+        let store = makeDecisionStore()
+
+        #expect(await store.currentSegments(forVisitorKey: "never-set") == Segments())
+    }
+
+    @Test("setSegments preserves bucketing and goalTriggered on the same key")
+    func setSegmentsPreservesOtherStoreDataFields() async {
+        // Seed a bucketing decision first, then set segments on the SAME key: the setSegments
+        // StoreData reconstruction must NOT wipe bucketing (this guards the preserve-other-fields path).
+        let store = makeDecisionStore()
+
+        await store.saveDecision(variationId: "var-a", experienceId: "exp-1", storeKey: "k")
+        await store.setSegments(Segments(country: "DE"), forVisitorKey: "k")
+
+        #expect(await store.currentSegments(forVisitorKey: "k") == Segments(country: "DE"))
+        #expect(await store.bucketingDecisions(forStoreKey: "k")["exp-1"] == "var-a")
+    }
+
+    @Test("segments persist across DecisionStore reload via shared MockFileStore (AC5)")
+    func setSegmentsSurvivesReload() async {
+        // Two DecisionStores over ONE MockFileStore read/write the same persisted bytes, because the
+        // on-disk URL the store resolves is stable. Mirrors `lruOrderSurvivesReload` / `goalDedupSurvivesReload`.
+        let fileStore = MockFileStore()
+        let first = makeDecisionStore(fileStore: fileStore)
+        await first.loadFromDisk()
+        await first.setSegments(Segments(country: "DE"), forVisitorKey: "acct-proj-visitor")
+
+        let second = makeDecisionStore(fileStore: fileStore)
+        await second.loadFromDisk()
+
+        // The segments the first store persisted must be observed by the second store after reload.
+        #expect(await second.currentSegments(forVisitorKey: "acct-proj-visitor") == Segments(country: "DE"))
+    }
 }
