@@ -77,12 +77,15 @@ public struct ExperienceManager: Sendable {
     ///
     /// Wires:
     ///   * ``RuleManager`` over `logger` — evaluates the flattened audience / location rule groups.
-    ///   * ``BucketingManager`` over a ``NoopEventSink`` and `logger` — performs the deterministic
-    ///     bucket. The sink is the production default until Epic 5's `EventQueue` is built
-    ///     (bead bd-2pb): the bucketing enqueue is PRODUCED at the ``EventSink`` boundary but
-    ///     discarded by ``NoopEventSink`` until the real queue replaces it HERE (the single swap
-    ///     site). This does not weaken the Story 3.4 contract — the seam is exercised; only the
-    ///     downstream destination is deferred.
+    ///   * ``BucketingManager`` over the injected `eventSink` and `logger` — performs the
+    ///     deterministic bucket. `eventSink` DEFAULTS to ``NoopEventSink`` (the production stand-in
+    ///     until Epic 5's `EventQueue` is built, bead bd-2pb): the bucketing enqueue is PRODUCED at
+    ///     the ``EventSink`` boundary but discarded by ``NoopEventSink`` until the real queue is
+    ///     injected HERE — this is the single designated bucketing swap site (bd-2pb). The
+    ///     production composition root (``ConvertSDK``, a later task) threads the real `EventQueue`
+    ///     into this parameter; the default keeps existing callers/tests that omit it compiling and
+    ///     behaving identically. This does not weaken the Story 3.4 contract — the seam is exercised;
+    ///     only the downstream destination is deferred.
     ///   * `decisionStore` / `eventBus` — passed through verbatim so the manager reads/persists
     ///     sticky decisions on, and fires `.bucketing` on, the SAME instances the SDK shares across
     ///     every context (sticky parity + `.bucketing` subscribers both depend on shared identity).
@@ -91,16 +94,20 @@ public struct ExperienceManager: Sendable {
     ///   - decisionStore: The SDK's canonical sticky-decision store (shared across every context).
     ///   - eventBus: The SDK's shared bus — the manager fires `.bucketing` on it for new decisions.
     ///   - logger: The diagnostic sink for the manager and its collaborators.
+    ///   - eventSink: The sink the bucketing path enqueues through; defaults to ``NoopEventSink``,
+    ///     but the production composition root (``ConvertSDK``, a later task) injects the real
+    ///     `EventQueue` here — the designated bucketing swap site (bd-2pb).
     /// - Returns: A wired ``ExperienceManager`` ready to call
     ///   ``selectVariation(forKey:in:visitorId:accountId:projectId:attributes:locationProperties:enableTracking:)``.
     public static func makeDefault(
         decisionStore: DecisionStore,
         eventBus: EventBus,
-        logger: Logger
+        logger: Logger,
+        eventSink: any EventSink = NoopEventSink()
     ) -> ExperienceManager {
         ExperienceManager(
             ruleManager: RuleManager(logger: logger),
-            bucketingManager: BucketingManager(eventSink: NoopEventSink(), logger: logger),
+            bucketingManager: BucketingManager(eventSink: eventSink, logger: logger),
             decisionStore: decisionStore,
             eventBus: eventBus,
             logger: logger

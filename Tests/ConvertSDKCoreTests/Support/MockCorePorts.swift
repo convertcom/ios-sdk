@@ -221,14 +221,16 @@ final class MockLogger: Logger {
 /// for the same target-visibility reason as ``MockLogger`` above — `ConvertSDKCoreTests`
 /// cannot see the `ConvertSDKTests` copy in `MockPorts.swift`.
 ///
-/// Shape: `actor` — `enqueue(_:)` is `async`, so actor isolation satisfies the port with
-/// no `Sendable` suppression (unlike the synchronous ports above, which need ``LockedBox``).
+/// Shape: `actor` — `enqueue(_:for:segments:)` is `async`, so actor isolation satisfies the port
+/// with no `Sendable` suppression (unlike the synchronous ports above, which need ``LockedBox``).
 /// Records enqueued entries; a test reads them via ``recordedEvents()`` (awaited, since the
-/// accessor is actor-isolated).
+/// accessor is actor-isolated). The widened seam's `visitorId` / `segments` are ACCEPTED-AND-IGNORED:
+/// the mock records only the bare entry, so the ~30 existing assertions that read `recordedEvents()`
+/// and inspect entry fields keep working unchanged.
 actor MockEventSink: EventSink {
     private var recorded: [TrackingEventEntry] = []
 
-    func enqueue(_ event: TrackingEventEntry) async {
+    func enqueue(_ event: TrackingEventEntry, for visitorId: String, segments: [String: String]?) async {
         recorded.append(event)
     }
 

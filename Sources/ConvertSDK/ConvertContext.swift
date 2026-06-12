@@ -437,7 +437,7 @@ public final class ConvertContext: Sendable {
         // repeat trigger WARNs and (crucially) does NOT `return`: control falls through to the txn gate.
         if firstTrigger {
             let event = ConversionEventData(goalId: goalId, goalData: nil, bucketingData: bucketingData)
-            await eventSink.enqueue(.conversion(event))
+            await eventSink.enqueue(.conversion(event), for: visitorId, segments: nil)
             let payload = ConversionPayload(goalId: goalId, visitorId: visitorId)
             await eventBus.fire(.conversion, payload: .conversion(payload))
         } else {
@@ -452,7 +452,7 @@ public final class ConvertContext: Sendable {
         // `forceMultipleTransactions` overrides dedup for a deliberate repeat purchase.
         if let data = goalData, firstTrigger || forceMultipleTransactions {
             let event = ConversionEventData(goalId: goalId, goalData: data.toEntries(), bucketingData: bucketingData)
-            await eventSink.enqueue(.conversion(event))
+            await eventSink.enqueue(.conversion(event), for: visitorId, segments: nil)
         }
     }
 
