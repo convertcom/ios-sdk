@@ -25,6 +25,12 @@ public final class ConvertSDK: Sendable {
     internal let configStore: ConfigStore
     /// Pre-fetched config payload for the direct-data initializer; `nil` on the key path.
     private let directData: Data?
+    /// Owns the lazily-started ``ConfigRefreshScheduler``. A `let` reference to a `Sendable` actor:
+    /// the box (not this class) holds the mutable scheduler, so this stays an all-`let` `Sendable`
+    /// `final class` with no suppression. The detached load `Task` sets it after the first config
+    /// lands (key path only — the directData path returns before provider resolution and never
+    /// starts a scheduler); ``deinit`` cancels through it.
+    private let schedulerBox = SchedulerBox()
 
     /// Developer-assigned convenience, nil until set; not a singleton and not installed by
     /// init. `nonisolated(unsafe)` because it is intended to be assigned once at app startup,
@@ -44,11 +50,16 @@ public final class ConvertSDK: Sendable {
     ///   - directData: A pre-fetched config payload for the direct-data path; `nil` (the
     ///     default) selects the key path. When present, the load task validates the data
     ///     instead of fetching.
+    ///   - clock: The injectable time source the refresh scheduler drives its interval loop and
+    ///     TTL gate from. Defaults to ``SystemClock`` (the production wall clock); the wiring suite
+    ///     injects a stepping clock so an interval tick is deterministic (NFR21). NOT stored — it is
+    ///     captured by the load `Task` that constructs the scheduler.
     internal init(
         configuration: ConvertConfiguration,
         configProvider: (any ConfigProviding)? = nil,
         eventBus: EventBus = EventBus(),
-        directData: Data? = nil
+        directData: Data? = nil,
+        clock: any Clock = SystemClock()
     ) {
         self.configuration = configuration
         self.eventBus = eventBus
@@ -60,6 +71,14 @@ public final class ConvertSDK: Sendable {
         // real `ConfigFetchService` is built inside the task (off the construction path, so init
         // stays non-blocking).
         let provider = configProvider
+        // Capture the box and the clock as locals so the detached `Task` closure picks up THESE
+        // (not `self`) — keeping the closure off `self` for everything but the already-captured
+        // `store`. `schedulerBox` is a `Sendable` actor and `clock` is `Sendable`, so both cross
+        // into the `Task` with no data-race warning. The scheduler is built INSIDE the Task (after
+        // the first config lands), so `clock` need not be a stored property — this local is its
+        // only reach.
+        let schedulerBox = self.schedulerBox
+        let clock = clock
         Task {
             if let directData {
                 // Direct-data path: validate the payload (empty/invalid → ready() throws).
@@ -110,7 +129,38 @@ public final class ConvertSDK: Sendable {
             if live != nil || !hasSnapshot {
                 await store.setConfig(live)
             }
+            // Start the foreground / interval refresh scheduler now that the first config has
+            // landed and `ready()` will resolve. This runs on EVERY key-path completion (cache-hit
+            // OR live-success OR the no-cache degraded path) — the directData path returned far
+            // above and never reaches here, so direct-data SDKs correctly get no scheduler (they
+            // have no live provider to refresh from). The scheduler reuses the SAME `activeProvider`
+            // the load resolved (no second `ConfigFetchService` is built) and the production
+            // `NoopLogger` (matching what the fetch service uses). Owned through the `Sendable`
+            // `schedulerBox` so this class stays an all-`let` `Sendable final class`.
+            let scheduler = ConfigRefreshScheduler(
+                configStore: store,
+                fetchService: activeProvider,
+                logger: NoopLogger(),
+                clock: clock,
+                refreshIntervalMs: configuration.dataRefreshIntervalMs
+            )
+            await scheduler.start()
+            await schedulerBox.set(scheduler)
         }
+    }
+
+    /// Cancels the refresh scheduler when this handle is released.
+    ///
+    /// The scheduler owns long-lived `Task`s (its interval loop + two notification observers) that
+    /// must be stopped when the SDK handle deallocates. `deinit` cannot `await`, so it hands off to a
+    /// detached `Task` that cancels through the (`Sendable`) ``schedulerBox``. Capturing the box into
+    /// a LOCAL first (`let box = schedulerBox`) and referencing only that local inside the `Task`
+    /// keeps the closure off `self` — so this deinit captures nothing but a `Sendable` actor and is
+    /// data-race-safe. A no-op when no scheduler was set (e.g. the directData path, or a handle
+    /// released before the load `Task` finished): ``SchedulerBox/cancelAndClear()`` optional-chains.
+    deinit {
+        let box = schedulerBox
+        Task { await box.cancelAndClear() }
     }
 
     /// Creates the SDK from a configuration, using the real config fetch. Non-throwing and
