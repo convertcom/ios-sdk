@@ -18,6 +18,12 @@ struct ConvertSDKDemoApp: App {
     /// exactly once for the app's lifetime.
     @StateObject private var viewModel = DemoViewModel()
 
+    /// The current scene activation phase, observed so the Event Inspector
+    /// subscription is torn down when the app moves to the background (see the
+    /// `.onChange(of:)` below). `@Environment(\.scenePhase)` is available from
+    /// iOS 14, so it is safe on the iOS 15 deployment floor.
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -31,10 +37,23 @@ struct ConvertSDKDemoApp: App {
                 // only *suspends* — it never blocks the UI (the SDK does its I/O
                 // internally). The result is swallowed here; Story 7.6 consumes
                 // readiness via the ConfigState machine. The matching
-                // `stopEventInspector()` teardown is wired separately.
+                // `stopEventInspector()` teardown fires from the
+                // `.onChange(of: scenePhase)` below, on the move to `.background`.
                 .task {
                     await viewModel.startEventInspector()
                     await viewModel.start()
+                }
+                // Tear the Event Inspector subscription down when the app moves to
+                // the background — the correct teardown point for the demo. The
+                // `.task` above does NOT re-fire on return to foreground, and this
+                // fix deliberately does not re-subscribe there; `startEventInspector()`
+                // is idempotent, so even an unexpected re-invocation won't double
+                // subscribe. Single-arg `.onChange(of:)` form for the iOS 15 floor
+                // (the two-arg closure is iOS 16+).
+                .onChange(of: scenePhase) { phase in
+                    if phase == .background {
+                        Task { await viewModel.stopEventInspector() }
+                    }
                 }
         }
     }

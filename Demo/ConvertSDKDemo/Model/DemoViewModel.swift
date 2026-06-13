@@ -136,6 +136,10 @@ final class DemoViewModel: ObservableObject {
     /// ``stopEventInspector()``; `deinit` deliberately does NOT unsubscribe (it
     /// cannot `await` the async ``ConvertSDK/off(_:)``).
     ///
+    /// Idempotent: a no-op if already subscribed. Guarded on ``inspectorTokens``
+    /// being non-empty, so a second call returns immediately without appending a
+    /// duplicate set of listeners (which would double-record every event).
+    ///
     /// Concurrency: the `on` callback is `@escaping @Sendable`, so it captures
     /// `self` *weakly* and hops onto the main actor with `Task { @MainActor in … }`
     /// before touching any state. ``EventBus`` already dispatches each callback as
@@ -143,6 +147,7 @@ final class DemoViewModel: ObservableObject {
     /// `@Sendable`, so the explicit hop is what lets it call the `@MainActor`
     /// ``record(_:_:)`` without `@unchecked` and without a force unwrap.
     func startEventInspector() async {
+        guard inspectorTokens.isEmpty else { return }
         for event in SystemEvent.allCases {
             let token = await sdk.on(event) { [weak self] payload in
                 Task { @MainActor in

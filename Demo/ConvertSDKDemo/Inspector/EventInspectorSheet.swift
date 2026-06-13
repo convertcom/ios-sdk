@@ -290,6 +290,8 @@ private struct InspectorEmptyState: View {
             Image(systemName: symbolName)
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
+                // decorative; the title text conveys the state
+                .accessibilityHidden(true)
             Text(title)
                 .font(.headline)
             Text(message)
