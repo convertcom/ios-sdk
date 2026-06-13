@@ -96,8 +96,10 @@ func _demo() async throws {
 **Log-line format.** Every log line is composed as `[LEVEL] {Type}.{method}: {message}` (UX-DR19). The level is a **leading text token** — `[WARN]`, `[ERROR]` — never color-only, so it survives VoiceOver, log export, and Console.app filtering. A real example from a deduped conversion:
 
 ```
-[WARN] ConvertContext.trackConversion: goal 'purchase-goal' already tracked for visitor, skipping.
+[WARN] ConvertContext.trackConversion: goal '100435728' already tracked for visitor, skipping.
 ```
+
+The `'100435728'` is the goal's **ID** (the numeric wire identifier from your project config), not the goal *key* you passed to ``ConvertContext/trackConversion(_:goalData:forceMultipleTransactions:)``. The dedup line reports the ID because dedup is keyed on it; by contrast the *goal-not-found* line reports the **key** you passed (`goal '<your-key>' not found in config, dropping.`). When filtering logs, match the dedup line on the goal ID and the not-found line on the key.
 
 The levels, in ascending severity, map to ``LogLevel``:
 

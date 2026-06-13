@@ -44,7 +44,7 @@ Two independent mechanisms suppress event **delivery**. In both cases bucketing 
    print("decided: \(variation?.key ?? "none")")  // still buckets; nothing is tracked
    ```
 
-2. **Dynamic — a single call.** Pass `enableTracking: false` to ``ConvertContext/runExperience(_:enableTracking:)``, ``ConvertContext/runFeature(_:enableTracking:)``, ``ConvertContext/runExperiences(enableTracking:)``, or ``ConvertContext/runFeatures(enableTracking:)``. That call buckets the visitor but emits no exposure event for that decision:
+2. **Dynamic — a single call.** Pass `enableTracking: false` to ``ConvertContext/runExperience(_:enableTracking:)`` or ``ConvertContext/runExperiences(enableTracking:)``. That call buckets the visitor but emits no exposure event for that decision:
 
    ```swift
    import ConvertSDK
@@ -54,11 +54,13 @@ Two independent mechanisms suppress event **delivery**. In both cases bucketing 
    print("decided: \(variation?.key ?? "none")")
    ```
 
-   The per-call flag is combined with the static flag: an exposure event is delivered only when `networkTracking` is `true` **and** the call's `enableTracking` is `true`.
+   On the experience path the per-call flag is combined with the static flag: an exposure event is delivered only when `networkTracking` is `true` **and** the call's `enableTracking` is `true`.
+
+   > Note: ``ConvertContext/runFeature(_:enableTracking:)`` and ``ConvertContext/runFeatures(enableTracking:)`` accept an `enableTracking` parameter for API symmetry, but it is **currently a no-op on the feature path** — it is not threaded into feature evaluation, so a per-call `enableTracking: false` does **not** suppress the feature's bucketing event. To suppress feature tracking, use the static `networkTracking: false`, which drops feature events at the delivery gate one seam later.
 
 There is no separate opt-out API. To not track, either do not initialize the SDK at all, or suppress delivery with one of the two flags above.
 
-> Important: The static ``ConvertConfiguration/networkTracking`` flag gates **new** event enqueues. It is not an in-flight kill-switch — events already queued, and conversion events, behave per their shipped delivery semantics. Treat it as "stop enqueuing new events," not "purge everything currently in the pipe."
+> Important: The static ``ConvertConfiguration/networkTracking`` flag gates **new** event enqueues. New bucketing **and conversion** events are suppressed — neither is enqueued for delivery while `networkTracking` is `false`. What it does *not* do is reach back into the pipe: events a **previous session** already persisted to the on-disk queue still drain normally on the next launch. Treat it as "stop enqueuing new events," not "purge everything currently in the pipe." Note that suppressing *delivery* is distinct from the local ``SystemEvent/conversion`` observer signal, which still fires on a first conversion trigger regardless of the network gate — only the event's delivery to Convert is suppressed.
 
 ### Why the delivery succeeds in reports
 

@@ -42,7 +42,7 @@ Two distinct cases both surface quietly — neither ever throws:
 
 - **Unknown goal key.** Calling ``ConvertContext/trackConversion(_:goalData:forceMultipleTransactions:)`` with a goal key that is not in your project config logs a `[WARN]` line of the form `goal '<key>' not found in config, dropping.` and drops the conversion. Verify the goal key exists in your Convert dashboard. (A pre-ready call logs `SDK not ready, dropping conversion for goal '<key>'.` instead.)
 
-- **A repeat conversion is suppressed.** Conversions **dedup per visitor + goal**: once a visitor has converted on a goal, a second `trackConversion` for that same goal is intentionally suppressed and logs `goal '<key>' already tracked for visitor, skipping.` This is deliberate, not a bug. To record a genuine repeat — a second purchase by the same visitor — pass `forceMultipleTransactions: true`:
+- **A repeat conversion is suppressed.** Conversions **dedup per visitor + goal**: once a visitor has converted on a goal, a second `trackConversion` for that same goal is intentionally suppressed and logs `goal '<goal-id>' already tracked for visitor, skipping.` — where `<goal-id>` is the numeric goal ID from your config, not the key you passed (the *not-found* line above reports the key; the dedup line reports the ID). This suppression is deliberate, not a bug. To record a genuine repeat — a second purchase by the same visitor — pass `forceMultipleTransactions: true`:
 
   ```swift
   import ConvertSDK
