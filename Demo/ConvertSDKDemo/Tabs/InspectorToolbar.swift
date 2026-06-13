@@ -43,7 +43,7 @@ private struct InspectorToolbar: ViewModifier {
                 }
             }
             .sheet(isPresented: $viewModel.isInspectorPresented) {
-                InspectorPlaceholderView()
+                EventInspectorSheet()
             }
     }
 }
