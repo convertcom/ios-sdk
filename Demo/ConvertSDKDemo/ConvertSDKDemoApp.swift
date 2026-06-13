@@ -7,9 +7,10 @@ import SwiftUI
 /// the ``ConvertSDK`` instance, injects it into the view tree as an environment
 /// object, and kicks off SDK readiness off the UI thread from `.task`.
 ///
-/// The root is a TEMPORARY placeholder (see `body`). Story 7.3 (DEMO-3) replaces
-/// it with `ContentView()` — the TabView root — and applies `.tint(ConvertTheme.accent)`
-/// there, so no tint is applied here.
+/// The root is ``ContentView`` — the five-tab `TabView` (Story 7.3 / DEMO-3),
+/// which applies the app-wide `.tint(ConvertTheme.accent)` itself, so no tint is
+/// applied here. The view model is still injected and readiness still fires here
+/// so the tab tree (and Story 7.6's config state machine) can observe it.
 @main
 struct ConvertSDKDemoApp: App {
 
@@ -19,23 +20,14 @@ struct ConvertSDKDemoApp: App {
 
     var body: some Scene {
         WindowGroup {
-            // TEMPORARY placeholder root for Story 7.1. DEMO-3 replaces this
-            // whole `VStack` with `ContentView()` (the themed TabView) and adds
-            // `.tint(ConvertTheme.accent)`.
-            VStack(spacing: ConvertTheme.space3) {
-                Text("Convert SDK Demo")
-                    .font(.title2)
-                Text("Initializing…")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .environmentObject(viewModel)
-            // Fire-and-forget readiness for Story 7.1: `.task` runs in an async
-            // context (off the UI thread) and `start()` swallows the result.
-            // Story 7.6 consumes readiness via the ConfigState machine.
-            .task {
-                await viewModel.start()
-            }
+            ContentView()
+                .environmentObject(viewModel)
+                // Fire-and-forget readiness: `.task` runs in an async context
+                // (off the UI thread) and `start()` swallows the result. Story
+                // 7.6 consumes readiness via the ConfigState machine.
+                .task {
+                    await viewModel.start()
+                }
         }
     }
 }
