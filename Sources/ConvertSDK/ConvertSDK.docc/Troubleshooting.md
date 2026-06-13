@@ -20,7 +20,7 @@ For the full explanation of why the locked header is what makes delivery count i
 
 ### The app hangs on startup, or the spinner never resolves
 
-A silent network hang during the initial configuration fetch does not announce itself — ``ConvertSDK/ready()`` simply stays suspended, and any UI gated on it spins forever. The fix is to bound the wait so a hang flips into a visible failure instead of an infinite spinner.
+A silent network hang during the initial configuration fetch does not announce itself — ``ConvertSDK/ready()`` stays suspended, and any UI gated on it spins forever. The fix is to bound the wait so a hang flips into a visible failure instead of an infinite spinner.
 
 Apply a **10-second readiness timeout**: race ``ConvertSDK/ready()`` against a timeout and treat whichever finishes first as the outcome. The ready/timeout pattern is in <doc:FailureDetection>.
 
