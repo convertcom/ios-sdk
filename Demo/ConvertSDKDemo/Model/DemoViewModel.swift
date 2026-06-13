@@ -57,6 +57,18 @@ final class DemoViewModel: ObservableObject {
     /// switches (AC1). It is deliberately never reset on dismiss.
     @Published var selectedSegment: InspectorSegment = .events
 
+    /// A "a delivery just happened" signal the sheet observes to post the VoiceOver
+    /// "delivered" announcement (AC4).
+    ///
+    /// Bumped to a fresh `UUID` by ``record(_:_:)`` ONLY when an `.apiQueueReleased`
+    /// actually flips ≥1 ``InspectorEvent/Lifecycle/queued`` row to
+    /// ``InspectorEvent/Lifecycle/delivered`` — never on a plain append, and never on
+    /// a release that flipped nothing. The model only *signals*; the View layer
+    /// (``EventInspectorSheet``) owns the actual `UIAccessibility.post` so this view
+    /// model stays free of UIKit / `UIAccessibility`. The announcement is therefore
+    /// NOT animation-gated: it fires on every real flip regardless of Reduce Motion.
+    @Published private(set) var lastDeliveryAnnouncementID = UUID()
+
     /// The observed-events buffer the inspector's Events list renders, newest-first.
     ///
     /// Filled by ``startEventInspector()``'s subscription (Story 7.2 Task 3) and
@@ -171,7 +183,9 @@ final class DemoViewModel: ObservableObject {
     ///    ``InspectorEvent/Lifecycle/delivered`` — the release IS the delivered
     ///    signal, and the demo carries one in-flight batch at a time, so "release
     ///    marks the in-flight batch delivered" (the appended `.none` release row
-    ///    itself is unaffected by the flip).
+    ///    itself is unaffected by the flip). When that flip actually moves ≥1 row, it
+    ///    also bumps ``lastDeliveryAnnouncementID`` so the sheet posts the VoiceOver
+    ///    "delivered" announcement (AC4); a release that flipped nothing does not.
     private func record(_ event: SystemEvent, _ payload: EventPayloadValue) {
         let initialLifecycle: InspectorEvent.Lifecycle
         switch event {
@@ -197,8 +211,19 @@ final class DemoViewModel: ObservableObject {
         // networked rows to delivered. The just-inserted `.none` release row is
         // untouched (it is not `.queued`).
         if event == .apiQueueReleased {
+            // Snapshot whether anything is actually in flight BEFORE the flip, so
+            // the delivery announcement (AC4) fires only on a real Queued→Delivered
+            // transition — not on a release that flipped nothing. The just-inserted
+            // `.none` release row never counts here.
+            let didFlip = events.contains { $0.lifecycle == .queued }
             for index in events.indices where events[index].lifecycle == .queued {
                 events[index].lifecycle = .delivered
+            }
+            // Signal the sheet to announce "delivered" only when ≥1 row actually
+            // flipped. The flip itself stays immediate/unconditional above (never
+            // animation-gated); this only bumps the observed signal.
+            if didFlip {
+                lastDeliveryAnnouncementID = UUID()
             }
         }
     }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The Event-Inspector bottom sheet (Story 7.2 / DEMO-3) — the real inspector
 /// that replaces the earlier placeholder sheet.
@@ -26,6 +27,26 @@ struct EventInspectorSheet: View {
     /// Sheet dismissal handle, supplied by the presenting `.sheet` modifier.
     @Environment(\.dismiss) private var dismiss
 
+    /// Whether the user has Reduce Motion enabled (iOS 15 SwiftUI environment key).
+    ///
+    /// Read only to make the no-animation contract explicit: the Delivered flip is
+    /// already an unconditional state change in ``DemoViewModel/record(_:_:)`` (no
+    /// animation wraps it), so it stays visible under Reduce Motion by construction.
+    /// This sheet adds NO animation to the badge change, so there is nothing to gate
+    /// — but the value is captured here so the contract is visible to a future reader
+    /// and so any later animated affordance MUST consult it before animating (AC4).
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// VoiceOver focus anchor for "move focus INTO the sheet on present" (AC4).
+    ///
+    /// Bound to the segmented control — the sheet's first/primary interactive
+    /// element — via `.accessibilityFocused`. Setting it `true` shortly after the
+    /// sheet appears pulls VoiceOver focus onto "Inspector segment, …" instead of
+    /// leaving focus on the dimmed presenter behind the sheet. The brief delay is
+    /// deliberate: setting focus in the same run loop as the sheet's appearance is
+    /// dropped because the sheet's accessibility tree is not built yet on iOS 15.
+    @AccessibilityFocusState private var segmentFocused: Bool
+
     var body: some View {
         NavigationView {
             VStack(spacing: ConvertTheme.space4) {
@@ -42,6 +63,27 @@ struct EventInspectorSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+            // Move VoiceOver focus into the sheet (onto the segmented control) once
+            // it has appeared (AC4). `.task` inherits the View's main-actor
+            // isolation, so setting the focus state is concurrency-clean under Swift
+            // 6 strict concurrency; `Task.sleep` yields one short beat so the sheet's
+            // accessibility tree exists before the focus request lands. The sleep is
+            // best-effort — `try?` swallows the only thrown case (cancellation, e.g.
+            // a fast dismiss), which simply skips the focus move with no force-unwrap.
+            .task {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                segmentFocused = true
+            }
+            // Announce "delivered" to VoiceOver the moment a Queued→Delivered flip
+            // happens (AC4), so a VoiceOver user hears it WITHOUT navigating to the
+            // row. The model bumps `lastDeliveryAnnouncementID` only on a real flip,
+            // so this fires once per genuine delivery and never on a plain append.
+            // It is NOT animation-gated — it fires regardless of Reduce Motion. The
+            // UIKit `UIAccessibility.post` is the iOS-15-safe announcement path
+            // (SwiftUI's `AccessibilityNotification.Announcement` is iOS 17+).
+            .onChange(of: viewModel.lastDeliveryAnnouncementID) { _ in
+                UIAccessibility.post(notification: .announcement, argument: "delivered")
+            }
         }
         .navigationViewStyle(.stack)
     }
@@ -54,9 +96,11 @@ struct EventInspectorSheet: View {
     /// It iterates ``DemoViewModel/InspectorSegment/allCases``, labels each
     /// segment by its ``DemoViewModel/InspectorSegment/title``, and tags each by
     /// the case so the binding round-trips. The `.accessibilityLabel` names the
-    /// control as a whole; SwiftUI's segmented `Picker` already announces the
-    /// selected option, so the later a11y task (AC4) builds on this without
-    /// re-plumbing the announcement.
+    /// control as a whole and `.accessibilityValue` states the current selection, so
+    /// VoiceOver reads "Inspector segment, Events" / "…, Logs" explicitly rather than
+    /// relying solely on the segmented `Picker`'s native option announcement (AC4).
+    /// It also carries the `.accessibilityFocused` anchor so the sheet can pull focus
+    /// here on present (see ``segmentFocused``).
     private var segmentPicker: some View {
         Picker("Inspector segment", selection: $viewModel.selectedSegment) {
             ForEach(DemoViewModel.InspectorSegment.allCases) { segment in
@@ -65,6 +109,8 @@ struct EventInspectorSheet: View {
         }
         .pickerStyle(.segmented)
         .accessibilityLabel("Inspector segment")
+        .accessibilityValue(viewModel.selectedSegment.title)
+        .accessibilityFocused($segmentFocused)
         .padding(.horizontal, ConvertTheme.space4)
         .padding(.top, ConvertTheme.space3)
     }
@@ -134,11 +180,15 @@ struct EventInspectorSheet: View {
 /// events are ``InspectorEvent/Lifecycle/none`` and carry NO badge at all (AC2:
 /// "non-networked events carry no badge"). The mono summary wraps and grows
 /// vertically rather than truncating at large Dynamic Type (AC3); an empty summary
-/// renders no mono line. The name `Text` and the `StatusBadge` stay separate
-/// accessibility elements, so VoiceOver reads the name then the badge's own fused
-/// label (e.g. "bucketing" then "Delivered, delivered") — the lifecycle word is
-/// always reachable without color. The deeper focus / announcement behavior is the
-/// later a11y task (AC4); this row only secures the basics.
+/// renders no mono line.
+///
+/// For VoiceOver (AC4) the row is fused into ONE accessibility element via
+/// `.accessibilityElement(children: .ignore)` so it announces "event, lifecycle"
+/// (e.g. "bucketing, delivered") in a single move via ``rowAccessibilityLabel``,
+/// rather than reading the name and the badge piecemeal. The badge stays VISIBLE —
+/// only the spoken output is fused; sighted users still see the chip. The lifecycle
+/// word is sourced from the row's own ``InspectorEvent/Lifecycle`` so meaning never
+/// relies on color.
 private struct InspectorEventRow: View {
 
     /// The observed event this row renders.
@@ -162,6 +212,38 @@ private struct InspectorEventRow: View {
             }
         }
         .padding(.vertical, ConvertTheme.space1)
+        // Fuse the row into ONE VoiceOver element so it announces "event, lifecycle"
+        // (e.g. "bucketing, delivered") in one move instead of reading the name and
+        // the badge piecemeal (AC4). `children: .ignore` hides the child elements
+        // from VoiceOver — the badge stays VISIBLE for sighted users; only the
+        // spoken output changes. The visual layout above is untouched.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(rowAccessibilityLabel)
+    }
+
+    /// The fused VoiceOver label for the whole row — "event, lifecycle" first so it
+    /// matches AC4's "bucketing, delivered", with the redacted ``summary`` appended
+    /// when present so the payload is still reachable in one element.
+    ///
+    /// The lifecycle word comes from the row's own ``InspectorEvent/Lifecycle`` (not
+    /// the ``StatusBadge``, whose children are now ignored): `.queued` → "queued",
+    /// `.delivered` → "delivered", and `.none` contributes NO lifecycle word because
+    /// non-networked events have no delivery lifecycle. The wire name always leads
+    /// and the lifecycle word, when present, immediately follows it so the
+    /// "name, lifecycle" shape is stable regardless of the summary.
+    private var rowAccessibilityLabel: String {
+        let name = event.event.rawValue
+        let head: String
+        switch event.lifecycle {
+        case .queued:
+            head = "\(name), queued"
+        case .delivered:
+            head = "\(name), delivered"
+        case .none:
+            head = name
+        }
+        guard !event.summary.isEmpty else { return head }
+        return "\(head). \(event.summary)"
     }
 
     /// The lifecycle ``StatusBadge`` for this row, or nothing for a non-networked

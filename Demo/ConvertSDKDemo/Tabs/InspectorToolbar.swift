@@ -25,6 +25,18 @@ private struct InspectorToolbar: ViewModifier {
     /// state across all tabs rather than a per-tab copy.
     @EnvironmentObject private var viewModel: DemoViewModel
 
+    /// VoiceOver focus anchor for "return focus to the toolbar button on dismiss"
+    /// (AC4).
+    ///
+    /// Bound to the inspector button via `.accessibilityFocused`. When the sheet
+    /// closes (``DemoViewModel/isInspectorPresented`` flips to `false`), setting this
+    /// `true` pulls VoiceOver focus back onto the button that opened the sheet,
+    /// instead of leaving focus stranded at the top of the tab (a documented iOS
+    /// sheet-dismissal quirk). This modifier is applied once per tab, so each tab
+    /// owns its own anchor; only the on-screen tab's button is in the accessibility
+    /// tree, so the off-screen tabs' identical request is a harmless no-op.
+    @AccessibilityFocusState private var inspectorButtonFocused: Bool
+
     func body(content: Content) -> some View {
         content
             .toolbar {
@@ -40,10 +52,21 @@ private struct InspectorToolbar: ViewModifier {
                             .frame(minWidth: 44, minHeight: 44)
                     }
                     .accessibilityLabel("Event Inspector")
+                    .accessibilityFocused($inspectorButtonFocused)
                 }
             }
             .sheet(isPresented: $viewModel.isInspectorPresented) {
                 EventInspectorSheet()
+            }
+            // Return VoiceOver focus to this button when the sheet dismisses (AC4).
+            // Watching the shared presentation flag is how the toolbar learns the
+            // sheet closed — whether via "Done", the grabber, or a swipe-down. Only
+            // act on the false edge (closed); presenting already moves focus into the
+            // sheet from `EventInspectorSheet` itself.
+            .onChange(of: viewModel.isInspectorPresented) { isPresented in
+                if !isPresented {
+                    inspectorButtonFocused = true
+                }
             }
     }
 }
