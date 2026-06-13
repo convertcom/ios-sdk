@@ -113,11 +113,13 @@ final class DemoViewModel: ObservableObject {
     ///
     /// Created lazily on first run (`sdk.createContext()` is synchronous on the main
     /// actor) and reused thereafter so bucketing is sticky/deterministic: a re-run for
-    /// the same visitor yields the same variation (a fresh context per run would re-roll
-    /// the visitor and could bucket differently between taps). ``ConvertContext`` is
+    /// the same visitor yields the same variation (a fresh context would re-roll the
+    /// visitor and could bucket differently between taps). ``ConvertContext`` is
     /// `Sendable`, so a `lazy var` on this `@MainActor` type is sound under
-    /// `SWIFT_STRICT_CONCURRENCY: complete`.
-    private lazy var context: ConvertContext = sdk.createContext()
+    /// `SWIFT_STRICT_CONCURRENCY: complete`. `internal` (not `private`) so the
+    /// `DemoViewModel+Conversions.swift` extension's ``trackGoal()`` runs this SAME
+    /// sticky context across files (Swift `private` does not cross files).
+    lazy var context: ConvertContext = sdk.createContext()
 
     /// The experience key the single-experience run targets.
     ///
@@ -180,6 +182,34 @@ final class DemoViewModel: ObservableObject {
     /// `nil`) at the START of every ``runFeature()`` / ``runFeatures()`` call so a later
     /// successful run clears a stale note.
     @Published private(set) var featuresEmptyNote: String?
+
+    // MARK: - Conversions (Story 7.5 / DEMO-5)
+
+    /// Conversion-card buffer the Conversions screen renders, newest-first. Mirrors
+    /// ``resultCards``: read-only, bounded, mutated only via ``prependConversion(_:)``.
+    @Published private(set) var conversionCards: [ResultCard.Item] = []
+
+    /// Upper bound on ``conversionCards`` (mirrors ``resultCardCap``); oldest rows past it trimmed on insert.
+    private let conversionCardCap = 20
+
+    /// Goal keys already converted for the CURRENT (sticky ``context``) visitor, so the
+    /// screen renders a `.dedup` card rather than a second SDK call. `internal` (not
+    /// `private`) so the extension's ``trackGoal()`` writes it across files; cleared by
+    /// ``clearTrackedGoals()`` (Story 7.6's reset-visitor).
+    var trackedGoalKeys: Set<String> = []
+
+    /// The demo's known goal keys — the goal-existence pre-check standing in for the
+    /// not-yet-built Story 7.6 live-config surface (no public SDK accessor exposes the
+    /// snapshot). The member is the REAL FS-Test-Proj `button-primary-click` goal.
+    static let knownGoalKeys: Set<String> = ["button-primary-click"]
+
+    /// The goal the Track Goal button converts — a member of ``knownGoalKeys`` whose
+    /// pre-check passes, reaching the real ``ConvertContext`` `trackConversion`.
+    static let demoGoalKey = "button-primary-click"
+
+    /// A goal key guaranteed ABSENT from ``knownGoalKeys`` (a collision-proof sentinel like
+    /// ``absentVariableKey``), driving the red `.error` card WITHOUT an SDK call.
+    static let unknownGoalKey = "__demo_unknown_goal__"
 
     init() {
         // FS-Test-Proj staging: account 10035569 / project 10034190. The
@@ -346,8 +376,16 @@ final class DemoViewModel: ObservableObject {
         prepend(card, into: &resultCards, cap: resultCardCap)
     }
 
+    /// Prepends one conversion card (newest-first) via ``prepend(_:into:cap:)``, like
+    /// ``prependResult(_:)``. `internal` (not `private`) so it is the write-capable hop
+    /// the `DemoViewModel+Conversions.swift` extension uses to mutate the `private(set)`
+    /// ``conversionCards`` across files (mirroring ``record(_:_:)`` for ``events``).
+    func prependConversion(_ card: ResultCard.Item) {
+        prepend(card, into: &conversionCards, cap: conversionCardCap)
+    }
+
     /// The single newest-first insert/trim implementation, shared by every bounded buffer
-    /// (``resultCards`` and ``evaluatedFeatures``).
+    /// (``resultCards``, ``evaluatedFeatures``, and ``conversionCards``).
     ///
     /// Inserts `element` at index 0 (newest-first), then drops the oldest rows past `cap`
     /// from the tail — mirroring how ``record(_:_:)`` maintains ``events``. Generic over the
