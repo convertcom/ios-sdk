@@ -50,6 +50,11 @@ These are deliberate, Swift-idiomatic choices, named so they are never a silent 
 - ``ConvertSDK/createContext(visitorId:attributes:)``
 - <doc:GettingStarted>
 
+### Quickstarts
+
+- <doc:SwiftUIQuickstart>
+- <doc:UIKitQuickstart>
+
 ### Deciding
 
 - ``ConvertContext``
@@ -83,6 +88,8 @@ These are deliberate, Swift-idiomatic choices, named so they are never a silent 
 ### Guides
 
 - <doc:GettingStarted>
+- <doc:SwiftUIQuickstart>
+- <doc:UIKitQuickstart>
 - <doc:OfflineAndBackgroundDelivery>
 - <doc:FailureDetection>
 - <doc:Troubleshooting>

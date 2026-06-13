@@ -50,7 +50,7 @@ Decisioning is gated on readiness: `variationKey` stays `nil` until `runExperien
 
 ### Switch a view on the variation key
 
-`runExperience` returns a ``Variation?``. Switch the rendered subview on `variation?.key`; the `default` arm covers both the `nil` (degraded) case and any unrecognized key, so every code path renders something:
+`runExperience` returns an optional ``Variation``. Switch the rendered subview on `variation?.key`; the `default` arm covers both the `nil` (degraded) case and any unrecognized key, so every code path renders something:
 
 ```swift
 import ConvertSDK
