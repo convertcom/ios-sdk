@@ -22,12 +22,18 @@ struct ConvertSDKDemoApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(viewModel)
-                // Fire-and-forget readiness: `start()` is `@MainActor` and runs
-                // on the main actor, but `await`ing `ready()` only *suspends* —
-                // it never blocks the UI (the SDK does its I/O internally). The
-                // result is swallowed here; Story 7.6 consumes readiness via the
-                // ConfigState machine.
+                // Subscribe the Event Inspector BEFORE firing readiness so the
+                // lifecycle events emitted during init (`.ready`, `.configUpdated`,
+                // any early `.bucketing`) are observed rather than missed — the
+                // subscription is fast (it only registers listeners) and does not
+                // block `start()`. Then fire-and-forget readiness: `start()` is
+                // `@MainActor` and runs on the main actor, but `await`ing `ready()`
+                // only *suspends* — it never blocks the UI (the SDK does its I/O
+                // internally). The result is swallowed here; Story 7.6 consumes
+                // readiness via the ConfigState machine. The matching
+                // `stopEventInspector()` teardown is wired separately.
                 .task {
+                    await viewModel.startEventInspector()
                     await viewModel.start()
                 }
         }

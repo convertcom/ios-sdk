@@ -49,7 +49,12 @@ struct InspectorEvent: Sendable, Identifiable, Equatable {
     /// Delivery lifecycle for the row's badge. ``Lifecycle/none`` for the eight
     /// informational events; ``Lifecycle/queued`` / ``Lifecycle/delivered`` for the
     /// two networked ones.
-    let lifecycle: Lifecycle
+    ///
+    /// The ONE mutable field: a networked row is appended ``Lifecycle/queued`` and
+    /// later flipped to ``Lifecycle/delivered`` in place when the API delivery
+    /// queue releases its batch (the queued→delivered correlation). Identity
+    /// (``id``), ``event``, ``summary`` and ``capturedAt`` never change.
+    var lifecycle: Lifecycle
 
     /// Capture time, used only to keep ordering stable when rows are inserted.
     /// The buffer is newest-first by insertion order; this is a tie-break aid, not
