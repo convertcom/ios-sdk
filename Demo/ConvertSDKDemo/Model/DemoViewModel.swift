@@ -127,6 +127,23 @@ final class DemoViewModel: ObservableObject {
     /// and a `nil` return is rendered as an actionable card, never a crash.
     private static let singleExperienceKey = "test-experience-ab-fullstack-4"
 
+    /// The feature key the single-feature run targets.
+    ///
+    /// A REAL key from the committed FS-Test-Proj staging config (feature id `100334`),
+    /// carrying the richest typed-variable spread there: `price` (float), `button-height`
+    /// (integer), and `additionalData` (json). The single-feature Run resolves this key so
+    /// the Features screen can demonstrate all three variable types at once.
+    private static let singleFeatureKey = "feature-2"
+
+    /// A variable name guaranteed NOT present on any feature in the config.
+    ///
+    /// Used by ``FeaturesView`` (a different file) to demonstrate the honest absent
+    /// rendition: ``BucketedFeature/variable(_:as:)`` returns `nil` for an unknown key
+    /// (FR22 — "unknown → nil, never a throw"), so the UI renders an explicit "absent" row
+    /// rather than crashing or fabricating a value. `static let` (NOT `private`) so
+    /// `FeaturesView` can read it across files.
+    static let absentVariableKey = "__demo_absent_variable__"
+
     /// The result-card buffer the Experiences screen renders, newest-first.
     ///
     /// Each run prepends ``ResultCard/Item`` rows via ``prependResult(_:)`` (newest at
@@ -137,6 +154,30 @@ final class DemoViewModel: ObservableObject {
     /// Upper bound on ``resultCards`` so repeated runs can't grow the buffer without
     /// limit; on insert, the oldest rows past this many are trimmed from the tail.
     private let resultCardCap = 20
+
+    /// The buffer the Features screen renders, newest-first.
+    ///
+    /// Each run prepends one ``BucketedFeature`` per resolved feature via
+    /// ``prepend(_:into:cap:)`` (newest at index 0), mirroring ``resultCards`` and
+    /// ``events``. Exposed read-only — only the feature run methods mutate it. Bounded at
+    /// ``featureCap`` newest rows. `BucketedFeature` is not `Identifiable`, so the View
+    /// supplies an explicit `id: \.key` to `ForEach`; this buffer just exposes the values.
+    @Published private(set) var evaluatedFeatures: [BucketedFeature] = []
+
+    /// Upper bound on ``evaluatedFeatures`` so repeated runs can't grow the buffer without
+    /// limit; on insert, the oldest rows past this many are trimmed from the tail.
+    private let featureCap = 20
+
+    /// A neutral empty-state note for the Features screen, or `nil` when there is nothing
+    /// to surface.
+    ///
+    /// Set by ``runFeatures()`` ONLY when the SDK returns `[]` (degraded / not-ready /
+    /// ineligible) — a valid outcome, NOT an error. The Features screen renders this in a
+    /// neutral empty-state voice, deliberately NOT as a `ResultCard` error card (Features
+    /// does not use `ResultCard`; that is the Experiences screen's surface). Cleared (set to
+    /// `nil`) at the START of every ``runFeature()`` / ``runFeatures()`` call so a later
+    /// successful run clears a stale note.
+    @Published private(set) var featuresEmptyNote: String?
 
     init() {
         // FS-Test-Proj staging: account 10035569 / project 10034190. The
@@ -249,15 +290,71 @@ final class DemoViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Feature runs (Story 7.4 / DEMO-2)
+
+    /// Resolves the single baseline feature and prepends it to ``evaluatedFeatures``.
+    ///
+    /// `@MainActor` (inherited): the `await` on ``ConvertContext/runFeature(_:enableTracking:)``
+    /// suspends without blocking the main actor (the SDK works off-actor), then
+    /// ``evaluatedFeatures`` is mutated on the main actor. `enableTracking` is left at the SDK
+    /// default (`true`) so the carrying experience's bucketing event reaches the Event
+    /// Inspector (AC4).
+    ///
+    /// `runFeature` is NON-optional and never throws: a degraded outcome (missing snapshot /
+    /// miss) comes back as a `.disabled` feature with no variables, which the View renders
+    /// honestly as a disabled card. There is therefore no `nil`/error branch here — whatever
+    /// is returned is prepended as-is. The stale ``featuresEmptyNote`` is cleared first.
+    func runFeature() async {
+        featuresEmptyNote = nil
+        let feature = await context.runFeature(Self.singleFeatureKey)
+        prepend(feature, into: &evaluatedFeatures, cap: featureCap)
+    }
+
+    /// Resolves every feature the config carries and prepends each to ``evaluatedFeatures``.
+    ///
+    /// `@MainActor` (inherited): the `await` on ``ConvertContext/runFeatures(enableTracking:)``
+    /// suspends without blocking the main actor, then ``evaluatedFeatures`` is mutated on the
+    /// main actor. `enableTracking` stays at the SDK default (`true`) so each carrying
+    /// experience's bucketing event reaches the Event Inspector (AC4). Each ``BucketedFeature``
+    /// is prepended in the array's natural (config) order, so the batch lands as a contiguous
+    /// newest-first group; the ``featureCap`` trim applies per insert.
+    ///
+    /// An empty `[]` return (config still loading, degraded, or an ineligible visitor) is a
+    /// valid degraded outcome — NOT an error. It surfaces ONE neutral ``featuresEmptyNote``
+    /// (rendered by the View as an empty-state message, never a `ResultCard` error card),
+    /// leaving the buffer untouched. The stale note is cleared first so a non-empty run wins.
+    func runFeatures() async {
+        featuresEmptyNote = nil
+        let features = await context.runFeatures()
+        if features.isEmpty {
+            featuresEmptyNote = "No features evaluated — SDK still loading config, or the visitor is ineligible."
+        } else {
+            for feature in features {
+                prepend(feature, into: &evaluatedFeatures, cap: featureCap)
+            }
+        }
+    }
+
     /// Prepends one result card (newest-first) and trims the tail past ``resultCardCap``.
     ///
-    /// The single insert/trim site for both ``runExperience()`` and ``runExperiences()``
-    /// (DRY — neither copies the buffer-management block), mirroring how ``record(_:_:)``
-    /// maintains ``events``: insert at index 0, then drop the oldest rows past the cap.
+    /// A thin, named adapter over the generic ``prepend(_:into:cap:)`` so the experience run
+    /// methods read as `prependResult(card)` while the actual insert/trim lives in ONE place
+    /// shared with the feature buffer (DRY — no duplicated buffer-management block).
     private func prependResult(_ card: ResultCard.Item) {
-        resultCards.insert(card, at: 0)
-        if resultCards.count > resultCardCap {
-            resultCards.removeLast(resultCards.count - resultCardCap)
+        prepend(card, into: &resultCards, cap: resultCardCap)
+    }
+
+    /// The single newest-first insert/trim implementation, shared by every bounded buffer
+    /// (``resultCards`` and ``evaluatedFeatures``).
+    ///
+    /// Inserts `element` at index 0 (newest-first), then drops the oldest rows past `cap`
+    /// from the tail — mirroring how ``record(_:_:)`` maintains ``events``. Generic over the
+    /// element type so neither caller copies the block: the experience path passes
+    /// ``ResultCard/Item`` and the feature path passes ``BucketedFeature``.
+    private func prepend<Element>(_ element: Element, into buffer: inout [Element], cap: Int) {
+        buffer.insert(element, at: 0)
+        if buffer.count > cap {
+            buffer.removeLast(buffer.count - cap)
         }
     }
 }
