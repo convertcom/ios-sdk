@@ -13,25 +13,37 @@ import SwiftUI
 /// **Reuse note (Story 7.5 — Conversions):** this card is reused verbatim by the
 /// Conversions screen, which adds a third `dedup` outcome. The variant is modeled
 /// as an OPEN enum (`Variant`) whose per-case computed properties — mirroring
-/// `StatusBadge.Style` — own every visual difference. Story 7.5 adds the dedup
-/// state by adding ONE enum case (`.dedup`) and its mappings; `ResultCard`'s
-/// `body` does not change. See `Variant` for the exact extension point.
+/// `StatusBadge.Style` — own every difference, visual AND spoken: the leading
+/// rule, the chip, and the fused VoiceOver label are all read generically from
+/// `Variant`, so `ResultCard` never switches on the variant itself. Story 7.5
+/// adds the dedup state by adding ONE enum case (`.dedup`) plus its mapping
+/// entries; nothing in `ResultCard` outside the `Variant` enum changes — both
+/// `body` and `accessibilityLabel` compile unchanged. See `Variant` for the
+/// exact extension point.
 struct ResultCard: View {
 
     /// Semantic outcome of a bucketing attempt → (leading-rule color, chip fill,
-    /// chip text color, SF Symbol, chip label, VoiceOver word).
+    /// chip text color, SF Symbol, chip label) plus a method that fuses the row's
+    /// fields into the card's VoiceOver label.
     ///
     /// The mapping lives here in ONE place — exactly like `StatusBadge.Style` —
-    /// so the rule, chip, and accessibility word for a given outcome are defined
-    /// once and the card body reads them generically. Both symbols (`checkmark.circle`,
+    /// so the rule, the chip, AND the spoken label for a given outcome are defined
+    /// once and the card reads them generically; `ResultCard` itself never
+    /// switches on the variant. Both symbols (`checkmark.circle`,
     /// `exclamationmark.triangle`) are verified present on iOS 15 (they are the
     /// same symbols `StatusBadge` uses for `.delivered` / `.warn`).
     ///
-    /// **Story 7.5 extension point:** add `case dedup` here plus its five mapping
-    /// entries — leading rule + chip on system neutrals (`secondaryLabel` chip
-    /// text on a `secondarySystemFill` fill), SF Symbol `arrow.uturn.left`, chip
-    /// label "Deduped", VoiceOver word "deduplicated". No change to `ResultCard`
-    /// is required because the body never switches on the variant directly.
+    /// **Story 7.5 extension point:** add `case dedup` here plus its mapping
+    /// entries, and `ResultCard` compiles unchanged:
+    /// - `ruleColor`, `chipFillColor`, `chipTextColor`: system neutrals
+    ///   (`secondaryLabel` chip text on a `secondarySystemFill` fill).
+    /// - `chipSymbolName`: SF Symbol `arrow.uturn.left`.
+    /// - `chipLabel`: "Deduped".
+    /// - `accessibilityLabel(title:detail:variationKey:)`: a `.dedup` branch
+    ///   whose label leads with the outcome the way `.error` leads with "Error:"
+    ///   — e.g. `"Deduplicated: \(detail)"`.
+    /// Because every channel (rule, chip, spoken label) is read from `Variant`,
+    /// adding the case + these entries is the ONLY change Story 7.5 makes here.
     enum Variant {
         /// A variation was returned — the visitor is bucketed into an experience.
         case success
@@ -81,12 +93,31 @@ struct ResultCard: View {
             }
         }
 
-        /// Outcome word that opens the card's fused VoiceOver label so meaning
-        /// never relies on color — e.g. `.error` reads "Error: …".
-        var accessibilityWord: String {
+        /// Builds the card's fused VoiceOver label from the row's fields, so the
+        /// outcome survives without color. The label *shape* is per-variant and
+        /// lives here — the single place a new variant is taught how to announce
+        /// itself — so `ResultCard` never switches on the variant to assemble it:
+        ///
+        /// - `.success`: `"Variation <key> for <title>"` when a `variationKey` is
+        ///   present; otherwise the plain `detail` (a "no variation yet" message
+        ///   that already reads as a sentence).
+        /// - `.error`: `"Error: <detail>"`.
+        ///
+        /// - Parameters:
+        ///   - title: The card heading (the experience key, for `.success`).
+        ///   - detail: The detail line — the success fallback / the error message.
+        ///   - variationKey: The success variation key; `nil` for `.error` and for
+        ///     a `.success` row that has no key yet.
+        /// - Returns: The fully assembled, color-free VoiceOver label.
+        func accessibilityLabel(title: String, detail: String, variationKey: String?) -> String {
             switch self {
-            case .success: return "success"
-            case .error: return "error"
+            case .success:
+                if let variationKey {
+                    return "Variation \(variationKey) for \(title)"
+                }
+                return detail
+            case .error:
+                return "Error: \(detail)"
             }
         }
     }
@@ -229,17 +260,16 @@ struct ResultCard: View {
 
     /// The fused VoiceOver label: success leads with the variation + experience,
     /// error leads with "Error:" then the message. Color is never the only signal —
-    /// this label carries the outcome for non-visual users.
+    /// this label carries the outcome for non-visual users. The per-variant shape
+    /// lives on `Variant` (`accessibilityLabel(title:detail:variationKey:)`), so
+    /// this property just hands the row's fields to the variant — never switching
+    /// on the variant itself.
     private var accessibilityLabel: String {
-        switch item.variant {
-        case .success:
-            if let variationKey = item.variationKey {
-                return "Variation \(variationKey) for \(item.title)"
-            }
-            return item.detail
-        case .error:
-            return "Error: \(item.detail)"
-        }
+        item.variant.accessibilityLabel(
+            title: item.title,
+            detail: item.detail,
+            variationKey: item.variationKey
+        )
     }
 }
 
