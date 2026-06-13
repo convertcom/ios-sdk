@@ -25,6 +25,44 @@ final class DemoViewModel: ObservableObject {
     /// replaces the transitions here with the full state machine.
     @Published private(set) var configState: ConfigState = .loading
 
+    /// The two segments of the Event Inspector sheet (Story 7.2 / DEMO-3).
+    ///
+    /// `CaseIterable` + `Identifiable` so it drives a segmented `Picker` directly;
+    /// the `title` is the visible segment label and the VoiceOver word.
+    enum InspectorSegment: CaseIterable, Identifiable {
+        /// The observed-events list.
+        case events
+        /// The live-log stream.
+        case logs
+
+        /// Stable identity for the `Picker` / `ForEach`.
+        var id: Self { self }
+
+        /// The segment's visible label, e.g. "Events" / "Logs".
+        var title: String {
+            switch self {
+            case .events: return "Events"
+            case .logs: return "Logs"
+            }
+        }
+    }
+
+    /// Whether the Event Inspector sheet is presented. Drives the sheet from any
+    /// tab's toolbar button, so the presentation state survives tab switches
+    /// instead of resetting per-tab (AC1).
+    @Published var isInspectorPresented: Bool = false
+
+    /// The Event Inspector segment last chosen by the user. Lives here — not in a
+    /// per-present `@State` — so it PERSISTS across present/dismiss cycles and tab
+    /// switches (AC1). It is deliberately never reset on dismiss.
+    @Published var selectedSegment: InspectorSegment = .events
+
+    /// The observed-events buffer the inspector's Events list renders, newest-first.
+    ///
+    /// Exposed read-only as the seam: Story 7.2 Task 3 wires the SDK event
+    /// subscription that fills it, and Task 4 renders it. Empty for now.
+    @Published private(set) var events: [InspectorEvent] = []
+
     init() {
         // FS-Test-Proj staging: account 10035569 / project 10034190. The
         // "account/project" sdkKey form resolves to the live config URL
@@ -51,5 +89,15 @@ final class DemoViewModel: ObservableObject {
         } catch {
             configState = .failed(reason: error.localizedDescription)
         }
+    }
+
+    /// Presents the Event Inspector sheet from any tab's toolbar button.
+    ///
+    /// Sets only ``isInspectorPresented`` — ``selectedSegment`` is left untouched
+    /// so the last-chosen segment survives the re-present (AC1). There is
+    /// deliberately no matching reset on dismiss; preserving the segment across
+    /// present/dismiss cycles IS the persistence requirement.
+    func presentInspector() {
+        isInspectorPresented = true
     }
 }
