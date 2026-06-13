@@ -85,4 +85,5 @@ These are deliberate, Swift-idiomatic choices, named so they are never a silent 
 - <doc:GettingStarted>
 - <doc:OfflineAndBackgroundDelivery>
 - <doc:FailureDetection>
+- <doc:Troubleshooting>
 - <doc:Privacy>
