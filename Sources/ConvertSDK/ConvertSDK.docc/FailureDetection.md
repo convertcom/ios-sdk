@@ -18,32 +18,55 @@ The log level is always a leading text token in the line (`[WARN]`, `[ERROR]`), 
 
 ### Observing the ready signal
 
-``ConvertSDK/ready()`` fires the ``SystemEvent/ready`` event exactly once and never re-fires on a later config refresh. Subscribe with ``ConvertSDK/on(_:callback:)`` to learn when the SDK becomes usable, and pair it with a timeout:
+``ConvertSDK/ready()`` fires the ``SystemEvent/ready`` event exactly once and never re-fires on a later config refresh. Subscribe with ``ConvertSDK/on(_:callback:)`` to learn when the SDK becomes usable, and pair it with a timeout.
+
+The timeout must run **concurrently** with — not structurally around — the ``ConvertSDK/ready()`` await. ``ConvertSDK/ready()`` is **not** cancellation-aware: it resumes only when config resolves (live, cache, or degraded) or an unrecoverable error is signalled, and on a network hang with no cache that resolution arrives only after the SDK's 30-second request timeout. Do **not** wrap the two in a `withTaskGroup`: a task group implicitly awaits *all* of its children before the `await` on the group returns, and cancelling the non-cancellable ``ConvertSDK/ready()`` child does not make it finish early — so the group would block ~30 s before the 10 s timeout could take effect, which is the very infinite-spinner this section warns against.
+
+Instead, drive a small state flag from two writers — the ``ConvertSDK/ready()`` await and a concurrent timeout `Task` — and let the **first** terminal transition win:
 
 ```swift
-let sdk = ConvertSDK(configuration: ConvertConfiguration(sdkKey: "your-sdk-key"))
+enum Readiness { case loading, ready, failed(reason: String) }
 
-// Race readiness against a 10-second timeout: whichever finishes first wins.
-let started = await withTaskGroup(of: Bool.self) { group in
-    group.addTask {
-        do { try await sdk.ready(); return true }   // resolved (live, cached, or degraded)
-        catch { return false }                       // unrecoverable configuration error
+actor ReadinessGate {
+    private(set) var state: Readiness = .loading
+    /// First terminal transition wins; later writers no-op.
+    func resolve(_ next: Readiness) {
+        if case .loading = state { state = next }
     }
-    group.addTask {
-        try? await Task.sleep(nanoseconds: 10 * 1_000_000_000)
-        return false                                 // 10s elapsed → treat as a failed/slow start
-    }
-    let first = await group.next() ?? false
-    group.cancelAll()
-    return first
+    var current: Readiness { state }
 }
 
-if started {
-    // config is in memory — proceed to createContext and decide
-} else {
-    // surface a failure with a message + hint, e.g. "Check network + SDK key"
+let sdk = ConvertSDK(configuration: ConvertConfiguration(sdkKey: "your-sdk-key"))
+let gate = ReadinessGate()
+
+// Concurrent 10s timeout: flips to a visible failure if `ready()` has not resolved
+// yet. `Task.sleep(nanoseconds:)` (not the iOS 16+ `Task.sleep(for:)`) keeps the
+// iOS 15 deployment floor.
+let timeoutTask = Task {
+    try? await Task.sleep(nanoseconds: 10 * 1_000_000_000)
+    await gate.resolve(.failed(reason: "Configuration fetch timed out."))
+}
+
+do {
+    try await sdk.ready()                 // resolved: live, cached, or degraded
+    timeoutTask.cancel()
+    await gate.resolve(.ready)
+} catch {
+    timeoutTask.cancel()                  // unrecoverable configuration error
+    await gate.resolve(.failed(reason: error.localizedDescription))
+}
+
+switch await gate.current {
+case .ready:
+    break  // config is in memory — proceed to createContext and decide
+case .failed(let reason):
+    break  // surface `reason` (message + hint), e.g. "Configuration fetch timed out."
+case .loading:
+    break  // unreachable: one of the two writers above has resolved the gate
 }
 ```
+
+On the timeout-wins path the still-suspended ``ConvertSDK/ready()`` await is left to complete in the background ~30 s later (it cannot be cancelled). That late completion is harmless: its `gate.resolve(.ready)` finds the gate already `.failed` and no-ops — no incorrect late state change and no crash.
 
 Equivalently, observe the ready event explicitly:
 
