@@ -36,6 +36,67 @@ let sdk = ConvertSDK(configuration: ConvertConfiguration(sdkKey: "your-sdk-key")
 
 Only ``ConvertConfiguration/init(sdkKey:sdkKeySecret:environment:apiConfigEndpoint:apiTrackEndpoint:bucketingMaxTraffic:bucketingHashSeed:dataRefreshIntervalMs:eventsBatchSize:eventsReleaseIntervalMs:ruleKeysCaseSensitive:ruleNegation:logLevel:networkTracking:networkCacheLevel:)`` requires `sdkKey`; every other field carries a JavaScript-SDK-parity default.
 
+### Configure
+
+``ConvertConfiguration`` is an immutable value: you set its fields once at construction and they never change. The fields are flat Swift properties — there is no nested `network` object. Below they are grouped by concern for readability (the grouping mirrors the JavaScript SDK's config object), but the Swift identifiers you pass are the flat names in the **Property** column.
+
+**Identity and endpoints**
+
+| Property | Type | Default | Meaning |
+|---|---|---|---|
+| ``ConvertConfiguration/sdkKey`` | `String` | *(required)* | Project SDK key identifying the Convert project to load. |
+| ``ConvertConfiguration/sdkKeySecret`` | `String?` | `nil` | SDK key secret for authenticated endpoints; `nil` when unused. |
+| ``ConvertConfiguration/environment`` | `String?` | `nil` | Named environment selector; `nil` selects the default. |
+| ``ConvertConfiguration/apiConfigEndpoint`` | `String` | `"https://cdn-4.convertexperiments.com/api/v1"` | Base URL for fetching project configuration (no trailing slash). |
+| ``ConvertConfiguration/apiTrackEndpoint`` | `String` | `"https://cdn-4.convertexperiments.com/api/v1"` | Base URL for delivering tracking events (no trailing slash). |
+
+**Bucketing**
+
+| Property | Type | Default | Meaning |
+|---|---|---|---|
+| ``ConvertConfiguration/bucketingMaxTraffic`` | `Int` | `10000` | Inclusive upper bound of the bucketing traffic range. |
+| ``ConvertConfiguration/bucketingHashSeed`` | `UInt32` | `9999` | MurmurHash3 seed used when hashing the bucketing key. |
+
+**Refresh and event delivery**
+
+| Property | Type | Default | Meaning |
+|---|---|---|---|
+| ``ConvertConfiguration/dataRefreshIntervalMs`` | `Int` | `300000` | Milliseconds between remote configuration refreshes. |
+| ``ConvertConfiguration/eventsBatchSize`` | `Int` | `10` | Number of queued events flushed per release batch. |
+| ``ConvertConfiguration/eventsReleaseIntervalMs`` | `Int` | `1000` | Milliseconds between event-queue release attempts. |
+
+**Rule matching**
+
+| Property | Type | Default | Meaning |
+|---|---|---|---|
+| ``ConvertConfiguration/ruleKeysCaseSensitive`` | `Bool` | `true` | Whether rule key comparisons are case-sensitive. |
+| ``ConvertConfiguration/ruleNegation`` | `Bool` | `false` | Whether rule matching applies negation semantics. |
+
+**Logging, tracking, and caching**
+
+| Property | Type | Default | Meaning |
+|---|---|---|---|
+| ``ConvertConfiguration/logLevel`` | ``LogLevel`` | `.warn` | Log severity threshold; messages below this level are suppressed. |
+| ``ConvertConfiguration/networkTracking`` | `Bool` | `true` | Whether event/network delivery is enabled. Set `false` to suppress all tracking while bucketing continues — see <doc:OfflineAndBackgroundDelivery>. |
+| ``ConvertConfiguration/networkCacheLevel`` | ``CacheLevel`` | `.normal` | CDN cache level applied to config fetches (``CacheLevel/normal`` or ``CacheLevel/low``). |
+
+``LogLevel`` ranges from most verbose to fully muted: ``LogLevel/trace`` < ``LogLevel/debug`` < ``LogLevel/info`` < ``LogLevel/warn`` < ``LogLevel/error`` < ``LogLevel/silent``.
+
+> Note: The JavaScript SDK's `network.source` field is **not exposed** on iOS. There is no `network.source` (or `networkSource`) property on ``ConvertConfiguration``; the iOS SDK selects its delivery path internally.
+
+Override only the fields you need — every argument except `sdkKey` has a default, so you name just the ones you change:
+
+```swift
+import ConvertSDK
+
+let config = ConvertConfiguration(
+    sdkKey: "your-sdk-key",
+    logLevel: .debug,
+    networkTracking: false
+)
+let sdk = ConvertSDK(configuration: config)
+```
+
 ### Await readiness
 
 ``ConvertSDK/ready()`` suspends until the first configuration is available — from a live fetch or a cache, including a cold start while offline:
@@ -53,6 +114,8 @@ A context carries the visitor identity. Pass a `visitorId`, or omit it for a per
 ```swift
 let context = sdk.createContext()
 ```
+
+The auto-generated visitor ID is stored in the Keychain and reused on every subsequent launch, so the same device buckets consistently across app launches. Same-install continuity is guaranteed. Continuity **across an uninstall and reinstall is best-effort only**: the Keychain item may survive an app's removal on some iOS versions and backup configurations, but the OS does not guarantee it — a reinstall can surface a fresh visitor ID. Do not depend on a stable ID across reinstalls; depend on it only within an install. (The item is written `…ThisDeviceOnly`, so it never syncs to the user's other devices via iCloud Keychain.)
 
 ### Run an experience
 
