@@ -47,7 +47,13 @@ extension DemoViewModel {
     /// interpolation renders as "49.99" — no force unwrap, no formatter needed.
     func trackGoal() async {
         // 1. PRE-CHECK existence against the demo's known-goal set (the SDK cannot tell
-        //    us "not found" — trackConversion is non-throwing and drops silently).
+        //    us "not found" — trackConversion is non-throwing and drops silently). For
+        //    ``demoGoalKey`` this guard always passes (it is by construction a member of
+        //    ``knownGoalKeys``), so the Track Goal button never shows an error from here —
+        //    ``trackUnknownGoal()`` demonstrates the goal-not-found card separately. The
+        //    guard is retained so the pre-check pattern is visible AND so that if
+        //    ``knownGoalKeys`` ever drops ``demoGoalKey`` the demo degrades honestly rather
+        //    than show a false success for a goal the SDK would silently drop.
         guard Self.knownGoalKeys.contains(Self.demoGoalKey) else {
             prependConversion(
                 ResultCard.Item(
