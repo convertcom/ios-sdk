@@ -1,0 +1,36 @@
+name: ConvertSDKDemo
+
+options:
+  bundleIdPrefix: com.convert
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+packages:
+  ConvertSDK:
+    path: ../../
+
+targets:
+  ConvertSDKDemo:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: .
+        excludes:
+          - "project.yml"
+          - "*.xcodeproj"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.convert.ConvertSDKDemo
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "6.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+    dependencies:
+      - package: ConvertSDK
+        product: ConvertSDK
