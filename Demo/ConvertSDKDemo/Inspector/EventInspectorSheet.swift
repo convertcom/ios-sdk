@@ -83,10 +83,12 @@ struct EventInspectorSheet: View {
     }
 
     /// The Events segment: the empty state when no events have been observed yet,
-    /// otherwise a minimal list of event names.
+    /// otherwise the scrolling list of ``InspectorEventRow`` lifecycle rows.
     ///
-    /// Task 4 replaces the list rows with full ``StatusBadge`` lifecycle rows
-    /// (Queued / Delivered) — this body stays intentionally minimal until then.
+    /// The buffer is already newest-first (``DemoViewModel/events`` inserts at
+    /// index 0), so the list renders it as-is — no re-sort. `List` supplies the
+    /// scrolling so the segment scrolls when events accrue, and each row wraps its
+    /// mono payload rather than truncating (AC3: wrap or scroll, never truncate).
     @ViewBuilder
     private var eventsBody: some View {
         if viewModel.events.isEmpty {
@@ -97,9 +99,7 @@ struct EventInspectorSheet: View {
             )
         } else {
             List(viewModel.events) { event in
-                // Task 4 replaces these rows with StatusBadge lifecycle rows.
-                Text(event.event.rawValue)
-                    .font(ConvertTheme.monospacedBody())
+                InspectorEventRow(event: event)
             }
             .listStyle(.plain)
         }
@@ -118,6 +118,69 @@ struct EventInspectorSheet: View {
             message: "The live log stream arrives in a follow-up (Story 7.2b) "
                 + "once the SDK exposes a log-capture seam."
         )
+    }
+}
+
+/// One row in the Event Inspector's Events list (Story 7.2 / DEMO-3, AC2).
+///
+/// Renders a single observed ``InspectorEvent`` as: the event's wire name on top
+/// (a readable label, not mono) with the lifecycle ``StatusBadge`` pinned to the
+/// trailing edge, and the redaction-safe payload ``InspectorEvent/summary`` in SF
+/// Mono beneath it.
+///
+/// Lifecycle → badge follows the model's contract: only the two networked events
+/// carry a badge (``InspectorEvent/Lifecycle/queued`` → "Queued",
+/// ``InspectorEvent/Lifecycle/delivered`` → "Delivered"); the eight informational
+/// events are ``InspectorEvent/Lifecycle/none`` and carry NO badge at all (AC2:
+/// "non-networked events carry no badge"). The mono summary wraps and grows
+/// vertically rather than truncating at large Dynamic Type (AC3); an empty summary
+/// renders no mono line. The name `Text` and the `StatusBadge` stay separate
+/// accessibility elements, so VoiceOver reads the name then the badge's own fused
+/// label (e.g. "bucketing" then "Delivered, delivered") — the lifecycle word is
+/// always reachable without color. The deeper focus / announcement behavior is the
+/// later a11y task (AC4); this row only secures the basics.
+private struct InspectorEventRow: View {
+
+    /// The observed event this row renders.
+    let event: InspectorEvent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: ConvertTheme.space2) {
+            HStack(alignment: .firstTextBaseline, spacing: ConvertTheme.space2) {
+                Text(event.event.rawValue)
+                    .font(.subheadline.weight(.medium))
+                Spacer(minLength: ConvertTheme.space2)
+                lifecycleBadge
+            }
+            if !event.summary.isEmpty {
+                Text(event.summary)
+                    .font(ConvertTheme.monospacedBody())
+                    .foregroundStyle(.secondary)
+                    // No `.lineLimit(1)`: the mono payload must wrap and grow
+                    // vertically rather than truncate at large Dynamic Type (AC3).
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, ConvertTheme.space1)
+    }
+
+    /// The lifecycle ``StatusBadge`` for this row, or nothing for a non-networked
+    /// (``InspectorEvent/Lifecycle/none``) event.
+    ///
+    /// The whole `Lifecycle` → badge mapping lives here in ONE switch so no
+    /// badge-construction block is duplicated across rows; the ``StatusBadge``
+    /// itself already owns the symbol/color/word per state.
+    @ViewBuilder
+    private var lifecycleBadge: some View {
+        switch event.lifecycle {
+        case .queued:
+            StatusBadge("Queued", style: .queued)
+        case .delivered:
+            StatusBadge("Delivered", style: .delivered)
+        case .none:
+            // Non-networked event — AC2: no badge.
+            EmptyView()
+        }
     }
 }
 
