@@ -160,8 +160,10 @@ final class DemoViewModel: ObservableObject {
     /// Each run prepends one ``BucketedFeature`` per resolved feature via
     /// ``prepend(_:into:cap:)`` (newest at index 0), mirroring ``resultCards`` and
     /// ``events``. Exposed read-only — only the feature run methods mutate it. Bounded at
-    /// ``featureCap`` newest rows. `BucketedFeature` is not `Identifiable`, so the View
-    /// supplies an explicit `id: \.key` to `ForEach`; this buffer just exposes the values.
+    /// ``featureCap`` newest rows. `BucketedFeature` is not `Identifiable`, and its `id` is
+    /// `""` for a `.disabled` feature while `key` collides across re-runs of the same key, so
+    /// the View keys its `ForEach` on the enumerated offset (see ``FeaturesView``); this buffer
+    /// just exposes the values.
     @Published private(set) var evaluatedFeatures: [BucketedFeature] = []
 
     /// Upper bound on ``evaluatedFeatures`` so repeated runs can't grow the buffer without
