@@ -229,6 +229,12 @@ struct ConfigView: View {
     /// - `.loaded`  → "Configuration loaded";
     /// - `.failed`  → "configuration failed: <reason>. Check network + SDK key"
     ///   (the exact shape from the story's AC3 / Task 2.4).
+    ///
+    /// `<reason>` is NOT assumed to carry trailing punctuation, but the real reasons do — the
+    /// timeout message ("Configuration fetch timed out.") and `ConvertError` descriptions both
+    /// end in ".". A single trailing sentence-ending char ('.', '!', '?') is stripped from
+    /// `reason` before interpolation so exactly ONE period separates the reason from the hint
+    /// (otherwise "…timed out.. Check…" would double up).
     private static func announcement(for state: ConfigState) -> String {
         switch state {
         case .loading:
@@ -236,7 +242,9 @@ struct ConfigView: View {
         case .loaded:
             return "Configuration loaded"
         case .failed(let reason):
-            return "configuration failed: \(reason). \(failureHint)"
+            let trimmedReason = [".", "!", "?"].contains(String(reason.suffix(1)))
+                ? String(reason.dropLast()) : reason
+            return "configuration failed: \(trimmedReason). \(failureHint)"
         }
     }
 }

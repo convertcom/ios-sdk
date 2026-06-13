@@ -43,30 +43,35 @@ extension DemoViewModel {
     /// race below and any future caller; expressed in seconds (``TimeInterval``).
     static let readinessTimeout: TimeInterval = 10
 
-    /// Which arm of the readiness race finished first. Modeled as an explicit two-case result —
-    /// rather than a bare `Bool` — so the `switch` in ``start()`` reads self-documenting and a
-    /// future third outcome can't be silently mis-encoded.
-    private enum ReadinessOutcome {
-        /// ``ConvertSDK/ready()`` resolved before the timeout (live or degraded-from-cache).
-        case ready
-        /// The ``readinessTimeout`` elapsed before `ready()` resolved.
-        case timedOut
-    }
-
-    /// Drives the ``ConfigState`` machine: races ``ConvertSDK/ready()`` against the
-    /// ``readinessTimeout`` and lands exactly one terminal state.
+    /// Drives the ``ConfigState`` machine: awaits ``ConvertSDK/ready()`` directly while a
+    /// concurrent timeout guards against a silent network hang, landing exactly one terminal state.
     ///
     /// `@MainActor` (inherited) so it mutates the published ``configState`` directly on the main
-    /// actor. The race is a structured `withThrowingTaskGroup` of two child tasks — one awaits
-    /// `ready()` (returning ``ReadinessOutcome/ready``), one sleeps for the timeout (returning
-    /// ``ReadinessOutcome/timedOut``). The FIRST child to finish is taken via `group.next()`, then
-    /// `group.cancelAll()` cancels the loser (the sleeper's `Task.sleep` throws `CancellationError`
-    /// on the winning-`ready` path, which is discarded since we never await it again; on the
-    /// winning-timeout path the `ready` child is abandoned). Outcomes:
-    /// - `ready` wins → ``ConfigState/loaded(fetchedAt:)`` stamped with the current `Date`;
-    /// - the timeout wins → ``ConfigState/failed(reason:)`` with the timed-out message;
-    /// - `ready()` THROWS a `ConvertError` → it rethrows out of `group.next()`, is caught below,
-    ///   and lands ``ConfigState/failed(reason:)`` carrying its `localizedDescription`.
+    /// actor. The structure is deliberately NOT a `withThrowingTaskGroup`: a task group implicitly
+    /// awaits ALL of its child tasks before the `await` on the group returns, and the SDK's
+    /// `ready()` (``ConfigStore/waitForReady()``) is NOT cancellation-aware — its
+    /// `withCheckedThrowingContinuation` has no `withTaskCancellationHandler` and no
+    /// `Task.isCancelled` check, so it only resumes on `setConfig`/`signalError`. On a network hang
+    /// with no cache that resolution happens only after the SDK's URLSession request timeout
+    /// (`Defaults.requestTimeoutSeconds` = 30 s). A task group would therefore block ~30 s before a
+    /// timeout child could take effect — leaving the spinner up for 30 s, not 10 s, and violating
+    /// the "Failed within 10 s, no infinite spinner" contract.
+    ///
+    /// Instead: a concurrent, unstructured ``readinessTimeout`` `Task` flips ``configState`` to a
+    /// visible failure at 10 s, and `ready()` is awaited directly here. Both writers are guarded by
+    /// an `if case .loading` check, so the FIRST terminal transition wins and the later one no-ops
+    /// — which also preserves the post-`.loaded` no-downgrade rule. Outcomes:
+    /// - `ready()` resolves first → ``ConfigState/loaded(fetchedAt:)`` stamped with the current
+    ///   `Date` (the timeout `Task` is cancelled, so its sleep just exits quietly);
+    /// - the 10 s timeout fires first → ``ConfigState/failed(reason:)`` with the timed-out message;
+    /// - `ready()` THROWS a `ConvertError` → caught below, landing ``ConfigState/failed(reason:)``
+    ///   carrying its `localizedDescription`.
+    ///
+    /// On the timeout-wins path the still-suspended `ready()` await is intentionally left to
+    /// complete in the background ~30 s later (when the SDK's URLSession request times out, since
+    /// `ready()` cannot be cancelled). That late completion is harmless: its `if case .loading`
+    /// guard finds ``configState`` already `.failed`, so it no-ops — no incorrect late state change
+    /// and no crash, just a quiet background completion of a lingering, by-design task.
     ///
     /// `Task.sleep(nanoseconds:)` (iOS 13+) is used — NOT the iOS 16+ `Task.sleep(for:)` — to stay
     /// on the iOS 15 floor. Connectivity monitoring is started here too (folded in so the app's
@@ -78,35 +83,33 @@ extension DemoViewModel {
     func start() async {
         startConnectivityMonitoring()
 
-        let timeoutNanos = UInt64(Self.readinessTimeout * 1_000_000_000)
-        do {
-            let outcome = try await withThrowingTaskGroup(of: ReadinessOutcome.self) { group in
-                group.addTask { [sdk] in
-                    try await sdk.ready()
-                    return .ready
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: timeoutNanos)
-                    return .timedOut
-                }
-                // The first child to finish wins; cancel the loser and stop awaiting.
-                let first = try await group.next()
-                group.cancelAll()
-                // `next()` returns nil only on an empty group; both tasks were added, so the
-                // first await yields a value. `?? .timedOut` keeps this force-unwrap-free and
-                // degrades to the safe "treat as timed out" branch on the impossible nil.
-                return first ?? .timedOut
+        // Concurrent 10 s timeout: flips the UI to a visible failure if `ready()` has not resolved
+        // yet, so a silent network hang can't leave an infinite spinner. It writes `configState`
+        // directly (main-actor isolated) guarded by the still-`.loading` check, so the first
+        // terminal transition wins. This deliberately does NOT use `withThrowingTaskGroup` — see
+        // the doc comment: a group awaits all children, and the SDK's `ready()` is not
+        // cancellation-aware, so a group would block ~30 s before the timeout could take effect.
+        let timeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.readinessTimeout * 1_000_000_000))
+            guard let self else { return }
+            if case .loading = self.configState {
+                self.configState = .failed(reason: "Configuration fetch timed out.")
             }
-            switch outcome {
-            case .ready:
+        }
+
+        do {
+            try await sdk.ready()
+            timeoutTask.cancel()
+            if case .loading = configState {
                 configState = .loaded(fetchedAt: Date())
-            case .timedOut:
-                configState = .failed(reason: "Configuration fetch timed out.")
             }
         } catch {
-            // `ready()` threw a `ConvertError` (rethrown out of the group). Surface its
-            // actionable, redaction-safe description verbatim.
-            configState = .failed(reason: error.localizedDescription)
+            // `ready()` threw a `ConvertError`. Surface its actionable, redaction-safe
+            // description verbatim — guarded so a timeout that already won is not downgraded.
+            timeoutTask.cancel()
+            if case .loading = configState {
+                configState = .failed(reason: error.localizedDescription)
+            }
         }
     }
 
