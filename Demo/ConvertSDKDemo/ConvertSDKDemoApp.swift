@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// Holds app-level state via a single ``DemoViewModel`` `@StateObject` that owns
 /// the ``ConvertSDK`` instance, injects it into the view tree as an environment
-/// object, and kicks off SDK readiness off the UI thread from `.task`.
+/// object, and kicks off SDK readiness from `.task` without blocking the UI.
 ///
 /// The root is ``ContentView`` — the five-tab `TabView` (Story 7.3 / DEMO-3),
 /// which applies the app-wide `.tint(ConvertTheme.accent)` itself, so no tint is
@@ -22,9 +22,11 @@ struct ConvertSDKDemoApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(viewModel)
-                // Fire-and-forget readiness: `.task` runs in an async context
-                // (off the UI thread) and `start()` swallows the result. Story
-                // 7.6 consumes readiness via the ConfigState machine.
+                // Fire-and-forget readiness: `start()` is `@MainActor` and runs
+                // on the main actor, but `await`ing `ready()` only *suspends* —
+                // it never blocks the UI (the SDK does its I/O internally). The
+                // result is swallowed here; Story 7.6 consumes readiness via the
+                // ConfigState machine.
                 .task {
                     await viewModel.start()
                 }

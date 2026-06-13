@@ -35,9 +35,11 @@ final class DemoViewModel: ObservableObject {
         sdk = ConvertSDK(configuration: configuration)
     }
 
-    /// Fires SDK readiness best-effort, off the UI thread.
+    /// Fires SDK readiness best-effort without blocking the UI.
     ///
-    /// `ready()` is awaited (it suspends; it does not block the main actor) and
+    /// This method is `@MainActor` (inherited from the type), so it runs on the
+    /// main actor; `ready()` is awaited (it suspends; it does not block the main
+    /// actor — the SDK performs its network I/O internally) and
     /// the throw is swallowed in Story 7.1 — a transient network failure resolves
     /// degraded rather than throwing, and the only thrown case (unrecoverable
     /// config) is surfaced through ``ConfigState`` here as a placeholder. Story 7.6

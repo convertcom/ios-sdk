@@ -31,6 +31,11 @@ targets:
         SWIFT_VERSION: "6.0"
         IPHONEOS_DEPLOYMENT_TARGET: "15.0"
         SWIFT_STRICT_CONCURRENCY: complete
+        # Single accent source of truth: UIKit-bridged chrome resolves the global
+        # accent from the named BrandAccent colorset (the same asset SwiftUI's
+        # .tint(ConvertTheme.accent) uses), so there is no separate AccentColor
+        # asset to drift out of sync (AC2 — one mode-resolving accent).
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: BrandAccent
     dependencies:
       - package: ConvertSDK
         product: ConvertSDK
