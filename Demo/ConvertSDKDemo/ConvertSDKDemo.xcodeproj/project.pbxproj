@@ -7,16 +7,18 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0EC780ADD735202B7E304B16 /* ConvertSDKDemoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_D658E479-A4C4-4933-A7DA-1B4272ABC5A4" /* ConvertSDKDemoApp.swift */; };
+		63B1C93A51C7327A6CBA0274 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = "TEMP_E908AB6E-5B37-4DA8-AE59-2854A9E16225" /* Assets.xcassets */; };
+		654B5A2E1E7A529A73906665 /* ConvertTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2D82966B51B7D2FB7E5E807 /* ConvertTheme.swift */; };
+		8E9EAE9F6468063D15D975AE /* ConvertSDKDemoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_BE2C72A3-3EE8-424B-9FA6-E535C8862A6A" /* ConvertSDKDemoApp.swift */; };
 		A8DCEE52E896821F4BAC7F43 /* ConvertSDK in Frameworks */ = {isa = PBXBuildFile; productRef = C1B34C63E92430822E0E4606 /* ConvertSDK */; };
-		E1245BBE3A2798ECE508C299 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = "TEMP_EFEB6EF2-A1B9-47B4-AA66-DE9FC5313EF6" /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		AF13F0EEA6533675ECE2C8A0 /* ios-sdk */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ios-sdk"; path = ../..; sourceTree = SOURCE_ROOT; };
 		BBFC7650CAEFF8E3A68D7790 /* ConvertSDKDemo.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ConvertSDKDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		"TEMP_D658E479-A4C4-4933-A7DA-1B4272ABC5A4" /* ConvertSDKDemoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvertSDKDemoApp.swift; sourceTree = "<group>"; };
-		"TEMP_EFEB6EF2-A1B9-47B4-AA66-DE9FC5313EF6" /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		F2D82966B51B7D2FB7E5E807 /* ConvertTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvertTheme.swift; sourceTree = "<group>"; };
+		"TEMP_BE2C72A3-3EE8-424B-9FA6-E535C8862A6A" /* ConvertSDKDemoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvertSDKDemoApp.swift; sourceTree = "<group>"; };
+		"TEMP_E908AB6E-5B37-4DA8-AE59-2854A9E16225" /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -31,6 +33,14 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		04DE7355E54470304CC39D0F /* Theme */ = {
+			isa = PBXGroup;
+			children = (
+				F2D82966B51B7D2FB7E5E807 /* ConvertTheme.swift */,
+			);
+			path = Theme;
+			sourceTree = "<group>";
+		};
 		92763DF5EDD1D488336137DF /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -51,15 +61,17 @@
 			isa = PBXGroup;
 			children = (
 				B899C63A8459DBD0BFBC3DCA /* Packages */,
+				04DE7355E54470304CC39D0F /* Theme */,
 				92763DF5EDD1D488336137DF /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		"TEMP_EE2A8C0B-E1AB-4804-B803-06D583D0CB13" /* . */ = {
+		"TEMP_BAAE5B6C-28D4-460C-8DC4-D9CC74E52E57" /* . */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_EFEB6EF2-A1B9-47B4-AA66-DE9FC5313EF6" /* Assets.xcassets */,
-				"TEMP_D658E479-A4C4-4933-A7DA-1B4272ABC5A4" /* ConvertSDKDemoApp.swift */,
+				"TEMP_E908AB6E-5B37-4DA8-AE59-2854A9E16225" /* Assets.xcassets */,
+				"TEMP_BE2C72A3-3EE8-424B-9FA6-E535C8862A6A" /* ConvertSDKDemoApp.swift */,
+				04DE7355E54470304CC39D0F /* Theme */,
 			);
 			name = .;
 			path = .;
@@ -126,7 +138,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E1245BBE3A2798ECE508C299 /* Assets.xcassets in Resources */,
+				63B1C93A51C7327A6CBA0274 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -137,7 +149,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				0EC780ADD735202B7E304B16 /* ConvertSDKDemoApp.swift in Sources */,
+				8E9EAE9F6468063D15D975AE /* ConvertSDKDemoApp.swift in Sources */,
+				654B5A2E1E7A529A73906665 /* ConvertTheme.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
