@@ -86,6 +86,35 @@ final class DemoViewModel: ObservableObject {
     /// tail (``events`` is newest-first, so the tail is the oldest).
     private let inspectorEventCap = 200
 
+    /// The single, reusable decisioning context for every experience run.
+    ///
+    /// Created lazily on first run (`sdk.createContext()` is synchronous on the main
+    /// actor) and reused thereafter so bucketing is sticky/deterministic: a re-run for
+    /// the same visitor yields the same variation (a fresh context per run would re-roll
+    /// the visitor and could bucket differently between taps). ``ConvertContext`` is
+    /// `Sendable`, so a `lazy var` on this `@MainActor` type is sound under
+    /// `SWIFT_STRICT_CONCURRENCY: complete`.
+    private lazy var context: ConvertContext = sdk.createContext()
+
+    /// The experience key the single-experience run targets.
+    ///
+    /// A known-good, unaudienced, active key from the committed FS-Test-Proj staging
+    /// config, so a default context buckets it deterministically. The Config screen will
+    /// surface keys in a later story; until then the demo targets this one baseline key,
+    /// and a `nil` return is rendered as an actionable card, never a crash.
+    private static let singleExperienceKey = "test-experience-ab-fullstack-4"
+
+    /// The result-card buffer the Experiences screen renders, newest-first.
+    ///
+    /// Each run prepends ``ResultCard/Item`` rows via ``prependResult(_:)`` (newest at
+    /// index 0), mirroring the ``events`` buffer. Exposed read-only — only the run
+    /// methods mutate it. Bounded at ``resultCardCap`` newest rows.
+    @Published private(set) var resultCards: [ResultCard.Item] = []
+
+    /// Upper bound on ``resultCards`` so repeated runs can't grow the buffer without
+    /// limit; on insert, the oldest rows past this many are trimmed from the tail.
+    private let resultCardCap = 20
+
     init() {
         // FS-Test-Proj staging: account 10035569 / project 10034190. The
         // "account/project" sdkKey form resolves to the live config URL
@@ -122,6 +151,91 @@ final class DemoViewModel: ObservableObject {
     /// present/dismiss cycles IS the persistence requirement.
     func presentInspector() {
         isInspectorPresented = true
+    }
+
+    // MARK: - Experience runs (Story 7.3 / DEMO-4)
+
+    /// Runs the single baseline experience and prepends one result card.
+    ///
+    /// `@MainActor` (inherited): the `await` on
+    /// ``ConvertContext/runExperience(_:enableTracking:)`` suspends without blocking the
+    /// main actor (the SDK works off-actor), then ``resultCards`` is mutated on the main
+    /// actor. `enableTracking` is left at the SDK default (`true`) — never `false` — so
+    /// the bucketing event reaches the Event Inspector (AC4).
+    ///
+    /// A `nil` return (missing snapshot / unknown key / ineligible visitor) is a valid
+    /// degraded outcome surfaced as ONE actionable `.error` card with the verbatim Voice
+    /// & Tone message and hint — never a force unwrap, never a crash.
+    func runExperience() async {
+        let variation = await context.runExperience(Self.singleExperienceKey)
+        if let variation {
+            prependResult(
+                ResultCard.Item(
+                    title: variation.experienceKey,
+                    detail: "Variation \(variation.key)",
+                    variationKey: variation.key,
+                    variant: .success
+                )
+            )
+        } else {
+            prependResult(
+                ResultCard.Item(
+                    title: Self.singleExperienceKey,
+                    detail: "No variation for experience `\(Self.singleExperienceKey)`.",
+                    hint: "Check experience config or audience eligibility.",
+                    variant: .error
+                )
+            )
+        }
+    }
+
+    /// Runs every experience the config carries and prepends one card per variation.
+    ///
+    /// `@MainActor` (inherited): the `await` on
+    /// ``ConvertContext/runExperiences(enableTracking:)`` suspends without blocking the
+    /// main actor, then ``resultCards`` is mutated on the main actor. `enableTracking`
+    /// stays at the SDK default (`true`) so each bucketing event reaches the Event
+    /// Inspector (AC4). Each ``Variation`` is prepended in the array's natural order, so
+    /// the batch lands as a contiguous newest-first group (the SDK's last experience on
+    /// top); the ``resultCardCap`` trim applies once after the whole batch.
+    ///
+    /// An empty `[]` return (config still loading, or an ineligible visitor) is a valid
+    /// degraded outcome surfaced as ONE `.error` card with the verbatim Voice & Tone
+    /// not-ready message and no hint — never a crash.
+    func runExperiences() async {
+        let variations = await context.runExperiences()
+        if variations.isEmpty {
+            prependResult(
+                ResultCard.Item(
+                    title: "No variation",
+                    detail: "No variation yet — SDK still loading config, or the visitor is ineligible.",
+                    variant: .error
+                )
+            )
+        } else {
+            for variation in variations {
+                prependResult(
+                    ResultCard.Item(
+                        title: variation.experienceKey,
+                        detail: "Variation \(variation.key)",
+                        variationKey: variation.key,
+                        variant: .success
+                    )
+                )
+            }
+        }
+    }
+
+    /// Prepends one result card (newest-first) and trims the tail past ``resultCardCap``.
+    ///
+    /// The single insert/trim site for both ``runExperience()`` and ``runExperiences()``
+    /// (DRY — neither copies the buffer-management block), mirroring how ``record(_:_:)``
+    /// maintains ``events``: insert at index 0, then drop the oldest rows past the cap.
+    private func prependResult(_ card: ResultCard.Item) {
+        resultCards.insert(card, at: 0)
+        if resultCards.count > resultCardCap {
+            resultCards.removeLast(resultCards.count - resultCardCap)
+        }
     }
 
     // MARK: - Event Inspector subscription (Story 7.2 / DEMO-3, Task 2)
