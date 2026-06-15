@@ -307,8 +307,8 @@ struct SegmentationTests {
     /// `.disabled` (audience never satisfied), so the two assertions together prove the SEGMENT is what
     /// must feed the FEATURE audience gate. GREEN overlays the segments on `runFeature`/`runFeatures`.
     ///
-    /// `BucketedFeature` exposes the enabled-check as `status == .enabled` (there is NO `isEnabled`
-    /// property — see `BucketedFeature.swift`); this matches the proven `ConvertContextRunFeaturesTests`
+    /// `Feature` exposes the enabled-check as `status == .enabled` (there is NO `isEnabled`
+    /// property — see `Feature.swift`); this matches the proven `ConvertContextRunFeaturesTests`
     /// assertion convention.
     @Test("runFeature enables a feature when a segment satisfies its audience rule (JS parity)")
     func featureSegmentSatisfyingAudienceEnables() async throws {
