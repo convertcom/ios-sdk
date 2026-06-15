@@ -68,4 +68,39 @@ struct ConfigStoreTests {
             await drain()
         }
     }
+
+    // MARK: Scenario 3 — cancellation propagates promptly out of waitForReady() (F-170, AC13)
+
+    @Test("a cancelled waitForReady() waiter throws CancellationError without blocking on the request timeout")
+    func cancelledWaiterThrowsPromptly() async {
+        let sut = makeSut()
+        // The gate is NEVER set terminal, so the ONLY way this waiter can finish is cancellation.
+        // Before F-170 the bare continuation would never resume → this test would hang until the
+        // test-runner timeout; completing at all proves PROMPT cancellation, so no wall-clock
+        // assert is needed (NFR21).
+        let waiter = Task { try await sut.store.waitForReady() }
+        await Task.yield()            // best-effort: let the waiter suspend & register first
+        waiter.cancel()
+        let result = await waiter.result
+        #expect(throws: CancellationError.self) { try result.get() }
+    }
+
+    // MARK: Scenario 4 — cancelling one waiter de-registers only that waiter (F-170, AC13)
+
+    @Test("cancelling one waiter leaves a concurrent waiter to resolve on the gate's terminal transition")
+    func cancellingOneWaiterLeavesOthersToResolve() async {
+        let sut = makeSut()
+        let cancelled = Task { try await sut.store.waitForReady() }
+        let survivor = Task { try await sut.store.waitForReady() }
+        await Task.yield()            // best-effort: both suspend & register
+        cancelled.cancel()
+        let cancelledResult = await cancelled.result
+        #expect(throws: CancellationError.self) { try cancelledResult.get() }
+        // Resolve the gate by ERROR (a stack-stable API; setConfig's signature evolves in 2.3).
+        // The survivor must receive the ConvertError — proving the cancelled waiter's individual
+        // de-registration did NOT disturb it.
+        await sut.store.signalError(.invalidSdkKey("boom"))
+        let survivorResult = await survivor.result
+        #expect(throws: ConvertError.self) { try survivorResult.get() }
+    }
 }

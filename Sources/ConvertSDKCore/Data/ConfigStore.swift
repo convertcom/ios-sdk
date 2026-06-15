@@ -31,8 +31,11 @@ public actor ConfigStore {
     /// ``signalError(_:)`` throws immediately instead of suspending on a continuation that
     /// nothing would ever resume.
     private var terminalError: ConvertError?
-    /// Waiters suspended in ``waitForReady()`` before config arrived.
-    private var continuations: [CheckedContinuation<Void, Error>] = []
+    /// Waiters suspended in ``waitForReady()`` before config arrived, keyed by a per-call
+    /// `UUID` so a cancelled waiter can be de-registered individually (F-170) without disturbing
+    /// the others. Resumed en masse by ``setConfig()``/``signalError(_:)``, or one-at-a-time by
+    /// ``cancelWaiter(_:)`` on task cancellation.
+    private var continuations: [UUID: CheckedContinuation<Void, Error>] = [:]
 
     /// Creates a store that fires `.ready` on the supplied bus.
     public init(eventBus: EventBus) {
@@ -48,24 +51,64 @@ public actor ConfigStore {
         guard !isReady, terminalError == nil else { return }
         isReady = true
         await eventBus.fire(.ready, payload: .ready(ReadyPayload()))
-        for continuation in continuations {
+        for continuation in continuations.values {
             continuation.resume()
         }
         continuations.removeAll()
     }
 
     /// Suspends until the gate reaches a terminal state: returns on ``setConfig()``
-    /// (success/degraded), or throws the ``ConvertError`` on ``signalError(_:)``
-    /// (unrecoverable). Returns or throws IMMEDIATELY if the gate is already terminal when
-    /// called — the success latch (`isReady`) and the error latch (`terminalError`) are both
-    /// checked before suspending, so a caller that arrives after the terminal transition is
-    /// resolved synchronously rather than registering a continuation that nothing would resume.
+    /// (success/degraded), throws the ``ConvertError`` on ``signalError(_:)`` (unrecoverable),
+    /// or throws `CancellationError` if the awaiting task is cancelled before either terminal
+    /// transition. Returns or throws IMMEDIATELY if the gate is already terminal — or the task
+    /// already cancelled — when called: the success latch (`isReady`), the error latch
+    /// (`terminalError`), and `Task.isCancelled` are all checked before suspending, so a caller
+    /// that arrives after a terminal/cancelled transition is resolved synchronously rather than
+    /// registering a continuation that nothing would resume.
+    ///
+    /// Cancellation-aware (F-170, FR44). The suspend is wrapped in
+    /// ``withTaskCancellationHandler(operation:onCancel:)`` and the continuation is keyed by a
+    /// fresh `UUID` in ``continuations``. If the awaiting task is cancelled while suspended,
+    /// ``cancelWaiter(_:)`` de-registers that ONE waiter and resumes it throwing
+    /// `CancellationError` — so a caller that wraps its own timeout around `ready()` unblocks
+    /// PROMPTLY instead of stalling until the URLSession request timeout (~30 s). The terminal
+    /// and `Task.isCancelled` re-checks INSIDE the continuation body close the
+    /// cancel-before-register and resolve-before-register races (the body runs actor-isolated).
     public func waitForReady() async throws {
         if isReady { return }
         if let terminalError { throw terminalError }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            continuations.append(continuation)
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                // Re-check the latches and cancellation here, inside the actor-isolated body:
+                // between the early-out guards above and this point the gate may have gone
+                // terminal, or the task may have been cancelled before the handler installed.
+                // Resolving here instead of registering closes both races.
+                if isReady {
+                    continuation.resume()
+                } else if let terminalError {
+                    continuation.resume(throwing: terminalError)
+                } else if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    continuations[id] = continuation
+                }
+            }
+        } onCancel: {
+            // Runs OUTSIDE actor isolation, synchronously on the cancelling task. Hop back onto
+            // the actor to de-register and resume the specific waiter; a no-op if a terminal
+            // transition already resumed it (``cancelWaiter(_:)`` guards with `removeValue`).
+            Task { await self.cancelWaiter(id) }
         }
+    }
+
+    /// Resumes the single ``waitForReady()`` waiter registered under `id` by throwing
+    /// `CancellationError`, after de-registering it. A no-op if that waiter was already resumed
+    /// by ``setConfig()``/``signalError(_:)`` (`removeValue` returns `nil`), so a continuation is
+    /// never resumed twice. Actor-isolated; invoked from the `onCancel` handler's hop-on `Task`.
+    private func cancelWaiter(_ id: UUID) {
+        guard let continuation = continuations.removeValue(forKey: id) else { return }
+        continuation.resume(throwing: CancellationError())
     }
 
     /// Fails the ready gate with an unrecoverable configuration error: latches the error and
@@ -78,7 +121,7 @@ public actor ConfigStore {
     public func signalError(_ error: ConvertError) {
         guard !isReady, terminalError == nil else { return }
         terminalError = error
-        for continuation in continuations {
+        for continuation in continuations.values {
             continuation.resume(throwing: error)
         }
         continuations.removeAll()
