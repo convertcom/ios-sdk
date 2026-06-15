@@ -83,6 +83,14 @@ final class BackgroundUploadDelegate:
     /// lifecycle. Called exactly once per task completion; each outcome (transport-error / non-2xx /
     /// 2xx) is a single exit, so no side effect can double-fire.
     private func reconcile(task: URLSessionTask, error: Error?) async {
+        // The background upload has now been reconciled (success OR failure), so it is no longer
+        // outstanding: clear the in-flight marker FIRST, on EVERY exit, so the foreground-recovery flush
+        // / cold-start recovery may once again own the on-disk queue file (cross-path exactly-once —
+        // Story 5.3 / F-052). Cleared BEFORE the early returns below so a non-2xx / transport-error
+        // outcome — which intentionally LEAVES the queue file as the retry record — still releases the
+        // marker, letting the next flush / cold start recover that file exactly once.
+        try? await store.clearBackgroundUploadInFlight()
+
         // Transport error: the request never reached a 2xx, so the on-disk file is the durable retry
         // record and must survive — do NOT clear.
         if error != nil { return }

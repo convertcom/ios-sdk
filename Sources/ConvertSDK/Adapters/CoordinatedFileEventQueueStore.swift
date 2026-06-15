@@ -124,6 +124,42 @@ public final actor CoordinatedFileEventQueueStore: EventQueueStore {
         await coordinated.delete(at: fileURL)
     }
 
+    // MARK: - Background-upload in-flight marker (Story 5.3 / F-052 — cross-path exactly-once)
+
+    /// The sibling marker file whose PRESENCE means "a durable background `URLSession` upload of the
+    /// queue file is outstanding". Derived from ``fileURL`` (`event-queue.json` → `event-queue.uploading`)
+    /// so a test pointing the store at an isolated temp URL gets a co-located marker automatically, and
+    /// the marker rides the SAME coordinated/atomic seam (``CoordinatedFileStore``) as the queue file.
+    private var markerFileURL: URL {
+        fileURL.deletingPathExtension().appendingPathExtension("uploading")
+    }
+
+    /// Writes the in-flight marker (a one-byte sentinel) through the coordinated, atomic delegate —
+    /// claiming the queue file for the background-upload path. `BackgroundSessionManager.enqueueUpload`
+    /// calls this before submitting the upload task.
+    public func markBackgroundUploadInFlight() async throws {
+        try await coordinated.write(Data([1]), to: markerFileURL)
+    }
+
+    /// Deletes the in-flight marker via the no-throw coordinated delete — releasing the queue file back
+    /// to the foreground-recovery / cold-start paths. `BackgroundUploadDelegate.reconcile` calls this on
+    /// every outcome.
+    public func clearBackgroundUploadInFlight() async throws {
+        await coordinated.delete(at: markerFileURL)
+    }
+
+    /// Whether the marker file exists. A MISSING marker rethrows `CocoaError(.fileReadNoSuchFile)` from
+    /// the delegate's `read`, caught here as `false` (the common case); any OTHER read error also
+    /// degrades to `false` (see the port doc — never stall delivery on an ambiguous marker read).
+    public func isBackgroundUploadInFlight() async throws -> Bool {
+        do {
+            _ = try await coordinated.read(from: markerFileURL)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Builds the production queue path — a pure URL builder with no actor isolation and no I/O:
     /// `{applicationSupportDirectory}/com.convertexperiments.sdk/event-queue.json`.
     ///

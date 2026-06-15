@@ -9,16 +9,22 @@
 // API: the non-defaulted `store:` init param, the now-`async` `drain()`, and the new `start()`. The
 // mocks and helpers here (including `MockEventQueueStore`) compile against the already-updated ports.
 //
-// `file_length` is disabled file-wide (a single named rule — NOT `disable all`): this is ONE cohesive
+// `file_length` is disabled file-wide and `type_body_length` is disabled around the `EventQueueTests`
+// struct below (both named rules — never a blanket disable-of-all; the type_body_length disable is
+// paired with a matching enable directive right after the struct): this is ONE cohesive
 // `@Suite("EventQueue")` whose tests all share the `makeHarness` factory and the static entry/envelope
-// helpers, so splitting it across files to shave lines would fragment the suite for no readability gain.
-// The file crossed the 400-line default only when the Story-5.2 disk-persistence scenarios (AC1/3/5/9)
-// were appended. Mirrors the file-wide `file_length` disable convention in `MockCorePorts.swift` /
-// `Tests/ConvertSDKTests/Support/TestFixtures.swift`.
+// helpers, so splitting it across files to shave lines would fragment the suite for no readability gain
+// (and would force the private helpers to be duplicated — a SonarQube CPD risk). The file crossed the
+// 400-line `file_length` default with the Story-5.2 disk scenarios; the struct body crossed the 250-line
+// `type_body_length` default with the Story-5.3 cross-path exactly-once scenarios (F-052: Scenario 15
+// drain-guard / Scenario 16 cold-start-guard). Mirrors the file-wide `file_length` disable convention in
+// `MockCorePorts.swift` / `Tests/ConvertSDKTests/Support/TestFixtures.swift`.
 // swiftlint:disable file_length
 import Foundation
 import Testing
 @testable import ConvertSDKCore
+
+// swiftlint:disable type_body_length
 
 /// Contract for the `EventQueue` actor (Epic 5 / Story 1 — batching + foreground delivery,
 /// FR43 / NFR21 + AC1–AC9), EVOLVED by Story 5.2 (on-disk persistence & exactly-once). The
@@ -538,6 +544,60 @@ struct EventQueueTests {
         #expect(await harness.store.persistCallCount == 0)
     }
 
+    // MARK: Scenario 15 — drain declines while a background upload is in-flight (Story 5.3 / F-052)
+
+    /// Cross-path exactly-once (F-052): while a durable background `URLSession` upload of the queue file
+    /// is outstanding, `drain()` must NOT read or clear that file — nor drain the in-memory buffer — so a
+    /// foreground-recovery flush that races the background upload does not re-deliver the same on-disk
+    /// batch. The marker is staged via ``MockEventQueueStore/seedInFlight(_:)`` (a Core test has no real
+    /// background session); with it set, `drain()` returns nothing, the seeded disk batch is left intact
+    /// (`clearCallCount` stays 0), and the enqueued in-memory entry is retained. Once the marker clears
+    /// (as the delegate's reconcile would), the next `drain()` delivers BOTH surfaces exactly once.
+    @Test("drain declines to read or clear the queue file while a background upload is in-flight")
+    func drainDeclinesWhileBackgroundUploadInFlight() async {
+        let harness = makeHarness()
+        await harness.store.seed([Self.makeStoredEvent(visitorId: "disk-v1")])
+        await harness.store.seedInFlight(true)
+        await harness.queue.enqueue(Self.makeBucketingEntry(), for: "memory-v2", segments: nil)
+
+        // In-flight: drain delivers nothing and leaves the on-disk batch untouched for the background path.
+        let blocked = await harness.queue.drain()
+        #expect(blocked.isEmpty)
+        #expect(await harness.store.clearCallCount == 0)
+        #expect(Self.visitorIds(of: await harness.store.storedEvents) == ["disk-v1"])
+
+        // The reconcile clears the marker; the next drain now delivers the retained disk + memory once.
+        await harness.store.seedInFlight(false)
+        let recovered = await harness.queue.drain()
+        #expect(Self.visitorIds(of: recovered) == ["disk-v1", "memory-v2"])
+    }
+
+    // MARK: Scenario 16 — cold-start start() declines while a background upload is in-flight (F-052)
+
+    /// Cross-path exactly-once (F-052) on the cold-start path: if a background upload of the queue file is
+    /// outstanding from a prior process, `start()` must leave the file for the background session's
+    /// reconcile rather than load + clear it (which would double-deliver against the in-flight upload).
+    /// With the marker staged, `start()` does NOT consult `load()` and the seeded batch stays on disk;
+    /// once the marker clears, a `drain()` recovers it exactly once. Contrast Scenario 11, where `start()`
+    /// (no marker) loads the persisted queue.
+    @Test("start() leaves the persisted queue for the background path while an upload is in-flight")
+    func coldStartDeclinesWhileBackgroundUploadInFlight() async {
+        let harness = makeHarness()
+        await harness.store.seed([Self.makeStoredEvent(visitorId: "persisted-1")])
+        await harness.store.seedInFlight(true)
+
+        await harness.queue.start()
+
+        // start() declined to load the file (it is owned by the background path) and left it on disk.
+        #expect(await harness.store.loadCallCount == 0)
+        #expect(await harness.store.clearCallCount == 0)
+        #expect(Self.visitorIds(of: await harness.store.storedEvents) == ["persisted-1"])
+
+        // After the reconcile clears the marker, the file is recovered exactly once.
+        await harness.store.seedInFlight(false)
+        #expect(Self.visitorIds(of: await harness.queue.drain()).contains("persisted-1"))
+    }
+
     /// Unwraps the `eventCount` carried by an `.apiQueueReleased` payload; `nil` for any other
     /// case. Keeps the `switch` out of the test body and gives the AC8 assertion one field to
     /// compare — mirrors `EventBusTests.experienceId(of:)` / `ConfigStoreTests.snapshotAccountId(of:)`.
@@ -546,6 +606,7 @@ struct EventQueueTests {
         return released.eventCount
     }
 }
+// swiftlint:enable type_body_length
 
 /// Actor sink the `apiQueueReleased` callback records the delivered event count into, so the AC8
 /// test can poll for the fire deterministically (the callback runs on a `MainActor` hop off the

@@ -98,4 +98,34 @@ actor MockEventQueueStore: EventQueueStore {
     func seed(_ events: [TrackingEvent]) {
         storedEvents = events
     }
+
+    // MARK: - Background-upload in-flight marker (Story 5.3 / F-052 — cross-path exactly-once)
+
+    /// Models the on-disk in-flight marker's presence: staged via ``seedInFlight(_:)`` or set/cleared by
+    /// the subject through the three port methods below. A test reads it to confirm the marker's state.
+    private(set) var inFlight = false
+    /// Number of times ``markBackgroundUploadInFlight()`` was invoked.
+    private(set) var markInFlightCallCount = 0
+    /// Number of times ``clearBackgroundUploadInFlight()`` was invoked — the reconcile-releases-marker signal.
+    private(set) var clearInFlightCallCount = 0
+
+    func markBackgroundUploadInFlight() async throws {
+        markInFlightCallCount += 1
+        inFlight = true
+    }
+
+    func clearBackgroundUploadInFlight() async throws {
+        clearInFlightCallCount += 1
+        inFlight = false
+    }
+
+    func isBackgroundUploadInFlight() async throws -> Bool {
+        inFlight
+    }
+
+    /// Stages the in-flight marker WITHOUT bumping ``markInFlightCallCount`` — fixture setup (mirrors
+    /// ``seed(_:)``), so the counters reflect only the subject's own calls.
+    func seedInFlight(_ value: Bool) {
+        inFlight = value
+    }
 }

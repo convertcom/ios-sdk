@@ -147,6 +147,13 @@ final class BackgroundSessionManager: BackgroundUploadEnqueueing, @unchecked Sen
     /// satisfies an `async` requirement.
     func enqueueUpload(fileURL: URL, request: URLRequest) async {
         guard let session = backgroundSession else { return }
+        // Mark a durable background upload outstanding BEFORE creating the task, so a foreground-recovery
+        // flush / cold-start recovery that races this background transition observes the marker and
+        // declines to read or clear the same on-disk batch (cross-path exactly-once — Story 5.3 / F-052).
+        // `BackgroundUploadDelegate.reconcile()` clears it on every outcome. `try?`: a marker-write
+        // failure degrades to the prior (uncoordinated) behavior rather than throwing out of the
+        // lifecycle hook — matching the no-throw store philosophy across the durable-delivery path.
+        try? await store.markBackgroundUploadInFlight()
         let task = session.uploadTask(with: request, fromFile: fileURL)
         task.resume()
     }

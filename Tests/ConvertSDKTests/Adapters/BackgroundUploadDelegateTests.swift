@@ -185,6 +185,49 @@ struct BackgroundUploadDelegateTests {
         await expectClearCount(status: 0, error: URLError(.networkConnectionLost), toBe: 0)
     }
 
+    /// Seeds a fresh store with the in-flight marker SET (as `enqueueUpload` would have left it), runs
+    /// the awaitable reconciliation for a stub task of `status` (+ optional `error`), and asserts the
+    /// marker was released exactly once — the cross-path exactly-once signal (F-052). Shared body behind
+    /// the three outcome cases so each `@Test` is a single call (no near-identical blocks for SonarQube).
+    private func expectMarkerCleared(
+        status: Int,
+        error: Error?,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        let store = MockEventQueueStore()
+        await store.seed([makeTrackingEvent()])
+        await store.seedInFlight(true)
+        let delegate = makeDelegate(store: store)
+
+        let task = StubURLSessionTask(status: status, url: Self.endpoint)
+        await delegate.handleCompletionForTesting(task: task, error: error)
+
+        #expect(await store.clearInFlightCallCount == 1, sourceLocation: sourceLocation)
+        #expect(await store.inFlight == false, sourceLocation: sourceLocation)
+    }
+
+    /// F-052: the in-flight marker is released on a **2xx** reconcile — the background batch was accepted,
+    /// the queue file is cleared, and the marker is dropped so foreground recovery resumes normally.
+    @Test("the in-flight marker is cleared on a 2xx reconcile outcome")
+    func inFlightMarkerClearedOnSuccess() async {
+        await expectMarkerCleared(status: 200, error: nil)
+    }
+
+    /// F-052: the in-flight marker is released on a **non-2xx** reconcile. The queue file is LEFT intact
+    /// (the retry record — see `keepsQueueOnServerError`), but the marker MUST clear so the next
+    /// foreground flush / cold start can recover that file exactly once instead of stalling forever.
+    @Test("the in-flight marker is cleared on a non-2xx reconcile outcome (file left for retry)")
+    func inFlightMarkerClearedOnServerError() async {
+        await expectMarkerCleared(status: 500, error: nil)
+    }
+
+    /// F-052: the in-flight marker is released on a **transport-error** reconcile, for the same reason as
+    /// the non-2xx case — the upload is no longer outstanding, so the file is handed back to recovery.
+    @Test("the in-flight marker is cleared on a transport-error reconcile outcome (file left for retry)")
+    func inFlightMarkerClearedOnTransportError() async {
+        await expectMarkerCleared(status: 0, error: URLError(.networkConnectionLost))
+    }
+
     /// `urlSessionDidFinishEvents(forBackgroundURLSession:)` invokes the stored background completion
     /// handler — the system's signal that all events for the background session have been delivered,
     /// which the app must acknowledge by calling the saved handler. The wait is a continuation handoff

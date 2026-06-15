@@ -172,6 +172,17 @@ public actor EventQueue: EventSink {
     /// `store.load()`/`store.clear()` are wrapped in `try?`: a store error degrades to "nothing to
     /// recover" rather than throwing out of `start()`.
     public func start() async {
+        // Cross-path exactly-once guard (Story 5.3 / F-052): if a durable background `URLSession` upload
+        // of the queue file is outstanding from a prior process, leave the file for the background
+        // session's reconcile — the recreated background session reconnects to the outstanding task on
+        // this launch, and loading + clearing the file here would double-deliver against that in-flight
+        // upload. Just arm the timer; if the background upload ultimately FAILS, its reconcile clears the
+        // marker and leaves the file, so a later flush recovers it. A marker-read error degrades to "not
+        // in-flight" (recover normally).
+        if (try? await store.isBackgroundUploadInFlight()) == true {
+            ensureTimerStarted()
+            return
+        }
         let persisted = (try? await store.load()) ?? []
         // Re-expand each envelope's visitors[]/events back into BufferedEntry rows so the existing
         // assemble()/flush() path handles them identically to freshly-enqueued entries.
@@ -238,6 +249,16 @@ public actor EventQueue: EventSink {
     /// - Returns: The disk-first merge of the persisted queue and the assembled buffer, or `[]` when
     ///   both surfaces are empty.
     public func drain() async -> [TrackingEvent] {
+        // Cross-path exactly-once guard (Story 5.3 / F-052): while a durable background `URLSession`
+        // upload of the queue file is outstanding, do NOT read or clear that file — NOR drain the
+        // buffer. The background path owns delivery of the on-disk batch; draining now would either
+        // re-upload the same file the background task already snapshotted (double-delivery) or, on a
+        // failed foreground upload, re-persist over the in-flight file (which the reconcile would then
+        // clear, losing those events). Buffered entries are retained and delivered by a later flush once
+        // the background reconcile clears the marker. A marker-read error degrades to "not in-flight".
+        if (try? await store.isBackgroundUploadInFlight()) == true {
+            return []
+        }
         // store.load() is the FIRST await: the on-disk snapshot is taken before any clear, and any
         // enqueue arriving while it is suspended is captured below by reading `buffer` AFTER the await.
         let diskEvents = (try? await store.load()) ?? []
