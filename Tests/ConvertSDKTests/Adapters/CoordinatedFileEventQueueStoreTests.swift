@@ -128,6 +128,35 @@ final class CoordinatedFileEventQueueStoreTests {
         #expect(FileManager.default.fileExists(atPath: fileURL.path))
     }
 
+    /// F-052 cross-path exactly-once: the background-upload in-flight marker round-trips through the
+    /// REAL coordinated adapter. A fresh store reports not-in-flight; `markBackgroundUploadInFlight()`
+    /// writes a SIBLING `event-queue.uploading` file (never the queue file itself) and flips the query
+    /// to true; `clearBackgroundUploadInFlight()` removes it and flips the query back to false. This is
+    /// the file-backed counterpart of the marker contract the Core/delegate suites assert via mocks.
+    @Test("the background-upload in-flight marker round-trips as a sibling of the queue file")
+    func inFlightMarkerRoundTrips() async throws {
+        let fileURL = uniqueURL()
+        let subject = makeStore(fileURL: fileURL)
+        let markerURL = fileURL.deletingPathExtension().appendingPathExtension("uploading")
+
+        // No marker yet → not in flight.
+        let beforeMark = try await subject.store.isBackgroundUploadInFlight()
+        #expect(beforeMark == false)
+
+        // Mark → in flight; the sibling marker exists and the queue file itself was NOT written.
+        try await subject.store.markBackgroundUploadInFlight()
+        let afterMark = try await subject.store.isBackgroundUploadInFlight()
+        #expect(afterMark == true)
+        #expect(FileManager.default.fileExists(atPath: markerURL.path))
+        #expect(!FileManager.default.fileExists(atPath: fileURL.path))
+
+        // Clear → not in flight; the sibling marker is removed.
+        try await subject.store.clearBackgroundUploadInFlight()
+        let afterClear = try await subject.store.isBackgroundUploadInFlight()
+        #expect(afterClear == false)
+        #expect(!FileManager.default.fileExists(atPath: markerURL.path))
+    }
+
     /// `clear` removes the queue file: it exists after `persist`, then is gone after `clear`.
     @Test("clear removes the persisted queue file")
     func clearRemovesFile() async throws {
