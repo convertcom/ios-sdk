@@ -2,12 +2,12 @@
 // Feature-flag evaluation with typed variables (Epic 4 / Story 1).
 // Foundation-only — part of the pure-logic ConvertSDKCore target.
 //
-// Resolves a `config.features[]` entry to a `BucketedFeature` by delegating ALL bucketing to
+// Resolves a `config.features[]` entry to a `Feature` by delegating ALL bucketing to
 // `ExperienceManager.selectVariation`. A feature is ENABLED iff the visitor buckets into a
 // variation whose `fullStackFeature` change carries it (`String(change.data.feature_id) ==
 // feature.id`); the variable VALUES come from that change's `variables_data`, each TYPED by the
 // matching `features[].variables[].type`. An unknown key, an uncarried feature, or a carrier the
-// visitor never buckets into all yield `BucketedFeature.disabled(key:)`.
+// visitor never buckets into all yield `Feature.disabled(key:)`.
 //
 // DELEGATION — this type owns NO decisioning of its own: it never touches `EventBus`,
 // `BucketingManager`, `RuleManager`, `DecisionStore`, or any `EventSink`. The sole bucketing call
@@ -62,7 +62,7 @@ public struct FeatureManager: Sendable {
     // `ExperienceManager.selectVariation`) rather than raising the project-wide threshold. The
     // directive is on the `func` line below so the `///` doc comment stays flush against the
     // declaration (avoids `orphaned_doc_comment`).
-    /// Resolves the feature keyed `key` for the visitor into a ``BucketedFeature``.
+    /// Resolves the feature keyed `key` for the visitor into a ``Feature``.
     ///
     /// Returns `.disabled(key:)` when the key is absent from `config.features`, the matched feature
     /// has no id, no experience references it, or no associated experience buckets the visitor. When
@@ -79,7 +79,7 @@ public struct FeatureManager: Sendable {
     ///   - projectId: Project id — forwarded to `selectVariation` (sticky store key segment).
     ///   - attributes: The data map each carrying experience's audience gate evaluates against.
     ///   - locationProperties: The data map each carrying experience's location gate evaluates against.
-    /// - Returns: The resolved ``BucketedFeature`` — `.enabled` with typed variables, or `.disabled`.
+    /// - Returns: The resolved ``Feature`` — `.enabled` with typed variables, or `.disabled`.
     public func evaluateFeature( // swiftlint:disable:this function_parameter_count
         key: String,
         in config: ProjectConfig,
@@ -88,7 +88,7 @@ public struct FeatureManager: Sendable {
         projectId: String,
         attributes: [String: String],
         locationProperties: [String: String]
-    ) async -> BucketedFeature {
+    ) async -> Feature {
         // 1. Look up the feature; a miss is a population-layer warning, then disabled.
         guard let feature = config.features?.first(where: { $0.key == key }) else {
             warn("evaluateFeature", "feature '\(key)' not found in config")
@@ -119,7 +119,7 @@ public struct FeatureManager: Sendable {
             // 3d. Bucketed: populate from the winning variation's matching change and return.
             let data = featureChangeData(forFeatureId: featureId, in: experience, variationId: variation.id)
             let variables = buildVariables(from: data?.variables_data, feature: feature)
-            return BucketedFeature(id: featureId, key: key, status: .enabled, variables: variables)
+            return Feature(id: featureId, key: key, status: .enabled, variables: variables)
         }
         // 4. No associated experience bucketed the visitor.
         return .disabled(key: key)
@@ -131,7 +131,7 @@ public struct FeatureManager: Sendable {
     // tests. Targeted disable on the `func` line (precedent: `evaluateFeature` above) keeps the `///`
     // doc flush against the declaration (avoids `orphaned_doc_comment`) rather than raising the
     // project-wide threshold.
-    /// Resolves EVERY feature in `config.features` into a ``BucketedFeature``, in config order.
+    /// Resolves EVERY feature in `config.features` into a ``Feature``, in config order.
     ///
     /// A thin bulk wrapper over
     /// ``evaluateFeature(key:in:visitorId:accountId:projectId:attributes:locationProperties:)`` — it
@@ -145,7 +145,7 @@ public struct FeatureManager: Sendable {
     ///   - projectId: Project id — forwarded to each `evaluateFeature`.
     ///   - attributes: The data map each feature's carrying experiences' audience gates evaluate against.
     ///   - locationProperties: The data map each feature's carrying experiences' location gates evaluate against.
-    /// - Returns: One ``BucketedFeature`` per `config.features` entry, in config order; `[]` when empty.
+    /// - Returns: One ``Feature`` per `config.features` entry, in config order; `[]` when empty.
     public func evaluateAllFeatures( // swiftlint:disable:this function_parameter_count
         in config: ProjectConfig,
         visitorId: String,
@@ -153,9 +153,9 @@ public struct FeatureManager: Sendable {
         projectId: String,
         attributes: [String: String],
         locationProperties: [String: String]
-    ) async -> [BucketedFeature] {
+    ) async -> [Feature] {
         guard let features = config.features, !features.isEmpty else { return [] }
-        var results: [BucketedFeature] = []
+        var results: [Feature] = []
         results.reserveCapacity(features.count)
         for feature in features {
             let resolved = await evaluateFeature(
@@ -231,7 +231,7 @@ public struct FeatureManager: Sendable {
     /// `variables_data` VALUES to the feature's declared variable TYPES (`features[].variables[]`) by
     /// name. A variable whose value is absent or whose type doesn't match is logged (population-layer
     /// warning) and SKIPPED — an enabled feature with a partially-typed map is valid; the missing
-    /// variable simply isn't present, so ``BucketedFeature/variable(_:as:)`` returns `nil` for it.
+    /// variable simply isn't present, so ``Feature/variable(_:as:)`` returns `nil` for it.
     private func buildVariables(
         from variablesData: OpenAPIObjectContainer?,
         feature: Components.Schemas.ConfigFeature

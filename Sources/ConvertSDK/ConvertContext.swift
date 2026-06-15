@@ -50,8 +50,8 @@ public final class ConvertContext: Sendable {
     /// `Sendable final class` with no suppression.
     private let experienceManager: ExperienceManager
 
-    /// The SDK's single, fully-wired ``FeatureManager`` that ``runFeature(_:enableTracking:)`` and
-    /// ``runFeatures(enableTracking:)`` delegate to (Story 4.1). Injected from ``ConvertSDK`` (built
+    /// The SDK's single, fully-wired ``FeatureManager`` that ``runFeature(_:)`` and
+    /// ``runFeatures()`` delegate to (Story 4.1). Injected from ``ConvertSDK`` (built
     /// once over the same ``ExperienceManager`` this context delegates experiences to), so feature
     /// evaluation buckets through the SAME underlying manager — sticky decisions and `.bucketing` fires
     /// converge on the shared instances. ``FeatureManager`` is a stateless `Sendable` `struct`, so
@@ -206,11 +206,11 @@ public final class ConvertContext: Sendable {
         )
     }
 
-    /// Resolves one feature flag and returns its ``BucketedFeature`` — non-optional by contract, so
+    /// Resolves one feature flag and returns its ``Feature`` — non-optional by contract, so
     /// the degraded answer is a DISABLED feature (never a throw, AOD-6).
     ///
     /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready,
-    /// or a degraded load that resolved with no config) short-circuits to ``BucketedFeature/disabled(key:)``
+    /// or a degraded load that resolved with no config) short-circuits to ``Feature/disabled(key:)``
     /// WITHOUT touching the manager — the feature twin of ``runExperience(_:enableTracking:)`` returning
     /// `nil` on an absent snapshot. Otherwise delegates to the injected ``FeatureManager``, which resolves
     /// the feature by delegating bucketing to ``ExperienceManager`` (sticky / audience / location / traffic),
@@ -219,21 +219,17 @@ public final class ConvertContext: Sendable {
     ///
     /// `accountId` / `projectId` come from the snapshot (defaulting to `""` when absent) and
     /// `locationProperties` is empty on native — identical to ``runExperience(_:enableTracking:)``.
-    /// `enableTracking` is NOT threaded into the evaluation: ``FeatureManager``'s `evaluateFeature`
-    /// takes no such parameter and always lets the underlying experience bucketing track per its own
-    /// contract. The public `enableTracking` parameter is retained (callers depend on the signature) but
-    /// currently has no effect on the feature path.
-    /// - Parameters:
-    ///   - key: The feature `key` to look up and resolve.
-    ///   - enableTracking: Retained for signature stability; not currently threaded into feature
-    ///     evaluation (the underlying experience bucketing tracks per its own contract). Defaults to `true`.
-    /// - Returns: The resolved ``BucketedFeature`` — `.enabled` with typed variables, or `.disabled` on a
+    /// Unlike the experience API, this method takes NO `enableTracking` parameter (Android parity, F-171):
+    /// the feature path is not per-call tracking-gated; feature evaluation delegates to ``FeatureManager``,
+    /// which lets the underlying experience bucketing track per its own contract.
+    /// - Parameter key: The feature `key` to look up and resolve.
+    /// - Returns: The resolved ``Feature`` — `.enabled` with typed variables, or `.disabled` on a
     ///   missing snapshot / miss.
-    public func runFeature(_ key: String, enableTracking: Bool = true) async -> BucketedFeature {
+    public func runFeature(_ key: String) async -> Feature {
         guard let config = await sdk.configStore.getSnapshot() else {
             // Pre-ready / degraded: a nil snapshot resolves to a disabled feature without reaching the
             // manager (AOD-6, no throw).
-            return BucketedFeature.disabled(key: key)
+            return Feature.disabled(key: key)
         }
         return await featureManager.evaluateFeature(
             key: key,
@@ -246,7 +242,7 @@ public final class ConvertContext: Sendable {
         )
     }
 
-    /// Resolves every feature in the config and returns its ``BucketedFeature``, in config order.
+    /// Resolves every feature in the config and returns its ``Feature``, in config order.
     ///
     /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready /
     /// degraded) returns `[]` WITHOUT touching the manager (AOD-6 — degraded returns empty, never throws),
@@ -256,14 +252,11 @@ public final class ConvertContext: Sendable {
     /// `projectId` come from the snapshot (defaulting to `""` when absent) and `locationProperties` is
     /// empty on native — identical to the single-feature path. Never throws.
     ///
-    /// As with ``runFeature(_:enableTracking:)``, `enableTracking` is NOT threaded into the evaluation
-    /// (the bulk `evaluateAllFeatures` takes no such parameter); the parameter is retained for signature
-    /// stability and currently has no effect on the feature path.
-    /// - Parameter enableTracking: Retained for signature stability; not currently threaded into feature
-    ///   evaluation. Defaults to `true`.
-    /// - Returns: One ``BucketedFeature`` per `config.features` entry, in config order; `[]` on a missing
+    /// As with ``runFeature(_:)``, this method takes NO `enableTracking` parameter (Android parity, F-171):
+    /// the feature path is not per-call tracking-gated.
+    /// - Returns: One ``Feature`` per `config.features` entry, in config order; `[]` on a missing
     ///   snapshot.
-    public func runFeatures(enableTracking: Bool = true) async -> [BucketedFeature] {
+    public func runFeatures() async -> [Feature] {
         guard let config = await sdk.configStore.getSnapshot() else {
             return []
         }

@@ -4,10 +4,10 @@
 // `fullStackFeature` change carries it (`String(change.feature_id) == feature.id`), with its
 // `variables` read from that change's `variables_data` typed by the matching
 // `features[].variables[].type`. An unknown key, an uncarried feature, or an ineligible carrier all
-// yield `BucketedFeature.disabled(key:)`; `evaluateAllFeatures` over a config with no features yields
+// yield `Feature.disabled(key:)`; `evaluateAllFeatures` over a config with no features yields
 // `[]`; the feature path itself invents/fires NO SystemEvent (it delegates the `.bucketing` fire to
-// `ExperienceManager`). The `BucketedFeature` MODEL (the `variable(_:as:)` accessor, `disabled(key:)`,
-// `Codable`/`Equatable`) is tested separately in `Models/BucketedFeatureTests.swift`.
+// `ExperienceManager`). The `Feature` MODEL (the `variable(_:as:)` accessor, `disabled(key:)`,
+// `Codable`/`Equatable`) is tested separately in `Models/FeatureTests.swift`.
 
 import Foundation
 import Testing
@@ -67,7 +67,7 @@ struct FeatureManagerTests {
         in config: ProjectConfig,
         attributes: [String: String] = [:],
         locationProperties: [String: String] = [:]
-    ) async -> BucketedFeature {
+    ) async -> Feature {
         await subject.evaluateFeature(
             key: key,
             in: config,
@@ -86,7 +86,7 @@ struct FeatureManagerTests {
         in config: ProjectConfig,
         attributes: [String: String] = [:],
         locationProperties: [String: String] = [:]
-    ) async -> [BucketedFeature] {
+    ) async -> [Feature] {
         await subject.evaluateAllFeatures(
             in: config,
             visitorId: FeatureIds.visitor,

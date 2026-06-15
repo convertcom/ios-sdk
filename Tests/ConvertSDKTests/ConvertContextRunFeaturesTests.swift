@@ -8,8 +8,8 @@
 //
 // ── Story 4.1 (Epic 4) RED phase ─────────────────────────────────────────────────────────────────
 // Asserts the REAL behaviour the WIRING step must produce when it routes the
-// `runFeature(_:enableTracking:)` / `runFeatures(enableTracking:)` STUBS (which return
-// `BucketedFeature(id:"", key:key, status:.disabled, variables:[:])` and `[]` UNCONDITIONALLY) to a
+// `runFeature(_:)` / `runFeatures()` STUBS (which return
+// `Feature(id:"", key:key, status:.disabled, variables:[:])` and `[]` UNCONDITIONALLY) to a
 // wired `FeatureManager` over the SDK's config snapshot. The contract the wiring implements:
 //   * read the config snapshot from the SDK; a `nil` snapshot (pre-ready / no config) → a DISABLED
 //     feature (resp. `[]`) WITHOUT touching the manager;
@@ -33,8 +33,8 @@
 // `ConvertSDK` wires its OWN internal `EventSink` behind `FeatureManager` (which itself delegates
 // bucketing — and therefore the `.bucketing` fire — to `ExperienceManager`); the sink is NOT
 // injectable through the `createContext` seam (documented for the sibling run-experiences suite). So
-// this suite asserts RETURN VALUES only — feature status, typed variables, the pre-ready-degraded
-// path, and default-argument equivalence. The bucketing/enqueue contract is covered at the
+// this suite asserts RETURN VALUES only — feature status, typed variables, and the pre-ready-degraded
+// path. The bucketing/enqueue contract is covered at the
 // `FeatureManager` / `ExperienceManager` level by separate suites; THIS suite owns the public-API
 // `runFeature` / `runFeatures` RETURN-VALUE contract.
 import Testing
@@ -113,7 +113,7 @@ struct ConvertContextRunFeaturesTests {
         #expect(result.variable("label", as: String.self) == "hi")
     }
 
-    /// RED driver (AC2/AC16): a READY SDK resolves `runFeatures()` to EXACTLY ONE `BucketedFeature`,
+    /// RED driver (AC2/AC16): a READY SDK resolves `runFeatures()` to EXACTLY ONE `Feature`,
     /// and that feature is `.enabled` (the bulk form enumerates `config.features` — a single entry here
     /// — and the visitor buckets into its 100%-traffic carrier). The current stub returns `[]`, so both
     /// the count and the status assertions FAIL today — the expected RED signal until the delegation is
@@ -124,23 +124,5 @@ struct ConvertContextRunFeaturesTests {
         let results = await sdk.createContext(visitorId: "user-1").runFeatures()
         #expect(results.count == 1)
         #expect(results.first?.status == .enabled)
-    }
-
-    /// AC16 (default-argument equivalence): on a READY SDK, `runFeature(key)` and
-    /// `runFeature(key, enableTracking: true)` return the SAME `.status` — validating the
-    /// `enableTracking: Bool = true` default WITHOUT observing enqueues (not injectable through this
-    /// seam). Both calls share ONE ready-SDK context (built via the centralised `makeReadySDK`) so the
-    /// ready build is not re-spelled. The current stub returns `.disabled` for both — a trivially-equal
-    /// `.disabled == .disabled` that does NOT exercise the wired default — so this assertion is only
-    /// MEANINGFUL once the wiring makes both `.enabled`; it nonetheless passes structurally today (the
-    /// two calls always agree), pinning the default-vs-explicit equivalence across the change.
-    @Test("runFeature() and runFeature(enableTracking: true) return the same status")
-    func runFeatureDefaultArgMatchesExplicitTrue() async throws {
-        let context = try await makeReadySDK().createContext(visitorId: "user-1")
-
-        let defaulted = await context.runFeature(Self.featureKey)
-        let explicit = await context.runFeature(Self.featureKey, enableTracking: true)
-
-        #expect(defaulted.status == explicit.status)
     }
 }

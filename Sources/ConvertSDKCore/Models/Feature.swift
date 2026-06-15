@@ -1,4 +1,4 @@
-// BucketedFeature.swift
+// Feature.swift
 // A feature flag resolved for a visitor, with its typed variables.
 // Foundation-only — part of the pure-logic ConvertSDKCore target.
 
@@ -85,7 +85,7 @@ public enum FeatureVariable: Codable, Sendable, Equatable {
 }
 
 /// A feature flag resolved for a visitor, carrying its status and typed variables.
-public struct BucketedFeature: Codable, Sendable, Equatable {
+public struct Feature: Codable, Sendable, Equatable {
     /// Stable identifier of the feature.
     public let id: String
     /// Human-readable key of the feature.
@@ -116,8 +116,8 @@ public struct BucketedFeature: Codable, Sendable, Equatable {
     ///
     /// The canonical "feature off" value: any `variable(_:as:)` lookup returns `nil`
     /// because `variables` is empty.
-    public static func disabled(key: String) -> BucketedFeature {
-        BucketedFeature(id: "", key: key, status: .disabled, variables: [:])
+    public static func disabled(key: String) -> Feature {
+        Feature(id: "", key: key, status: .disabled, variables: [:])
     }
 
     /// Non-throwing typed accessor for a feature variable (AOD-6 — never throws).
