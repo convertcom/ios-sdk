@@ -47,15 +47,15 @@ extension DemoViewModel {
     /// concurrent timeout guards against a silent network hang, landing exactly one terminal state.
     ///
     /// `@MainActor` (inherited) so it mutates the published ``configState`` directly on the main
-    /// actor. The structure is deliberately NOT a `withThrowingTaskGroup`: a task group implicitly
-    /// awaits ALL of its child tasks before the `await` on the group returns, and the SDK's
-    /// `ready()` (``ConfigStore/waitForReady()``) is NOT cancellation-aware — its
-    /// `withCheckedThrowingContinuation` has no `withTaskCancellationHandler` and no
-    /// `Task.isCancelled` check, so it only resumes on `setConfig`/`signalError`. On a network hang
-    /// with no cache that resolution happens only after the SDK's URLSession request timeout
-    /// (`Defaults.requestTimeoutSeconds` = 30 s). A task group would therefore block ~30 s before a
-    /// timeout child could take effect — leaving the spinner up for 30 s, not 10 s, and violating
-    /// the "Failed within 10 s, no infinite spinner" contract.
+    /// actor. The structure is a simple, explicit race rather than a `withThrowingTaskGroup`: an
+    /// unstructured timeout `Task` plus a direct `await ready()`, with the first terminal transition
+    /// winning. `ready()` (``ConfigStore/waitForReady()``) IS cancellation-aware as of F-170 — its
+    /// continuation is wrapped in `withTaskCancellationHandler` and de-registers the waiter on
+    /// cancellation — so a `withThrowingTaskGroup` that cancels the `ready()` child on timeout would
+    /// now ALSO honour the 10 s budget. This demo keeps the explicit-timeout shape for legibility
+    /// (the readiness race reads in one place) and because, never cancelling the `ready()` await, it
+    /// needs no task group. Either shape satisfies the "Failed within 10 s, no infinite spinner"
+    /// contract; the timeout `Task` is what enforces the 10 s.
     ///
     /// Instead: a concurrent, unstructured ``readinessTimeout`` `Task` flips ``configState`` to a
     /// visible failure at 10 s, and `ready()` is awaited directly here. Both writers are guarded by
@@ -68,10 +68,11 @@ extension DemoViewModel {
     ///   carrying its `localizedDescription`.
     ///
     /// On the timeout-wins path the still-suspended `ready()` await is intentionally left to
-    /// complete in the background ~30 s later (when the SDK's URLSession request times out, since
-    /// `ready()` cannot be cancelled). That late completion is harmless: its `if case .loading`
-    /// guard finds ``configState`` already `.failed`, so it no-ops — no incorrect late state change
-    /// and no crash, just a quiet background completion of a lingering, by-design task.
+    /// complete in the background ~30 s later (when the SDK's URLSession request times out). This
+    /// demo does not cancel it — though it could, since `ready()` is cancellation-aware as of F-170.
+    /// That late completion is harmless either way: its `if case .loading` guard finds ``configState``
+    /// already `.failed`, so it no-ops — no incorrect late state change and no crash, just a quiet
+    /// background completion of a lingering, by-design task.
     ///
     /// `Task.sleep(nanoseconds:)` (iOS 13+) is used — NOT the iOS 16+ `Task.sleep(for:)` — to stay
     /// on the iOS 15 floor. Connectivity monitoring is started here too (folded in so the app's
@@ -86,9 +87,9 @@ extension DemoViewModel {
         // Concurrent 10 s timeout: flips the UI to a visible failure if `ready()` has not resolved
         // yet, so a silent network hang can't leave an infinite spinner. It writes `configState`
         // directly (main-actor isolated) guarded by the still-`.loading` check, so the first
-        // terminal transition wins. This deliberately does NOT use `withThrowingTaskGroup` — see
-        // the doc comment: a group awaits all children, and the SDK's `ready()` is not
-        // cancellation-aware, so a group would block ~30 s before the timeout could take effect.
+        // terminal transition wins. This uses an explicit timeout `Task` rather than a
+        // `withThrowingTaskGroup` for legibility — see the doc comment. (`ready()` is now
+        // cancellation-aware per F-170, so a cancelling task group would honour the 10 s too.)
         let timeoutTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.readinessTimeout * 1_000_000_000))
             guard let self else { return }
