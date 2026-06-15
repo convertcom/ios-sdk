@@ -151,4 +151,30 @@ struct SegmentsManagerTests {
         // The country the first store persisted (through the manager) must be observed after reload.
         #expect(await store2.currentSegments(forVisitorKey: "acct-proj-visitor").country == "DE")
     }
+
+    // MARK: Concurrency — no lost update (F-172 / AC15)
+
+    /// Regression for F-172: `setCustomSegments` previously composed a read-modify-write across two
+    /// `DecisionStore` actor hops (`await currentSegments` → mutate → `await setSegments`), so
+    /// concurrent appends on the same visitor could both read the same baseline and clobber each
+    /// other (last write wins). With the append moved INTO the actor as one non-suspending step,
+    /// every concurrent append must survive. Fires `count` appends concurrently and asserts all ids
+    /// land — this fails against the pre-F-172 two-hop implementation. Asserts the final set, never
+    /// wall-clock timing (NFR21).
+    @Test("concurrent setCustomSegments lose no ids (F-172 / AC15)")
+    func concurrentCustomAppendsLoseNoIds() async {
+        let mgr = makeManager()
+        let key = "k"
+        let count = 64
+
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0..<count {
+                group.addTask { await mgr.setCustomSegments(["id-\(index)"], forVisitorKey: key) }
+            }
+        }
+
+        let stored = await mgr.currentSegments(forVisitorKey: key).customSegments ?? []
+        #expect(stored.count == count)                                   // none lost to the race
+        #expect(Set(stored) == Set((0..<count).map { "id-\($0)" }))      // exactly the distinct ids
+    }
 }

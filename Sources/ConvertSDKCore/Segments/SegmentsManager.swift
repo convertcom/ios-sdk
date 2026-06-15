@@ -25,19 +25,22 @@ public struct SegmentsManager: Sendable {
         self.logger = logger
     }
 
-    /// Merge-overlays the six string wire keys present in `dict` onto the visitor's existing
-    /// segments; unknown keys are ignored with a WARN. Prior keys not in `dict` are retained. The
-    /// existing `customSegments` array is untouched. [Source: AC1, AC9]
+    /// Maps the six string wire keys present in `dict` into a partial ``Segments`` overlay (unknown
+    /// keys are ignored with a WARN), then hands it to ``DecisionStore/mergeSegments(_:forVisitorKey:)``,
+    /// which overlays and persists it as ONE non-suspending actor step. The key mapping is pure (no
+    /// shared state); the atomic read-overlay-write lives in the actor, so two concurrent setters on
+    /// the same visitor cannot lose an overlay (F-172). Prior keys not in `dict` are retained; the
+    /// existing `customSegments` array is untouched. [Source: AC1, AC9, AC15]
     public func setDefaultSegments(_ dict: [String: String], forVisitorKey key: String) async {
-        var segments = await decisionStore.currentSegments(forVisitorKey: key)
+        var overlay = Segments()
         for (wireKey, value) in dict {
             switch wireKey {
-            case "country":     segments.country = value
-            case "browser":     segments.browser = value
-            case "devices":     segments.devices = value
-            case "source":      segments.source = value
-            case "campaign":    segments.campaign = value
-            case "visitorType": segments.visitorType = value
+            case "country":     overlay.country = value
+            case "browser":     overlay.browser = value
+            case "devices":     overlay.devices = value
+            case "source":      overlay.source = value
+            case "campaign":    overlay.campaign = value
+            case "visitorType": overlay.visitorType = value
             default:
                 logger.log(
                     level: .warn,
@@ -47,15 +50,15 @@ public struct SegmentsManager: Sendable {
                 )
             }
         }
-        await decisionStore.setSegments(segments, forVisitorKey: key)
+        await decisionStore.mergeSegments(overlay, forVisitorKey: key)
     }
 
-    /// Appends `segmentIds` to the visitor's existing `customSegments` (dedup left to the backend,
-    /// matching JS). The six string keys are untouched. [Source: AC2]
+    /// Appends `segmentIds` to the visitor's existing `customSegments` via
+    /// ``DecisionStore/appendCustomSegments(_:forVisitorKey:)``, which reads, appends, and persists as
+    /// ONE non-suspending actor step so concurrent appends cannot drop an id (F-172). Dedup is left to
+    /// the backend (matching JS); the six string keys are untouched. [Source: AC2, AC15]
     public func setCustomSegments(_ segmentIds: [String], forVisitorKey key: String) async {
-        var segments = await decisionStore.currentSegments(forVisitorKey: key)
-        segments.customSegments = (segments.customSegments ?? []) + segmentIds
-        await decisionStore.setSegments(segments, forVisitorKey: key)
+        await decisionStore.appendCustomSegments(segmentIds, forVisitorKey: key)
     }
 
     /// The visitor's current segments. [Source: AC8]
