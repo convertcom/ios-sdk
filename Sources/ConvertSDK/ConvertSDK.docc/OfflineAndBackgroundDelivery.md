@@ -56,7 +56,7 @@ Two independent mechanisms suppress event **delivery**. In both cases bucketing 
 
    On the experience path the per-call flag is combined with the static flag: an exposure event is delivered only when `networkTracking` is `true` **and** the call's `enableTracking` is `true`.
 
-   > Note: ``ConvertContext/runFeature(_:enableTracking:)`` and ``ConvertContext/runFeatures(enableTracking:)`` accept an `enableTracking` parameter for API symmetry, but it is **currently a no-op on the feature path** — it is not threaded into feature evaluation, so a per-call `enableTracking: false` does **not** suppress the feature's bucketing event. To suppress feature tracking, use the static `networkTracking: false`, which drops feature events at the delivery gate one seam later.
+   > Note: ``ConvertContext/runFeature(_:)`` and ``ConvertContext/runFeatures()`` take **no** `enableTracking` parameter (Android parity with the sibling mobile SDK) — the feature path is not per-call tracking-gated. To suppress feature tracking, use the static `networkTracking: false`, which drops feature events at the delivery gate one seam later.
 
 There is no separate opt-out API. To not track, either do not initialize the SDK at all, or suppress delivery with one of the two flags above.
 

@@ -49,7 +49,7 @@ iOS 15+, macOS 12+, tvOS 15+. iPadOS rides the iOS target.
 
 `ready()` gates decisioning. Everything else is order-independent.
 
-Call `ready()` once after construction and await it before deciding. `runExperience` / `runFeature` called before `ready()` resolves return a degraded result — `nil` from `runExperience`, a disabled `BucketedFeature` from `runFeature` — never a crash. Once `ready()` returns, the cached config drives every subsequent decision with no further network.
+Call `ready()` once after construction and await it before deciding. `runExperience` / `runFeature` called before `ready()` resolves return a degraded result — `nil` from `runExperience`, a disabled `Feature` from `runFeature` — never a crash. Once `ready()` returns, the cached config drives every subsequent decision with no further network.
 
 A `nil` variation also covers the visitor being ineligible or the experience key being unknown. None of these are errors. `ready()` is the only call that throws, and only on an unrecoverable configuration error such as an empty SDK key.
 
