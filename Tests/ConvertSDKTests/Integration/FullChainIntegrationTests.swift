@@ -341,10 +341,10 @@ final class FullChainIntegrationTests {
         let variation = await context.runExperience(Self.experienceKey)
         #expect(variation != nil, "the sole 100%-traffic variation must bucket every visitor")
 
-        // runFeature returns a BucketedFeature (disabled on a miss); the fixture carries no feature, so
+        // runFeature returns a Feature (disabled on a miss); the fixture carries no feature, so
         // this just exercises the path — it must return a value, not crash.
         let feature = await context.runFeature("fc-missing-feature")
-        #expect(feature.status == .disabled, "a missing feature resolves to a disabled BucketedFeature")
+        #expect(feature.status == .disabled, "a missing feature resolves to a disabled Feature")
 
         await context.setDefaultSegments(["country": "US"])
 
