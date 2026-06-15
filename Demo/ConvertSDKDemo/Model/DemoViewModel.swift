@@ -138,7 +138,7 @@ final class DemoViewModel: ObservableObject {
     /// A variable name guaranteed NOT present on any feature in the config.
     ///
     /// Used by ``FeaturesView`` (a different file) to demonstrate the honest absent
-    /// rendition: ``BucketedFeature/variable(_:as:)`` returns `nil` for an unknown key
+    /// rendition: ``Feature/variable(_:as:)`` returns `nil` for an unknown key
     /// (FR22 — "unknown → nil, never a throw"), so the UI renders an explicit "absent" row
     /// rather than crashing or fabricating a value. `static let` (NOT `private`) so
     /// `FeaturesView` can read it across files.
@@ -157,14 +157,14 @@ final class DemoViewModel: ObservableObject {
 
     /// The buffer the Features screen renders, newest-first.
     ///
-    /// Each run prepends one ``BucketedFeature`` per resolved feature via
+    /// Each run prepends one ``Feature`` per resolved feature via
     /// ``prepend(_:into:cap:)`` (newest at index 0), mirroring ``resultCards`` and
     /// ``events``. Exposed read-only — only the feature run methods mutate it. Bounded at
-    /// ``featureCap`` newest rows. `BucketedFeature` is not `Identifiable`, and its `id` is
+    /// ``featureCap`` newest rows. `Feature` is not `Identifiable`, and its `id` is
     /// `""` for a `.disabled` feature while `key` collides across re-runs of the same key, so
     /// the View keys its `ForEach` on the enumerated offset (see ``FeaturesView``); this buffer
     /// just exposes the values.
-    @Published private(set) var evaluatedFeatures: [BucketedFeature] = []
+    @Published private(set) var evaluatedFeatures: [Feature] = []
 
     /// Upper bound on ``evaluatedFeatures`` so repeated runs can't grow the buffer without
     /// limit; on insert, the oldest rows past this many are trimmed from the tail.
@@ -296,11 +296,11 @@ final class DemoViewModel: ObservableObject {
 
     /// Resolves the single baseline feature and prepends it to ``evaluatedFeatures``.
     ///
-    /// `@MainActor` (inherited): the `await` on ``ConvertContext/runFeature(_:enableTracking:)``
+    /// `@MainActor` (inherited): the `await` on ``ConvertContext/runFeature(_:)``
     /// suspends without blocking the main actor (the SDK works off-actor), then
-    /// ``evaluatedFeatures`` is mutated on the main actor. `enableTracking` is left at the SDK
-    /// default (`true`) so the carrying experience's bucketing event reaches the Event
-    /// Inspector (AC4).
+    /// ``evaluatedFeatures`` is mutated on the main actor. `runFeature` takes no `enableTracking`
+    /// parameter (Android parity); the carrying experience's bucketing event still reaches the
+    /// Event Inspector (AC4).
     ///
     /// `runFeature` is NON-optional and never throws: a degraded outcome (missing snapshot /
     /// miss) comes back as a `.disabled` feature with no variables, which the View renders
@@ -314,10 +314,10 @@ final class DemoViewModel: ObservableObject {
 
     /// Resolves every feature the config carries and prepends each to ``evaluatedFeatures``.
     ///
-    /// `@MainActor` (inherited): the `await` on ``ConvertContext/runFeatures(enableTracking:)``
+    /// `@MainActor` (inherited): the `await` on ``ConvertContext/runFeatures()``
     /// suspends without blocking the main actor, then ``evaluatedFeatures`` is mutated on the
-    /// main actor. `enableTracking` stays at the SDK default (`true`) so each carrying
-    /// experience's bucketing event reaches the Event Inspector (AC4). Each ``BucketedFeature``
+    /// main actor. `runFeatures` takes no `enableTracking` parameter (Android parity); each
+    /// carrying experience's bucketing event still reaches the Event Inspector (AC4). Each ``Feature``
     /// is prepended in the array's natural (config) order, so the batch lands as a contiguous
     /// newest-first group; the ``featureCap`` trim applies per insert.
     ///
@@ -352,7 +352,7 @@ final class DemoViewModel: ObservableObject {
     /// Inserts `element` at index 0 (newest-first), then drops the oldest rows past `cap`
     /// from the tail — mirroring how ``record(_:_:)`` maintains ``events``. Generic over the
     /// element type so neither caller copies the block: the experience path passes
-    /// ``ResultCard/Item`` and the feature path passes ``BucketedFeature``.
+    /// ``ResultCard/Item`` and the feature path passes ``Feature``.
     private func prepend<Element>(_ element: Element, into buffer: inout [Element], cap: Int) {
         buffer.insert(element, at: 0)
         if buffer.count > cap {

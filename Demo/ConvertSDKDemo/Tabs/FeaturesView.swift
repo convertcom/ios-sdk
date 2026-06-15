@@ -74,7 +74,7 @@ struct FeaturesView: View {
     /// renders immediately for everyone, which is the simplest Reduce-Motion-correct
     /// choice (the a11y floor forbids animation-gated inserts).
     ///
-    /// `BucketedFeature` is neither `Identifiable` nor `Hashable`, and `feature.id`
+    /// `Feature` is neither `Identifiable` nor `Hashable`, and `feature.id`
     /// is `""` for a `.disabled` feature — so an `id: \.id` would COLLIDE across
     /// disabled rows and across re-runs of the same key. The `ForEach` therefore
     /// keys on the enumerated offset (index identity), exactly like the
@@ -122,7 +122,7 @@ struct FeaturesView: View {
     /// per-variable `ForEach` renders nothing and the absent-demo row is gated off
     /// — a disabled card is honestly just its key + "Disabled" chip (FR22).
     @ViewBuilder
-    private func featureCard(_ feature: BucketedFeature) -> some View {
+    private func featureCard(_ feature: Feature) -> some View {
         VStack(alignment: .leading, spacing: ConvertTheme.space3) {
             HStack(alignment: .firstTextBaseline) {
                 Text(feature.key)
