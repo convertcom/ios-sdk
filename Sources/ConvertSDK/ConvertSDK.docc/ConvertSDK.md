@@ -36,7 +36,7 @@ There is no typed error event to observe. A failed or slow initialization is det
 
 These are deliberate, Swift-idiomatic choices, named so they are never a silent surprise:
 
-- The SDK is constructed with ``ConvertSDK/init(configuration:)``, not a `builder(...)` chain (the Android pattern). The public method names — ``ConvertSDK/ready()``, ``ConvertSDK/createContext(visitorId:attributes:)``, ``ConvertContext/runExperience(_:enableTracking:)``, ``ConvertContext/runFeature(_:enableTracking:)``, ``ConvertContext/trackConversion(_:goalData:forceMultipleTransactions:)``, ``ConvertSDK/on(_:callback:)`` / ``ConvertSDK/off(_:)`` — match the JavaScript SDK exactly.
+- The SDK is constructed with ``ConvertSDK/init(configuration:)``, not a `builder(...)` chain (the Android pattern). The public method names — ``ConvertSDK/ready()``, ``ConvertSDK/createContext(visitorId:attributes:)``, ``ConvertContext/runExperience(_:enableTracking:)``, ``ConvertContext/runFeature(_:)``, ``ConvertContext/trackConversion(_:goalData:forceMultipleTransactions:)``, ``ConvertSDK/on(_:callback:)`` / ``ConvertSDK/off(_:)`` — match the JavaScript SDK exactly.
 - Constants use `lowerCamelCase` (Swift convention) rather than the upper-cased forms used elsewhere.
 - There is no Objective-C interop surface; the API is Swift-only.
 
@@ -55,10 +55,10 @@ These are deliberate, Swift-idiomatic choices, named so they are never a silent 
 - ``ConvertContext``
 - ``ConvertContext/runExperience(_:enableTracking:)``
 - ``ConvertContext/runExperiences(enableTracking:)``
-- ``ConvertContext/runFeature(_:enableTracking:)``
-- ``ConvertContext/runFeatures(enableTracking:)``
+- ``ConvertContext/runFeature(_:)``
+- ``ConvertContext/runFeatures()``
 - ``Variation``
-- ``BucketedFeature``
+- ``Feature``
 
 ### Tracking
 

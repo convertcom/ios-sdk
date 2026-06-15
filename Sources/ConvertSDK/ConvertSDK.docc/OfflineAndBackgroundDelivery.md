@@ -8,7 +8,7 @@ The SDK is built to keep working when the network is not. Two behaviors make tha
 
 ### Deciding offline
 
-Once a configuration has been cached, ``ConvertContext/runExperience(_:enableTracking:)`` and ``ConvertContext/runFeature(_:enableTracking:)`` resolve with no network call. Bucketing is deterministic and sticky — the same visitor buckets into the same ``Variation`` across sessions and across launches, online or offline. On a cold start while offline, ``ConvertSDK/ready()`` resolves from the cached config rather than hanging.
+Once a configuration has been cached, ``ConvertContext/runExperience(_:enableTracking:)`` and ``ConvertContext/runFeature(_:)`` resolve with no network call. Bucketing is deterministic and sticky — the same visitor buckets into the same ``Variation`` across sessions and across launches, online or offline. On a cold start while offline, ``ConvertSDK/ready()`` resolves from the cached config rather than hanging.
 
 If repeated configuration refreshes fail, the SDK keeps serving the last-good config indefinitely and emits a `[WARN]` line. Stale config is a warning, not a failure — bucketing never breaks.
 
