@@ -186,12 +186,11 @@ struct ConvertSDKTrackingToggleTests {
         let enabledCount = await enabled.sink.recordedEvents().count
         #expect(enabledCount >= 1, "re-enabled (fresh) SDK must enqueue at least the bucketing event")
 
-        // The suppressed events from the disabled window are NEVER present in the enabled sink —
-        // no replay across SDK instances.
-        let totalAfterBothWindows = disabledCount + enabledCount
+        // No-replay across instances: the disabled sink stays empty even after the enabled
+        // window ran (the suppressed first-window events were never enqueued or replayed).
         #expect(
-            totalAfterBothWindows == enabledCount,
-            "suppressed events must never be replayed — total equals only the enabled-window count"
+            await disabled.sink.recordedEvents().isEmpty,
+            "disabled sink stays empty after the enabled window — suppressed events were never replayed"
         )
     }
 
