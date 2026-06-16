@@ -32,7 +32,7 @@ import UIKit
 private actor LifecycleEngine {
     /// The background-task OS-time name; this is the only place the literal appears (mirroring how
     /// `BackgroundSessionManager` keeps its session identifier in one `static let`).
-    private static let backgroundTaskName = "com.convertexperiences.sdk.flush"
+    private static let backgroundTaskName = "com.convertexperiments.sdk.flush"
 
     /// The real event queue this engine drives — its background-persist (`persistBeforeBackground`) and
     /// foreground-recovery (`flush`) effects are what AC1 / AC6 observe.
