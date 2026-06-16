@@ -341,17 +341,20 @@ struct ConvertSDKTrackingToggleTests {
         await context.trackConversion(Self.goalKey)
 
         // When tracking is OFF: the sink must be empty (gate suppressed both conversion calls)
-        // When tracking is ON: the sink has exactly 1 conversion event (the second was deduped)
-        let eventCount = await sut.sink.recordedEvents().count
+        // When tracking is ON: the sink has exactly 1 conversion event (the second was deduped);
+        //   the bucketing enqueue from runExperience is also present, so we filter to .conversion
+        //   only to prove the dedup no-op precisely.
         if !row.trackingEnabled {
+            let eventCount = await sut.sink.recordedEvents().count
             #expect(
                 eventCount == 0,
                 "[\(row.label)] sink must be empty — gate suppressed all enqueues"
             )
         } else {
+            let conversionCount = await sut.sink.recordedEvents().filter { $0.eventType == "conversion" }.count
             #expect(
-                eventCount == 1,
-                "[\(row.label)] tracking ON: exactly 1 conversion event (second is a dedup no-op)"
+                conversionCount == 1,
+                "[\(row.label)] tracking ON: exactly 1 conversion event (second trackConversion is a dedup no-op)"
             )
         }
     }

@@ -136,9 +136,23 @@ public final class ConvertSDK: Sendable {
     /// not mutated concurrently (Story 2.2 Dev Notes Option A).
     nonisolated(unsafe) public static var shared: ConvertSDK?
 
+    /// Actor-isolated runtime tracking flag (Story 5.6). Held as a `let` so `ConvertSDK`
+    /// stays an all-`let` `Sendable final class` — the actor REFERENCE is immutable; only
+    /// the actor-isolated `enabled` property inside it mutates. Seeded from
+    /// `configuration.networkTracking` in `init`.
+    private let trackingState: TrackingState
+
     /// Whether config-level network tracking is enabled (`network.tracking`, FR6). Exposed
-    /// `internal` so a same-module ``ConvertContext`` can gate its (future) event-enqueue calls on
-    /// the toggle without making ``configuration`` public. Reads the immutable config flag set at init.
+    /// `internal` so a same-module ``ConvertContext`` can read the INIT-TIME flag through the
+    /// synchronous hook ``ConvertContext/trackingEnabled()`` (Story 2.4 / Story 5.4). Reads
+    /// the immutable ``ConvertConfiguration/networkTracking`` set at init.
+    ///
+    /// DISTINCT from ``isTrackingEnabled()`` (Story 5.6): this computed var reflects only the
+    /// init flag and never changes; `isTrackingEnabled()` is the async actor-isolated read that
+    /// reflects runtime `setTrackingEnabled(_:)` calls. The internal ConvertContext gate sites
+    /// for `runExperience`/`runExperiences`/`trackConversion` use `isTrackingEnabled()`;
+    /// ``ConvertContext/trackingEnabled()`` — the Story 2.4 hook tested in `ConvertContextTests`
+    /// — continues to read this synchronous accessor to preserve that test contract.
     internal var networkTrackingEnabled: Bool {
         configuration.networkTracking
     }
@@ -205,6 +219,9 @@ public final class ConvertSDK: Sendable {
         self.keyValueStore = keyValueStore
         self.decisionStore = decisionStore
         self.logger = logger
+        // Seed the runtime tracking flag from the init-time config value (Story 5.6 / AC3).
+        // Held as a `let` actor reference so this class stays an all-`let` Sendable final class.
+        self.trackingState = TrackingState(initialValue: configuration.networkTracking)
         // The durable pending-event-queue store (Story 5.2): the coordinated, atomic file adapter at
         // the production Application Support path. Built HERE in the composition root over the SDK's
         // REAL `logger` (the injected/production logger this init received — AC10: never a hardcoded
@@ -537,6 +554,62 @@ public final class ConvertSDK: Sendable {
     /// ```
     public func off(_ token: EventListenerToken) async {
         await eventBus.off(token)
+    }
+
+    // MARK: - Runtime tracking toggle (Story 5.6)
+
+    /// Enables or disables event delivery at runtime.
+    ///
+    /// ```swift
+    /// // temporarily suppress tracking (e.g. before user consent is obtained)
+    /// await sdk.setTrackingEnabled(false)
+    /// // re-enable after consent
+    /// await sdk.setTrackingEnabled(true)
+    /// ```
+    ///
+    /// When `false`:
+    ///   - Every enqueue on the ``EventSink`` is dropped (no buffering, no upload).
+    ///   - ``ConvertContext/runExperience(_:enableTracking:)`` /
+    ///     ``ConvertContext/runExperiences(enableTracking:)`` suppress the bucketing enqueue.
+    ///   - ``ConvertContext/trackConversion(_:goalData:forceMultipleTransactions:)`` suppresses
+    ///     both the conversion and transaction enqueues.
+    ///   - Decisioning (sticky variation assignment) is UNAFFECTED — the variation is still
+    ///     selected and persisted. [Source: Story 5.6 / AC4]
+    ///   - The dedup mark for `trackConversion` is STILL WRITTEN — the gate sits AFTER
+    ///     `markGoalTriggeredIfNeeded`. [Source: Story 5.6 / AC4]
+    ///
+    /// When `true` (re-enable): the gate re-opens for NEW events. Previously suppressed
+    /// events are NOT replayed — they were never buffered. [Source: Story 5.6 / AC2]
+    ///
+    /// The ``ConvertSDK`` handle remains an all-`let` `Sendable final class`: the mutable bit
+    /// lives inside the actor-isolated ``TrackingState`` held by `let`.
+    ///
+    /// - Parameter enabled: `true` to enable delivery; `false` to suppress.
+    public func setTrackingEnabled(_ enabled: Bool) async {
+        await trackingState.set(enabled)
+        // Propagate to the production EventQueue so its internal enqueue guard also reflects the
+        // new value — the EventQueue gate is the definitive delivery gate for the production path.
+        // The downcast mirrors the `resolvedSink as? EventQueue` pattern already used by
+        // `LifecycleObserver` (Story 5.3). On the injected-mock test path the downcast produces
+        // `nil` and the EventQueue propagation is a no-op; the test-path gate is the ConvertContext
+        // caller-side read of `isTrackingEnabled()`, which already reads the actor flag.
+        // [Source: Story 5.6 / AC1, mechanism §5]
+        if let queue = eventSink as? EventQueue {
+            await queue.setTrackingEnabled(enabled)
+        }
+    }
+
+    /// Returns the current runtime tracking flag.
+    ///
+    /// ```swift
+    /// let isOn = await sdk.isTrackingEnabled()
+    /// ```
+    ///
+    /// Returns the most-recently-set value from ``setTrackingEnabled(_:)``, or the
+    /// ``ConvertConfiguration/networkTracking`` init value when ``setTrackingEnabled(_:)`` has
+    /// never been called. [Source: Story 5.6 / AC3]
+    public func isTrackingEnabled() async -> Bool {
+        await trackingState.enabled
     }
 
     /// Creates a ``ConvertContext`` bound to this SDK. Synchronous and non-blocking: a context
