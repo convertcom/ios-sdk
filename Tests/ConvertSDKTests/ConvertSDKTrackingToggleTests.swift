@@ -224,9 +224,13 @@ struct ConvertSDKTrackingToggleTests {
             countAfterReEnable >= 1,
             "after setTrackingEnabled(true) the bucketing enqueue must land (gate re-opened)"
         )
+        // No-replay proof: user-B's first runExperience on a fresh visitor enqueues exactly ONE
+        // bucketing event. If the suppressed-window events (user-A's runExperience + trackConversion)
+        // had been replayed, countAfterReEnable would exceed 1. `== 1` is a strict bound;
+        // `countDuringDisable == 0` was already asserted above, so this is NOT a tautology.
         #expect(
-            countAfterReEnable == countAfterReEnable - countDuringDisable,
-            "no events from the disabled window were replayed"
+            countAfterReEnable == 1,
+            "exactly the one post-re-enable bucketing event — suppressed-window events were not replayed"
         )
     }
 
