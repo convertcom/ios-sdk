@@ -125,21 +125,52 @@ struct ConfigView: View {
         .accessibilityAddTraits(.updatesFrequently)
     }
 
-    /// The Loaded branch: the populated ``ConfigInfoPanel`` plus a small caption
-    /// stamping when the config resolved.
+    /// The Loaded branch: the populated ``ConfigInfoPanel``, a small caption stamping
+    /// when the config resolved, and a live ``trackingToggle`` that calls
+    /// ``DemoViewModel/setTracking(_:)`` (Story 5.6).
     ///
     /// The caption is formatted with a `DateFormatter` (short date + short time) —
     /// NOT the iOS-15-fragile `Date.FormatStyle`/`.formatted(...)` — to stay safely
     /// on the deployment floor (constraint: `DateFormatter` is the safe formatter).
-    /// The panel already owns its own per-row VoiceOver labels; the caption is plain
-    /// static text VoiceOver reads in reading order.
+    /// The panel already owns its own per-row VoiceOver labels; the caption and toggle
+    /// are plain elements VoiceOver reads in reading order.
     private func loadedState(fetchedAt: Date) -> some View {
         VStack(alignment: .leading, spacing: ConvertTheme.space2) {
             ConfigInfoPanel(viewModel.configPanelData)
             Text("Loaded \(Self.fetchedAtFormatter.string(from: fetchedAt))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            trackingToggle
         }
+    }
+
+    /// A live `Toggle` that gates SDK-level event delivery at runtime (Story 5.6).
+    ///
+    /// Bound to the published ``DemoViewModel/isRuntimeTrackingEnabled``. Each flip
+    /// dispatches a `Task` that calls the `@MainActor`-inherited ``DemoViewModel/setTracking(_:)``
+    /// — which awaits ``ConvertSDK/setTrackingEnabled(_:)`` then confirms the new state via
+    /// ``ConvertSDK/isTrackingEnabled()``.  Because ``DemoViewModel`` is `@MainActor` and the
+    /// toggle's binding write is already on the main actor, no additional `@MainActor` annotation
+    /// is needed on the `Task` closure.
+    ///
+    /// The fused VoiceOver label reads "Tracking enabled, toggle" (role appended by SwiftUI)
+    /// and the value reads "on"/"off" — consistent with the ``ConfigInfoPanel`` Tracking row's
+    /// "Tracking, On/Off" pattern. A ≥ 44 pt tap target is honoured via `.frame(minHeight: 44)`.
+    private var trackingToggle: some View {
+        Toggle(isOn: Binding(
+            get: { viewModel.isRuntimeTrackingEnabled },
+            set: { enabled in
+                Task {
+                    await viewModel.setTracking(enabled)
+                }
+            }
+        )) {
+            Text("Tracking enabled")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(minHeight: 44)
+        .accessibilityLabel("Tracking enabled")
     }
 
     // MARK: - Reset-visitor affordance (AC4)
