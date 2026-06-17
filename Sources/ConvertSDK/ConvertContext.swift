@@ -165,19 +165,6 @@ public final class ConvertContext: Sendable {
         self.segmentsManager = SegmentsManager(decisionStore: decisionStore, logger: logger)
     }
 
-    /// Whether event delivery is enabled for this context's SDK (FR6 static `network.tracking`).
-    ///
-    /// The caller-side gate the enqueue sites honour: when `false`, bucketing/decisioning still runs and
-    /// returns decisions, but produced tracking events are NOT enqueued (suppression is a CALLER concern
-    /// here, not an `EventQueue` concern). Story 2.4 scaffolded this hook; Story 5.4 made it load-bearing —
-    /// ``trackConversion(_:goalData:forceMultipleTransactions:)`` reads ``ConvertSDK/networkTrackingEnabled``
-    /// directly to gate its two conversion enqueues, and ``runExperience(_:enableTracking:)`` /
-    /// ``runExperiences(enableTracking:)`` combine it with the per-call flag threaded into the bucketing
-    /// path. This accessor remains the public-intent expression of that same flag.
-    internal func trackingEnabled() -> Bool {
-        sdk.networkTrackingEnabled
-    }
-
     /// Runs one experience and returns the bucketed ``Variation``, or `nil` when none applies.
     ///
     /// ```swift

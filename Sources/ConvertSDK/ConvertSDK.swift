@@ -142,21 +142,6 @@ public final class ConvertSDK: Sendable {
     /// `configuration.networkTracking` in `init`.
     private let trackingState: TrackingState
 
-    /// Whether config-level network tracking is enabled (`network.tracking`, FR6). Exposed
-    /// `internal` so a same-module ``ConvertContext`` can read the INIT-TIME flag through the
-    /// synchronous hook ``ConvertContext/trackingEnabled()`` (Story 2.4 / Story 5.4). Reads
-    /// the immutable ``ConvertConfiguration/networkTracking`` set at init.
-    ///
-    /// DISTINCT from ``isTrackingEnabled()`` (Story 5.6): this computed var reflects only the
-    /// init flag and never changes; `isTrackingEnabled()` is the async actor-isolated read that
-    /// reflects runtime `setTrackingEnabled(_:)` calls. The internal ConvertContext gate sites
-    /// for `runExperience`/`runExperiences`/`trackConversion` use `isTrackingEnabled()`;
-    /// ``ConvertContext/trackingEnabled()`` — the Story 2.4 hook tested in `ConvertContextTests`
-    /// — continues to read this synchronous accessor to preserve that test contract.
-    internal var networkTrackingEnabled: Bool {
-        configuration.networkTracking
-    }
-
     /// Dependency-injecting initializer (the test seam). Stores its dependencies, creates the
     /// ``ConfigStore`` over the shared ``EventBus``, then launches the detached config-load
     /// task. Non-throwing and non-blocking — validation and the real config fetch happen in the
@@ -568,7 +553,10 @@ public final class ConvertSDK: Sendable {
     /// ```
     ///
     /// When `false`:
-    ///   - Every enqueue on the ``EventSink`` is dropped (no buffering, no upload).
+    ///   - NEW enqueues on the ``EventSink`` are dropped — events produced after this call
+    ///     are not buffered and not uploaded. Events already buffered before the call (collected
+    ///     under prior consent) are still delivered on the next flush cycle; only new collection
+    ///     stops. [Source: Story 5.6 / AC1, AC2]
     ///   - ``ConvertContext/runExperience(_:enableTracking:)`` /
     ///     ``ConvertContext/runExperiences(enableTracking:)`` suppress the bucketing enqueue.
     ///   - ``ConvertContext/trackConversion(_:goalData:forceMultipleTransactions:)`` suppresses
