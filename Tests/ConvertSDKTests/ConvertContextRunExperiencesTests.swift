@@ -69,7 +69,17 @@ struct ConvertContextRunExperiencesTests {
             configProvider: MockConfigProvider.ungated(
                 cached: nil,
                 live: try makeMultiExperienceConfig(count: count)
-            )
+            ),
+            // Test isolation (bd-ilx): inject a FRESH in-memory `DecisionStore` over a `MockFileStore` so
+            // each SDK gets its own sticky-decision state. The default store wires a real on-disk
+            // `ApplicationSupportFileStore` at a process-shared path; this factory buckets the
+            // `acc-run`/`proj-run`/`user-1` sticky key, mapping experience `exp-1` → `var-1`, which would
+            // otherwise PERSIST to that shared file and hydrate into the sibling
+            // `ConvertContextRunExperienceTests.makeReadySDK` run (same key, same `exp-1`, but variation
+            // `v1`) — overriding its fresh bucketing. A per-call `MockFileStore` keeps these decisions
+            // in-process so neither suite leaks into the other. Mirrors the injection precedent across the
+            // `ConvertContext*`/conversion/segmentation suites.
+            decisionStore: DecisionStore(logger: MockLogger(), fileStore: MockFileStore())
         )
         try await sdk.ready()
         return sdk

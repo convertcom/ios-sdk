@@ -1,24 +1,23 @@
 // Tests/ConvertSDKTests/ConvertContextTests.swift
 // `@testable` import (the established pattern — see ConvertSDKTests.swift header): these
 // suites reach the SDK's INTERNAL surface, so a separate test target can see `internal`
-// members. This suite asserts the Story 2.4 tracking-toggle HOOK (readiness decision D4):
+// members. This suite covers Story 2.4 tracking-toggle scaffolding (readiness decision D4)
+// and Story 5.4 global gate suppression:
 //
-//   * `ConvertSDK.networkTrackingEnabled` — an `internal` accessor exposing
-//     `configuration.networkTracking` to same-module readers (the config stays `private`).
-//   * `ConvertContext.trackingEnabled()` — the `internal` hook a FUTURE `eventSink.enqueue`
-//     call site will guard on (`guard trackingEnabled() else { return }`), wired when
-//     Epics 3–4 add the real enqueue. D4 sanctions making the hook real + tested NOW while
-//     the stub return values stay UNCHANGED (no decisioning logic invented).
-//
-// RED phase (TDD): `ConvertContext.trackingEnabled()` and `ConvertSDK.networkTrackingEnabled`
-// do NOT exist yet, so every reference below is EXPECTED to fail compilation. That compile-fail
-// is the correct outcome of this phase; the GREEN step adds the two accessors. The rest of the
-// surface this suite touches — `ConvertSDK(...)`, `createContext()`, `runExperience`,
-// `runExperiences` — already compiles from Stories 2.2/2.3.
+//   * Story 2.4 (D4): the `ConvertContextTrackingToggleTests` suite asserts that disabled
+//     tracking leaves decisioning stubs returning their degraded values — confirming the gate
+//     does not alter stub behavior. The sync accessors (`trackingEnabled()` /
+//     `networkTrackingEnabled`) scaffolded in D4 were SUPERSEDED by the async
+//     `isTrackingEnabled()` gate in Story 5.6 (PR #34) and removed there; coverage of the
+//     init-time flag polarity is provided by
+//     `ConvertSDKTrackingToggleTests.neverSetReturnsInitValue` (parameterized [true,false]).
+//   * Story 5.4: the `ConvertContextNetworkTrackingTests` suite asserts the global gate
+//     suppresses event delivery to the ``EventSink`` while leaving decisioning intact. The
+//     production gate is the async `await sdk.isTrackingEnabled()` (Story 5.6).
 //
 // `file_length` is disabled file-wide (a single named rule — NOT `disable all`): Story 5.4 appended the
 // `ConvertContext networkTracking suppression` suite here (per the story's "add to the existing
-// ConvertContextTests" directive — the global-gate verification belongs beside the tracking-toggle HOOK
+// ConvertContextTests" directive — the global-gate verification belongs beside the tracking-toggle
 // suite it extends), which pushed this DocC-heavy file past the 400-line default. Splitting it out would
 // scatter the toggle-hook ↔ global-gate coverage for no readability gain; every other rule — and the
 // 400-line gate on every OTHER file — stays enforced. Mirrors the file-wide `file_length` disable
@@ -37,9 +36,9 @@ struct ConvertContextTrackingToggleTests {
     /// copy-pasted per case (SonarQube 3% new-duplicated-lines gate). The injected provider is
     /// `ungated(cached: nil, live: nil)` — the SDK touches NO network and its detached config
     /// load resolves degraded in the background; that is irrelevant here because
-    /// `trackingEnabled()` reads `configuration.networkTracking`, which is set SYNCHRONOUSLY at
-    /// init, so no `ready()` await is required (the context is usable pre-ready). Only
-    /// `networkTracking` varies between cases, so it is the lone parameter.
+    /// `configuration.networkTracking` is set SYNCHRONOUSLY at init, so no `ready()` await is
+    /// required (the context is usable pre-ready). Only `networkTracking` varies between cases,
+    /// so it is the lone parameter.
     ///
     /// `@MainActor` so callers may drive it from `MainActor`-affined `@Test` bodies; the SDK's
     /// internal init is non-async (the handle is built synchronously), so the factory does not
@@ -52,19 +51,6 @@ struct ConvertContextTrackingToggleTests {
             configProvider: MockConfigProvider.ungated(cached: nil, live: nil)
         )
         return sdk.createContext()
-    }
-
-    /// `ConvertContext.trackingEnabled()` MIRRORS `ConvertConfiguration.networkTracking`: the
-    /// hook reads the flag through the SDK's `internal networkTrackingEnabled` accessor, so a
-    /// context built over a config with `networkTracking == flag` reports `trackingEnabled()
-    /// == flag`. Parameterized over both polarities (rather than two near-identical test bodies)
-    /// to keep the true/false cases from duplicating the build-context-then-assert block
-    /// (SonarQube 3% gate). References the NOT-YET-EXISTING `trackingEnabled()` — the RED driver.
-    @MainActor
-    @Test("trackingEnabled() reflects the config's networkTracking flag", arguments: [true, false])
-    func trackingEnabledReflectsConfig(networkTracking: Bool) async throws {
-        let context = makeContext(networkTracking: networkTracking)
-        #expect(context.trackingEnabled() == networkTracking)
     }
 
     /// With tracking OFF (`networkTracking: false`) the decisioning STUBS are UNCHANGED:
@@ -283,7 +269,17 @@ struct ConvertContextRunExperienceTests {
                     variationId: Self.variationId,
                     variationKey: "control"
                 )
-            )
+            ),
+            // Test isolation (bd-ilx): inject a FRESH in-memory `DecisionStore` over a `MockFileStore`
+            // so each SDK gets its own sticky-decision state. The default store wires a real on-disk
+            // `ApplicationSupportFileStore` at a process-shared path; without this, a sticky decision
+            // persisted by a SIBLING suite (`ConvertContextRunExperiencesTests` buckets the SAME
+            // `acc-run`/`proj-run`/`user-1` key, mapping experience `exp-1` → `var-1`) hydrates here via
+            // `ready()` → `loadFromDisk`, so the sticky short-circuit returns `var-1` and overrides this
+            // fixture's fresh `exp-1 → v1` bucketing — failing `variation?.id == "v1"`. A per-call
+            // `MockFileStore` keeps every run's decisions in-process. Mirrors the injection precedent in
+            // the `ConvertContextNetworkTrackingTests.makeReadySDK` factory below and across the suite.
+            decisionStore: DecisionStore(logger: MockLogger(), fileStore: MockFileStore())
         )
         try await sdk.ready()
         return sdk
@@ -346,9 +342,9 @@ struct ConvertContextRunExperienceTests {
 
 // MARK: - ConvertContext networkTracking suppression (Story 5.4)
 
-/// Story 5.4 (Epic 5) — the GLOBAL `network.tracking` gate (FR6), verified at the SDK seam the Story 2.4
-/// `trackingEnabled()` hook only scaffolded. The hook merely MIRRORED the flag; this suite asserts the
-/// flag now SUPPRESSES event delivery to the ``EventSink`` while leaving decisioning intact:
+/// Story 5.4 (Epic 5) — the GLOBAL `network.tracking` gate (FR6). The Story 2.4 sync scaffolding
+/// (superseded — see Story 5.6 PR #34) merely mirrored the flag; this suite asserts the flag now
+/// SUPPRESSES event delivery to the ``EventSink`` while leaving decisioning intact:
 ///   * AC1 — `networkTracking: false` ⇒ NO entry reaches the sink from either `runExperience` (bucketing)
 ///     or `trackConversion`, yet the variation is STILL bucketed (decisioning is unaffected — only
 ///     delivery is gated).
