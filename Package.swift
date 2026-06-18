@@ -49,6 +49,13 @@ let package = Package(
             name: "ConvertSDKTests",
             dependencies: ["ConvertSDK"],
             path: "Tests/ConvertSDKTests",
+            // The Fixtures/ directory holds the committed REAL staging CDN config snapshot
+            // (FS-Test-Proj — the AC5 staging coords) consumed by StagingIntegrationTests via
+            // `Bundle.module`. `.copy` of the whole directory bundles its `.json` verbatim (no
+            // SwiftPM resource processing / re-encoding) so the captured staging bytes load with
+            // byte-level fidelity through the FR7 direct-data path — same `.copy` rationale as the
+            // ConvertSDKCoreTests target's Fixtures above.
+            resources: [.copy("Fixtures")],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]
