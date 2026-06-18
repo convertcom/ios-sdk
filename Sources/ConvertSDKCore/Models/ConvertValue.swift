@@ -9,9 +9,13 @@ import Foundation
 /// rule/segment engine. A value enum, so it is trivially `Sendable` and `Equatable` with no
 /// suppressions — the public boundary stays type-safe instead of leaking raw `Any`.
 public enum ConvertValue: Sendable, Equatable {
+    /// A string attribute value.
     case string(String)
+    /// An integer attribute value.
     case int(Int)
+    /// A floating-point attribute value.
     case double(Double)
+    /// A boolean attribute value.
     case bool(Bool)
 
     /// Coerces a loosely-typed `Any` (e.g. a value pulled out of a `[String: Any]` attribute

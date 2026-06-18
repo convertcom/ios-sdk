@@ -49,14 +49,16 @@ enum ProjectConfigFixtures {
         experiencesJSON: String,
         audiencesJSON: String = "[]",
         locationsJSON: String = "[]",
-        featuresJSON: String = "[]"
+        featuresJSON: String = "[]",
+        goalsJSON: String = "[]"
     ) throws -> ProjectConfig {
         let envelope = """
         {"account_id":"a","project":{"id":"p"},\
         "experiences":\(experiencesJSON),\
         "audiences":\(audiencesJSON),\
         "locations":\(locationsJSON),\
-        "features":\(featuresJSON)}
+        "features":\(featuresJSON),\
+        "goals":\(goalsJSON)}
         """
         return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
     }
@@ -173,6 +175,44 @@ enum ProjectConfigFixtures {
     static func featureJSON(id: String, key: String, variablesJSON: String) -> String {
         """
         {"id":"\(id)","name":"\(key)-name","key":"\(key)","variables":\(variablesJSON)}
+        """
+    }
+
+    // MARK: - Goal wire fragments (goal(forKey:) accessor — Epic 4 / Story 2)
+    //
+    // `goal(forKey:)` resolves a goal by its `key` and exposes the embedded `ConfigGoalBase`
+    // (`id`/`key`) so the conversion-tracking path can map a caller's goalKey → the wire goalId.
+    //
+    // ── Verified decode reality (probed against the generated types, NOT assumed) ────────────
+    // On the wire every goal carries `type` as a bare String discriminator (`"advanced"`,
+    // `"dom_interaction"`, `"revenue"`, … — see `cdn-config-baseline.json`, where ALL three goals
+    // do). Decoding such a goal through `ConfigGoalOrSentinel` (= `SentinelWrapped<ConfigGoal>`)
+    // ALWAYS lands on `.sentinel`, never `.known`: `ConfigGoal.init` selects the oneOf case from
+    // the String `type`, then its embedded `ConfigGoalBase._type` is typed `[GoalTypes]` (an
+    // array) and the String `type` makes that nested decode throw `typeMismatch`, so the wrapper
+    // falls back to `.sentinel` (this is drift D3, documented in `ProjectConfig.swift`). The
+    // `.sentinel` payload retains every field as `JSONValue` (`id`/`key`/`type` all present —
+    // verified empirically). A goal with an UNKNOWN `type` (e.g. `"totally_unknown_type_xyz"`)
+    // also sentinels, by the unknown-discriminator path. `goal(forKey:)` must therefore resolve a
+    // goal's `key`/`id` from the retained payload (the `.known` arm is unreachable for goals); a
+    // `.known`-only reader would return nil for EVERY real goal and silently break goalKey→goalId
+    // resolution. These fragments emit the realistic scalar-`type` shape so the contract the
+    // GREEN impl is held to matches production wire data.
+
+    /// One `ConfigGoal` JSON object: `id`, `key`, `name`, and a bare String `type` discriminator —
+    /// the production wire shape (the baseline ships `type` as a scalar String on every goal). Pass
+    /// a KNOWN discriminator (`"advanced"`, `"dom_interaction"`, `"revenue"`, …) for a normal goal,
+    /// or an unknown value (e.g. `"totally_unknown_type_xyz"`) to model a goal whose discriminator
+    /// the SDK does not recognise — both decode to the `.sentinel` arm of `ConfigGoalOrSentinel`
+    /// (see the section note above), so `goal(forKey:)` must reach the base through the payload.
+    ///
+    /// - Parameters:
+    ///   - id: The goal's wire `id` (the goalId `goal(forKey:)` returns via the base's `.id`).
+    ///   - key: The goal's wire `key` (what `goal(forKey:)` looks up).
+    ///   - type: The wire `type` discriminator String (defaults to `"advanced"`, a known value).
+    static func goalJSON(id: String, key: String, type: String = "advanced") -> String {
+        """
+        {"id":"\(id)","key":"\(key)","name":"\(key)-name","type":"\(type)"}
         """
     }
 
@@ -316,5 +356,14 @@ enum ProjectConfigFixtures {
             variablesJSON: variablesTypesJSON
         )
         return try makeConfig(experiencesJSON: "[\(experience)]", featuresJSON: "[\(feature)]")
+    }
+
+    /// A `ProjectConfig` carrying ONLY the supplied `goals` array (no experiences/audiences/etc.),
+    /// so a `goal(forKey:)` test composes the goal fragments it needs through ONE call. Keeps the
+    /// `[ <goal>, … ]` splice in a single place (SonarQube 3% gate; CPD is token-based, so reuse —
+    /// not renaming — is what holds the diff under the threshold). `goalsJSON` is the raw array
+    /// body (e.g. `"[\(goalJSON(id:…,key:…))]"`); pass `"[]"` for a goal-less config.
+    static func goalsConfig(goalsJSON: String) throws -> ProjectConfig {
+        try makeConfig(experiencesJSON: "[]", goalsJSON: goalsJSON)
     }
 }
