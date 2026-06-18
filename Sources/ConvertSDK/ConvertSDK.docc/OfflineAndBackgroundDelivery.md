@@ -28,7 +28,7 @@ The recovery guarantee has one documented edge. If the on-disk queue file is pre
 
 ### Controlling tracking
 
-Two independent mechanisms suppress event **delivery**. In both cases bucketing is unaffected — decisions still resolve, and only the sending of events is suppressed.
+Three independent mechanisms suppress event **delivery**. In all cases bucketing is unaffected — decisions still resolve, and only the sending of events is suppressed.
 
 1. **Static — the whole SDK.** Set ``ConvertConfiguration/networkTracking`` to `false` in the configuration. No tracking events are enqueued for delivery for the lifetime of that SDK instance:
 
@@ -58,9 +58,19 @@ Two independent mechanisms suppress event **delivery**. In both cases bucketing 
 
    > Note: ``ConvertContext/runFeature(_:)`` and ``ConvertContext/runFeatures()`` take **no** `enableTracking` parameter (Android parity with the sibling mobile SDK) — the feature path is not per-call tracking-gated. To suppress feature tracking, use the static `networkTracking: false`, which drops feature events at the delivery gate one seam later.
 
-There is no separate opt-out API. To not track, either do not initialize the SDK at all, or suppress delivery with one of the two flags above.
+3. **Runtime — mid-session toggle.** Call ``ConvertSDK/setTrackingEnabled(_:)`` at any point after initialization. This is the supported path for GDPR mid-session opt-out:
 
-> Important: The static ``ConvertConfiguration/networkTracking`` flag gates **new** event enqueues. New bucketing **and conversion** events are suppressed — neither is enqueued for delivery while `networkTracking` is `false`. What it does *not* do is reach back into the pipe: events a **previous session** already persisted to the on-disk queue still drain normally on the next launch. Treat it as "stop enqueuing new events," not "purge everything currently in the pipe." Note that suppressing *delivery* is distinct from the local ``SystemEvent/conversion`` observer signal, which still fires on a first conversion trigger regardless of the network gate — only the event's delivery to Convert is suppressed.
+   ```swift
+   // Withdraw consent mid-session
+   await sdk.setTrackingEnabled(false)
+   // Restore after new consent is obtained
+   await sdk.setTrackingEnabled(true)
+   let isOn = await sdk.isTrackingEnabled()
+   ```
+
+   When set to `false`, NEW bucketing and conversion events stop being collected immediately. Events already buffered before the call (collected under prior consent) still flush on the next delivery cycle — only new collection stops. When re-enabled, the gate re-opens for new events; previously suppressed events are not replayed.
+
+> Important: All three mechanisms gate **new** event enqueues. What they do *not* do is reach back into the pipe: events a **previous session** already persisted to the on-disk queue still drain normally on the next launch. Treat them as "stop enqueuing new events," not "purge everything currently in the pipe." Note that suppressing *delivery* is distinct from the local ``SystemEvent/conversion`` observer signal, which still fires on a first conversion trigger regardless of the network gate — only the event's delivery to Convert is suppressed.
 
 ### Why the delivery succeeds in reports
 
