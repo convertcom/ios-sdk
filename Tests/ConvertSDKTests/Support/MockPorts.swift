@@ -146,13 +146,15 @@ actor MockHTTPClient: HTTPClient {
 
 /// Test double for ``EventSink``.
 ///
-/// Shape: `actor` — `enqueue(_:)` is `async`, so actor isolation satisfies the
+/// Shape: `actor` — `enqueue(_:for:segments:)` is `async`, so actor isolation satisfies the
 /// port with no `Sendable` suppression. Records enqueued entries; tests read them
-/// non-destructively via ``recordedEvents()`` or destructively via ``drain()``.
+/// non-destructively via ``recordedEvents()`` or destructively via ``drain()``. The widened
+/// seam's `visitorId` / `segments` are ACCEPTED-AND-IGNORED: the mock records only the bare
+/// entry, so existing assertions over `recordedEvents()` / `drain()` keep working unchanged.
 actor MockEventSink: EventSink {
     private var recorded: [TrackingEventEntry] = []
 
-    func enqueue(_ event: TrackingEventEntry) async {
+    func enqueue(_ event: TrackingEventEntry, for visitorId: String, segments: [String: String]?) async {
         recorded.append(event)
     }
 

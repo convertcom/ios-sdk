@@ -24,6 +24,16 @@
 // project policy; the sanctioned form is `nonisolated(unsafe)` on the guarded storage, and
 // that single annotation is confined to the one `LockedBox` primitive below — the mocks
 // themselves carry ZERO suppressions.
+//
+// `file_length` is disabled file-wide (a single named rule — NOT `disable all`): this is the shared
+// Core-port mock aggregator for the whole `ConvertSDKCoreTests` target — persistence ports
+// (`SecureStore`/`KeyValueStore`/`Logger`/`FileStore`), the `EventSink` seam, and the Story 5.1
+// `EventUploader`/`Clock` doubles — and the file crossed the 400-line default only when the event-queue
+// mocks were appended (the suite mandates appending here, not splitting into a new support file).
+// Scattering these co-located mocks across files to shave a handful of lines would fragment the
+// test-support surface for no readability gain; all other rules remain enforced. Mirrors the file-wide
+// `file_length` disable convention in `Tests/ConvertSDKTests/Support/TestFixtures.swift`.
+// swiftlint:disable file_length
 
 import Foundation
 @testable import ConvertSDKCore
@@ -221,14 +231,16 @@ final class MockLogger: Logger {
 /// for the same target-visibility reason as ``MockLogger`` above — `ConvertSDKCoreTests`
 /// cannot see the `ConvertSDKTests` copy in `MockPorts.swift`.
 ///
-/// Shape: `actor` — `enqueue(_:)` is `async`, so actor isolation satisfies the port with
-/// no `Sendable` suppression (unlike the synchronous ports above, which need ``LockedBox``).
+/// Shape: `actor` — `enqueue(_:for:segments:)` is `async`, so actor isolation satisfies the port
+/// with no `Sendable` suppression (unlike the synchronous ports above, which need ``LockedBox``).
 /// Records enqueued entries; a test reads them via ``recordedEvents()`` (awaited, since the
-/// accessor is actor-isolated).
+/// accessor is actor-isolated). The widened seam's `visitorId` / `segments` are ACCEPTED-AND-IGNORED:
+/// the mock records only the bare entry, so the ~30 existing assertions that read `recordedEvents()`
+/// and inspect entry fields keep working unchanged.
 actor MockEventSink: EventSink {
     private var recorded: [TrackingEventEntry] = []
 
-    func enqueue(_ event: TrackingEventEntry) async {
+    func enqueue(_ event: TrackingEventEntry, for visitorId: String, segments: [String: String]?) async {
         recorded.append(event)
     }
 
@@ -326,4 +338,229 @@ func makeManager(
         keyValueStore: MockKeyValueStore(storage: defaults),
         logger: MockLogger()
     )
+}
+
+// MARK: - MockEventUploader
+
+/// Test double for ``EventUploader`` (the tracking-event upload port the `EventQueue`
+/// flushes batches through, Story 5.1). Re-declared in THIS target — not shared from
+/// `ConvertSDKTests/MockPorts.swift` — for the same target-visibility reason as
+/// ``MockEventSink`` above: `ConvertSDKCoreTests` cannot see the `ConvertSDKTests` copy,
+/// and `EventQueueTests` lives here.
+///
+/// Shape: `actor` — `upload(_:)` is `async throws`, so actor isolation satisfies the port
+/// with NO `Sendable` suppression (matching ``MockEventSink`` / ``MockFileStore``; unlike
+/// the synchronous mocks that need ``LockedBox``). Each call appends the batch it received
+/// to `batches`, so a test can assert both HOW MANY uploads happened (``callCount``) and
+/// WHAT each carried (``uploadedBatches()``).
+///
+/// ── `shouldFail` knob ───────────────────────────────────────────────────────────────────
+/// When set, EVERY ``upload(_:)`` records the batch and THEN throws ``UploadError/failed``,
+/// so the re-enqueue-on-failure path (AC1) is exercised while the test can still see which
+/// batch was attempted. Toggle it at runtime via ``setShouldFail(_:)`` to make later uploads
+/// succeed after an initial failure. `false` (the default) makes every upload succeed.
+actor MockEventUploader: EventUploader {
+    /// The error ``upload(_:)`` throws when ``shouldFail`` is set — a dedicated type so a
+    /// test can match it precisely rather than asserting on an opaque `any Error`.
+    enum UploadError: Error, Sendable {
+        case failed
+    }
+
+    private var batches: [[TrackingEvent]] = []
+    private var shouldFail: Bool
+
+    init(shouldFail: Bool = false) {
+        self.shouldFail = shouldFail
+    }
+
+    /// Number of times ``upload(_:)`` was invoked (including failed attempts).
+    var callCount: Int { batches.count }
+
+    /// The batches passed to each ``upload(_:)`` call, in call order (failed attempts included).
+    func uploadedBatches() -> [[TrackingEvent]] {
+        batches
+    }
+
+    /// Flips the failure knob at runtime, so a test can let an upload that previously threw
+    /// succeed on a later attempt (e.g. proving a re-buffered batch eventually delivers).
+    func setShouldFail(_ value: Bool) {
+        shouldFail = value
+    }
+
+    func upload(_ events: [TrackingEvent]) async throws {
+        batches.append(events)
+        if shouldFail {
+            throw UploadError.failed
+        }
+    }
+}
+
+// MARK: - MockClock
+
+/// Deterministic ``Clock`` for the event-queue interval-timer test (AC4 / NFR21): it makes a
+/// release fire on demand with NO wall-clock time passing.
+///
+/// ── Why this shape ──────────────────────────────────────────────────────────────────────
+/// The production `EventQueue` timer loop awaits `clock.sleep(milliseconds:)` between release
+/// attempts. To drive ONE release deterministically the test must control exactly when that
+/// `sleep` returns. So ``sleep(milliseconds:)`` here does NOT wait on the wall clock — it
+/// records the requested duration and SUSPENDS on a stored continuation until the test calls
+/// ``fireNext()``, which resumes it and lets the loop body run its single release.
+///
+/// ── Concurrency shape ───────────────────────────────────────────────────────────────────
+/// `actor` — the gating (a parked `CheckedContinuation`) is mutable state that must be
+/// race-free, and `sleep(milliseconds:)` is already `async`, so actor isolation fits with no
+/// `Sendable` suppression. `Clock.now`, however, is a SYNCHRONOUS requirement (`var now: Date
+/// { get }`) which an actor's isolated property cannot satisfy from outside; it is therefore
+/// `nonisolated` and backed by a ``LockedBox<Date>`` (the file's existing `Sendable` cell), so
+/// reads/advances are lock-guarded and callable synchronously off-actor. ``advanceNow(by:)``
+/// moves that instant forward for any test that also asserts on `now`.
+///
+/// ── Stepping API (drives the timer test) ────────────────────────────────────────────────
+/// - ``sleep(milliseconds:)`` — records the duration into ``requestedSleepsMs`` and suspends
+///   until released. If a ``fireNext()`` already arrived (pre-armed), it returns immediately
+///   and consumes the arm instead of parking — so the test may call ``fireNext()`` before OR
+///   after the loop reaches its `sleep`, and exactly one release still fires (no ordering race,
+///   no lost wake-up).
+/// - ``fireNext()`` — resumes the currently-parked `sleep` (one release). If none is parked
+///   yet, it pre-arms so the NEXT `sleep` returns immediately. Idempotent-safe: a second call
+///   with nothing parked just leaves the single arm set (it never stacks multiple wake-ups).
+/// - ``requestedSleeps()`` — the durations every `sleep` was asked for, so a test can assert
+///   the loop slept for the configured interval (e.g. `1_000`).
+actor MockClock: Clock {
+    /// The current instant, lock-guarded so the `nonisolated` ``now`` can read it synchronously.
+    private let instant: LockedBox<Date>
+    /// The continuation of the `sleep` currently parked, or `nil` when none is suspended.
+    private var parked: CheckedContinuation<Void, Never>?
+    /// `true` when ``fireNext()`` arrived with no parked `sleep`: the next `sleep` returns at once.
+    private var preArmed = false
+    /// Every duration ``sleep(milliseconds:)`` was asked to wait, in call order.
+    private var requestedSleepsMs: [Int] = []
+
+    init(now: Date = Date(timeIntervalSince1970: 0)) {
+        self.instant = LockedBox(now)
+    }
+
+    /// The current instant — a synchronous, off-actor read of the lock-guarded ``instant``,
+    /// satisfying the synchronous `Clock.now` requirement an actor property could not.
+    nonisolated var now: Date { instant.get }
+
+    /// Moves the virtual clock forward by `seconds`, for tests that also assert on ``now``.
+    func advanceNow(by seconds: TimeInterval) {
+        // `addingTimeInterval` returns a NEW Date (it does not mutate the receiver), so the result
+        // must be assigned back into the locked storage — otherwise the advance is silently discarded.
+        instant.withLock { $0 = $0.addingTimeInterval(seconds) }
+    }
+
+    /// The durations every ``sleep(milliseconds:)`` was asked for, in call order.
+    func requestedSleeps() -> [Int] {
+        requestedSleepsMs
+    }
+
+    /// Suspends until the test releases it via ``fireNext()`` (recording `milliseconds`),
+    /// unless a release is already pre-armed — then it returns at once and consumes the arm.
+    /// Never waits on the wall clock (NFR21).
+    func sleep(milliseconds: Int) async {
+        requestedSleepsMs.append(milliseconds)
+        if preArmed {
+            preArmed = false
+            return
+        }
+        await withCheckedContinuation { continuation in
+            parked = continuation
+        }
+    }
+
+    /// Releases the parked ``sleep`` (one release). With nothing parked, pre-arms the next one.
+    func fireNext() {
+        if let continuation = parked {
+            parked = nil
+            continuation.resume()
+        } else {
+            preArmed = true
+        }
+    }
+}
+
+// MARK: - MockEventQueueStore
+
+/// Test double for ``EventQueueStore`` (the durable pending-event-queue persistence port the
+/// `EventQueue` loads/persists/clears through, Story 5.2 on-disk persistence). Lives in THIS
+/// target — not shared from `ConvertSDKTests/MockPorts.swift` — for the same target-visibility
+/// reason as ``MockEventUploader`` / ``MockEventSink`` above: `ConvertSDKCoreTests` cannot see the
+/// `ConvertSDKTests` copy, and `EventQueueTests` lives here.
+///
+/// Shape: `actor` — `load`/`persist`/`clear` are all `async throws`, so actor isolation satisfies
+/// the port with NO `Sendable` suppression (matching ``MockEventUploader`` / ``MockFileStore``;
+/// unlike the synchronous mocks that need ``LockedBox``). It models disk as one in-memory
+/// `storedEvents` cell: ``persist(_:)`` overwrites it, ``clear()`` empties it, ``load()`` returns
+/// it — so a test can assert BOTH how many times each side effect fired (the three call counters)
+/// and WHAT currently sits "on disk" (``storedEvents``).
+///
+/// ── `seed(_:)` helper ─────────────────────────────────────────────────────────────────────────
+/// Pre-populates ``storedEvents`` WITHOUT bumping ``persistCallCount`` — it stages the cold-start /
+/// disk-first fixture the way a prior process would have left the queue file, so the counters still
+/// reflect only the calls the SUBJECT made during the test (a `persist` would conflate fixture setup
+/// with subject behavior). It is an `actor`-isolated method, so a test awaits it before the action.
+actor MockEventQueueStore: EventQueueStore {
+    /// The events currently "on disk": set by ``persist(_:)`` / ``seed(_:)``, emptied by ``clear()``,
+    /// returned by ``load()``. A test reads it to confirm a failed flush landed its batch on disk.
+    private(set) var storedEvents: [TrackingEvent] = []
+    /// Number of times ``load()`` was invoked (e.g. once per `drain()` / `start()` in the GREEN impl).
+    private(set) var loadCallCount = 0
+    /// Number of times ``persist(_:)`` was invoked — the failed-flush-persists-to-disk signal (AC1).
+    private(set) var persistCallCount = 0
+    /// Number of times ``clear()`` was invoked — the drain-clears-disk signal (AC3).
+    private(set) var clearCallCount = 0
+
+    func load() async throws -> [TrackingEvent] {
+        loadCallCount += 1
+        return storedEvents
+    }
+
+    func persist(_ events: [TrackingEvent]) async throws {
+        persistCallCount += 1
+        storedEvents = events
+    }
+
+    func clear() async throws {
+        clearCallCount += 1
+        storedEvents = []
+    }
+
+    /// Pre-populates ``storedEvents`` for a cold-start / disk-first fixture WITHOUT counting as a
+    /// ``persist(_:)`` — so the counters reflect only the subject's calls, not fixture setup.
+    func seed(_ events: [TrackingEvent]) {
+        storedEvents = events
+    }
+
+    // MARK: - Background-upload in-flight marker (Story 5.3 / F-052 — cross-path exactly-once)
+
+    /// Models the on-disk in-flight marker's presence: staged via ``seedInFlight(_:)`` or set/cleared by
+    /// the subject through the three port methods below. A test reads it to confirm the marker's state.
+    private(set) var inFlight = false
+    /// Number of times ``markBackgroundUploadInFlight()`` was invoked.
+    private(set) var markInFlightCallCount = 0
+    /// Number of times ``clearBackgroundUploadInFlight()`` was invoked — the reconcile-releases-marker signal.
+    private(set) var clearInFlightCallCount = 0
+
+    func markBackgroundUploadInFlight() async throws {
+        markInFlightCallCount += 1
+        inFlight = true
+    }
+
+    func clearBackgroundUploadInFlight() async throws {
+        clearInFlightCallCount += 1
+        inFlight = false
+    }
+
+    func isBackgroundUploadInFlight() async throws -> Bool {
+        inFlight
+    }
+
+    /// Stages the in-flight marker WITHOUT bumping ``markInFlightCallCount`` — fixture setup (mirrors
+    /// ``seed(_:)``), so the counters reflect only the subject's own calls.
+    func seedInFlight(_ value: Bool) {
+        inFlight = value
+    }
 }

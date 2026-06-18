@@ -6,17 +6,15 @@
 
 import Foundation
 
-// `NSFileCoordinator`-backed implementation of the SDK's on-disk config cache.
-//
-// Modeled as an `actor` so it is `Sendable` and data-race-clean under Swift 6
-// strict concurrency with NO `@unchecked` suppression — the actor serializes all
-// access to its file operations.
-//
-// `NSFileCoordinator` is the forward-compatible OS-file-lock seam (R1/NFR14): when
-// the SDK later shares its cache across an App Group with an extension, coordinated
-// reads/writes are already in place to arbitrate concurrent access between
-// processes. Writes go through `.atomic`, so a partial/torn write can NEVER reach
-// disk — a reader sees either the previous file or the fully replaced one.
+/// `NSFileCoordinator`-backed store for the SDK's on-disk configuration cache.
+///
+/// An infrastructure adapter, not part of the everyday decisioning API — it is `public`
+/// only so it can be injected for dependency-injection and testing. Modeled as an `actor`,
+/// so it is `Sendable` and data-race-clean under Swift 6 strict concurrency with no
+/// `@unchecked` suppression: the actor serializes every file operation. `NSFileCoordinator`
+/// is the forward-compatible OS-file-lock seam (R1/NFR14) for sharing the cache across an
+/// App Group, and writes go through `.atomic`, so a partial or torn write never reaches disk
+/// — a reader sees either the previous file or the fully replaced one.
 public final actor CoordinatedFileStore {
     /// Creates the file store. Stateless — the actor exists purely to serialize the
     /// coordinated file operations.

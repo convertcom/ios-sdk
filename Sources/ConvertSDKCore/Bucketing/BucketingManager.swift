@@ -23,8 +23,8 @@
 // never scales — both call sites convert percentages to bucket-units before calling it.
 //
 // STATELESS (AC13): a plain `struct` with two `let` port dependencies — no actor, no mutable
-// state. `bucket(...)` is `async` only because ``EventSink/enqueue(_:)`` is `async`; it never
-// throws — any unbucketable input degrades to `nil` (and a warning) rather than propagating.
+// state. `bucket(...)` is `async` only because ``EventSink/enqueue(_:for:segments:)`` is `async`;
+// it never throws — any unbucketable input degrades to `nil` (and a warning) rather than propagating.
 
 import Foundation
 
@@ -116,7 +116,7 @@ internal struct BucketingManager {
         // 8. Emit exactly one bucketing event when tracking is enabled; otherwise stay silent.
         if enableTracking {
             let data = BucketingEventData(experienceId: experienceId, variationId: selected.id ?? "")
-            await eventSink.enqueue(.bucketing(data))
+            await eventSink.enqueue(.bucketing(data), for: visitorId, segments: nil)
         }
 
         // 9. Return the resolved variation.

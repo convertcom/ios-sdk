@@ -88,6 +88,21 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "VERSION_NUMBER=$VERSION_NUMBER" >> "$GITHUB_ENV"
 
+      - name: Assert podspec versions match tag
+        # "Tag is source of truth" (Story 1.5 Task 2.4 / OPTION A): the developer bumps
+        # s.version in BOTH podspecs on main BEFORE pushing the tag. This guard fails the
+        # release immediately if either podspec was forgotten, rather than publishing a
+        # GitHub Release and then silently pushing a mismatched pod to trunk. (AC4.3)
+        run: |
+          CORE_VER=$(grep -E "^\s*s\.version\s*=" ConvertSDKCore.podspec | head -1 | sed "s/.*=\s*['\"]//;s/['\"].*//")
+          SDK_VER=$(grep -E "^\s*s\.version\s*=" ConvertSDK.podspec | head -1 | sed "s/.*=\s*['\"]//;s/['\"].*//")
+          if [ "$CORE_VER" != "$VERSION_NUMBER" ]; then
+            echo "ConvertSDKCore.podspec s.version ($CORE_VER) != tag ($VERSION_NUMBER)" >&2; exit 1
+          fi
+          if [ "$SDK_VER" != "$VERSION_NUMBER" ]; then
+            echo "ConvertSDK.podspec s.version ($SDK_VER) != tag ($VERSION_NUMBER)" >&2; exit 1
+          fi
+
       - name: Dry-run gate A — swift build (SDK)
         # A publish must never ship a broken build (NFR20). This must succeed before
         # any Release or CocoaPods push. (AC2.1)

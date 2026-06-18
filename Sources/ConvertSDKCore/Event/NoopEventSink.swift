@@ -17,15 +17,28 @@ import Foundation
 /// this with the real `EventQueue` in Epic 5 is a one-line swap at the single construction site
 /// (``ExperienceManager/makeDefault(decisionStore:eventBus:logger:)``).
 ///
-/// `internal`: constructed ONLY inside the same-module
-/// ``ExperienceManager/makeDefault(decisionStore:eventBus:logger:)`` factory, so it never needs to
-/// cross the module boundary — keeping the newly-public surface minimal (the factory is the one
-/// public entry point cross-module callers see). A `struct` with no stored state is trivially
-/// `Sendable` with no suppression.
-internal struct NoopEventSink: EventSink {
-    /// Discards the entry. Intentionally empty — see the type doc. (The parameterless initializer is
-    /// synthesized: a stateless `internal struct` gets a default `init()` automatically.)
-    func enqueue(_ event: TrackingEventEntry) async {
+/// `public`: besides the same-module
+/// ``ExperienceManager/makeDefault(decisionStore:eventBus:logger:)`` factory that builds it for the
+/// bucketing path, it now also serves as the cross-module DEFAULT ``EventSink`` for
+/// ``ConvertSDK/init`` (the outer `ConvertSDK` target's conversion seam defaults `eventSink:` to a
+/// `NoopEventSink()`). A stateless default sink must therefore be constructible across the module
+/// boundary, so the type and its initializer are `public`. A `struct` with no stored state is
+/// trivially `Sendable` with no suppression.
+public struct NoopEventSink: EventSink {
+    /// Creates the no-op sink. Explicit `public` initializer: a `public` struct does not expose its
+    /// synthesized memberwise/default init across the module boundary, so the cross-module default in
+    /// ``ConvertSDK/init`` needs this declared `init()` to call `NoopEventSink()`.
+    public init() {}
+
+    /// Discards the entry, ignoring the `visitorId` and `segments` the seam now carries (a real
+    /// queue would group on them; this stand-in has no destination to group into). Intentionally
+    /// empty — see the type doc. `public` so it is the protocol witness for
+    /// ``EventSink/enqueue(_:for:segments:)`` across the module boundary.
+    /// - Parameters:
+    ///   - event: The produced entry — discarded.
+    ///   - visitorId: The grouping key the seam carries — ignored.
+    ///   - segments: The visitor's optional segments — ignored.
+    public func enqueue(_ event: TrackingEventEntry, for visitorId: String, segments: [String: String]?) async {
         // No-op: every produced entry is discarded until Epic 5's `EventQueue` is wired.
     }
 }

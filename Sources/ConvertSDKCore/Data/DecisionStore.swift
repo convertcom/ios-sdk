@@ -104,6 +104,17 @@ public actor DecisionStore {
         return variationId
     }
 
+    /// Returns the whole sticky-bucketing map (`experienceId` → `variationId`) for `storeKey`, or an
+    /// empty map when the store holds no entry for that key. The conversion-tracking path reads it to
+    /// populate `ConversionEventData.bucketingData`.
+    ///
+    /// A PURE READ: unlike ``stickyVariationId(forExperience:storeKey:)`` it does NOT ``touch(_:)`` —
+    /// it must not bump LRU recency (reporting the visitor's decisions is not an access that should
+    /// keep the entry warm). Non-suspending (no `await`): the lookup is one atomic actor step (AR12).
+    public func bucketingDecisions(forStoreKey storeKey: String) -> [String: String] {
+        store[storeKey]?.bucketing ?? [:]
+    }
+
     /// Merges `variationId` into `storeKey`'s `StoreData.bucketing[experienceId]`, refreshes LRU
     /// recency, and persists the whole decision map — together with the LRU access order — to disk.
     ///
@@ -128,6 +139,147 @@ public actor DecisionStore {
             locations: existing?.locations ?? [:]
         )
         touch(storeKey)
+
+        guard let data = try? JSONEncoder().encode(PersistedStore(store: store, order: accessOrder)) else {
+            return
+        }
+        try? await fileStore.write(data, to: fileURL)
+    }
+
+    /// Atomically checks whether `goalId` has already been triggered for `forVisitorKey` and, if not,
+    /// marks it triggered and persists. Returns `true` when the goal was NOT yet triggered (caller
+    /// should proceed with the conversion enqueue), `false` when it was already triggered (caller
+    /// should suppress). The contains-check AND the insert are one NON-SUSPENDING step — there is no
+    /// `await` between the boolean read and the `goalTriggered` write — so two concurrent calls on the
+    /// same goal cannot both observe "not triggered" (actor-reentrancy caveat, AR12). The only suspend
+    /// point is the trailing best-effort disk write, which runs AFTER the in-memory mark is committed.
+    /// [Source: data-manager.ts:1058-1072,851]
+    public func markGoalTriggeredIfNeeded(goalId: String, forVisitorKey storeKey: String) async -> Bool {
+        if store[storeKey]?.goalTriggered[goalId] == true {
+            return false
+        }
+
+        if store[storeKey] == nil, store.count >= maxEntries, let oldest = accessOrder.first {
+            store[oldest] = nil
+            accessOrder.removeFirst()
+        }
+
+        let existing = store[storeKey]
+        var mergedGoals = existing?.goalTriggered ?? [:]
+        mergedGoals[goalId] = true
+        store[storeKey] = StoreData(
+            bucketing: existing?.bucketing ?? [:],
+            goalTriggered: mergedGoals,
+            segments: existing?.segments ?? Segments(),
+            locations: existing?.locations ?? [:]
+        )
+        touch(storeKey)
+
+        guard let data = try? JSONEncoder().encode(PersistedStore(store: store, order: accessOrder)) else {
+            return true
+        }
+        try? await fileStore.write(data, to: fileURL)
+        return true
+    }
+
+    /// Returns the current ``Segments`` for `key`, or `Segments()` when the store holds no entry.
+    ///
+    /// A PURE READ — like ``bucketingDecisions(forStoreKey:)`` it does NOT ``touch(_:)`` (reporting a
+    /// visitor's segments is not an access that should bump LRU recency) and is NON-suspending (one
+    /// atomic actor step, AR12). [Source: AC10]
+    public func currentSegments(forVisitorKey key: String) -> Segments {
+        store[key]?.segments ?? Segments()
+    }
+
+    /// Writes `segments` into `key`'s ``StoreData/segments``, preserving the other three fields, and
+    /// persists the whole decision map (plus LRU order) to disk.
+    ///
+    /// The segment write is a SINGLE UNCONDITIONAL mutation (no read→conditional→write), so unlike
+    /// ``markGoalTriggeredIfNeeded(goalId:forVisitorKey:)`` there is no reentrancy hazard. When the cache
+    /// is at ``maxEntries`` and `key` is NEW, the least-recently-used key is evicted BEFORE the insert.
+    /// The evict + reconstruct + recency bump run as one non-suspending step; only the best-effort disk
+    /// write is awaited afterwards (AR12). [Source: AC5, AC10]
+    public func setSegments(_ segments: Segments, forVisitorKey key: String) async {
+        if store[key] == nil, store.count >= maxEntries, let oldest = accessOrder.first {
+            store[oldest] = nil
+            accessOrder.removeFirst()
+        }
+
+        let existing = store[key]
+        store[key] = StoreData(
+            bucketing: existing?.bucketing ?? [:],
+            goalTriggered: existing?.goalTriggered ?? [:],
+            segments: segments,
+            locations: existing?.locations ?? [:]
+        )
+        touch(key)
+
+        guard let data = try? JSONEncoder().encode(PersistedStore(store: store, order: accessOrder)) else {
+            return
+        }
+        try? await fileStore.write(data, to: fileURL)
+    }
+
+    /// Merge-overlays the non-nil fields of `overlay` onto `key`'s existing segments. The read of the
+    /// current segments, the overlay, and the write are ONE NON-SUSPENDING step — there is no `await`
+    /// between the read and the write — so two concurrent segment merges on the same visitor cannot
+    /// both observe the same baseline and lose an overlay (the lost-update race fixed in F-172). A nil
+    /// field in `overlay` leaves the stored value untouched (callers send only the keys they want to
+    /// set), so prior keys are retained. Mirrors ``markGoalTriggeredIfNeeded(goalId:forVisitorKey:)``:
+    /// the only suspend point is the trailing best-effort disk write, which runs AFTER the in-memory
+    /// segments are committed. When the cache is at ``maxEntries`` and `key` is NEW, the
+    /// least-recently-used key is evicted BEFORE the insert. [Source: AC1, AC10, AC15]
+    public func mergeSegments(_ overlay: Segments, forVisitorKey key: String) async {
+        if store[key] == nil, store.count >= maxEntries, let oldest = accessOrder.first {
+            store[oldest] = nil
+            accessOrder.removeFirst()
+        }
+
+        let existing = store[key]
+        var merged = existing?.segments ?? Segments()
+        if let country = overlay.country { merged.country = country }
+        if let browser = overlay.browser { merged.browser = browser }
+        if let devices = overlay.devices { merged.devices = devices }
+        if let source = overlay.source { merged.source = source }
+        if let campaign = overlay.campaign { merged.campaign = campaign }
+        if let visitorType = overlay.visitorType { merged.visitorType = visitorType }
+        if let customSegments = overlay.customSegments { merged.customSegments = customSegments }
+        store[key] = StoreData(
+            bucketing: existing?.bucketing ?? [:],
+            goalTriggered: existing?.goalTriggered ?? [:],
+            segments: merged,
+            locations: existing?.locations ?? [:]
+        )
+        touch(key)
+
+        guard let data = try? JSONEncoder().encode(PersistedStore(store: store, order: accessOrder)) else {
+            return
+        }
+        try? await fileStore.write(data, to: fileURL)
+    }
+
+    /// Appends `segmentIds` to `key`'s existing `customSegments`. The read, the append, and the write
+    /// are ONE NON-SUSPENDING step (no `await` between read and write), so two concurrent appends on
+    /// the same visitor cannot both read the same baseline and drop an append (the lost-update race
+    /// fixed in F-172). Dedup is left to the backend (matching JS); the six string keys are untouched.
+    /// When the cache is at ``maxEntries`` and `key` is NEW, the least-recently-used key is evicted
+    /// BEFORE the insert; only the trailing best-effort disk write is awaited (AR12). [Source: AC2, AC10, AC15]
+    public func appendCustomSegments(_ segmentIds: [String], forVisitorKey key: String) async {
+        if store[key] == nil, store.count >= maxEntries, let oldest = accessOrder.first {
+            store[oldest] = nil
+            accessOrder.removeFirst()
+        }
+
+        let existing = store[key]
+        var segments = existing?.segments ?? Segments()
+        segments.customSegments = (segments.customSegments ?? []) + segmentIds
+        store[key] = StoreData(
+            bucketing: existing?.bucketing ?? [:],
+            goalTriggered: existing?.goalTriggered ?? [:],
+            segments: segments,
+            locations: existing?.locations ?? [:]
+        )
+        touch(key)
 
         guard let data = try? JSONEncoder().encode(PersistedStore(store: store, order: accessOrder)) else {
             return
