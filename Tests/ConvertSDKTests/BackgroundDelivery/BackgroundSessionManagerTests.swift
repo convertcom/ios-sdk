@@ -13,7 +13,7 @@ import Foundation
 //
 // ── Contract under test (for the GREEN implementer) ───────────────────────────
 // `final class BackgroundSessionManager: @unchecked Sendable` with:
-//   * `static let sessionIdentifier = "com.convertexperiences.sdk.background-upload"` — the
+//   * `static let sessionIdentifier = "com.convertexperiments.sdk.background-upload"` — the
 //     `URLSessionConfiguration.background(withIdentifier:)` identifier (a session-identifier STRING,
 //     not a file path).
 //   * `static func makeConfiguration(sdkVersion:) -> URLSessionConfiguration` building a background
@@ -65,7 +65,7 @@ struct BackgroundSessionManagerTests {
     func configurationSetsAllRequiredProperties() {
         let config = BackgroundSessionManager.makeConfiguration(sdkVersion: "1.0.0")
 
-        #expect(config.identifier == "com.convertexperiences.sdk.background-upload")
+        #expect(config.identifier == "com.convertexperiments.sdk.background-upload")
         #expect(config.sessionSendsLaunchEvents == true)
         #expect(config.isDiscretionary == false)
         #expect((config.httpAdditionalHeaders?["User-Agent"] as? String)?.hasPrefix("ConvertAgent/") == true)
