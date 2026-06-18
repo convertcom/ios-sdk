@@ -74,7 +74,15 @@ struct ConvertContextRunFeaturesTests {
     private func makeReadySDK() async throws -> ConvertSDK {
         let sdk = ConvertSDK(
             configuration: ConvertConfiguration(sdkKey: "test-key"),
-            configProvider: MockConfigProvider.ungated(cached: nil, live: try makeFeatureConfig())
+            configProvider: MockConfigProvider.ungated(cached: nil, live: try makeFeatureConfig()),
+            // Test isolation (bd-ilx): inject a FRESH in-memory `DecisionStore` over a `MockFileStore` so
+            // each SDK gets its own sticky-decision state. The default store wires a real on-disk
+            // `ApplicationSupportFileStore` at a process-shared path shared with the sibling
+            // `ConvertContext*` suites on the SAME `acc-run`/`proj-run`/`user-1` sticky key — so a feature
+            // decision persisted here would accrete across runs and risk hydrating stale cross-test state.
+            // A per-call `MockFileStore` keeps these decisions in-process. Mirrors the injection precedent
+            // across the `ConvertContext*`/conversion/segmentation suites.
+            decisionStore: DecisionStore(logger: MockLogger(), fileStore: MockFileStore())
         )
         try await sdk.ready()
         return sdk

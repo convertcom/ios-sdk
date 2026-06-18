@@ -6,4 +6,4 @@ Before opening a PR, please run the following from the repo root and ensure each
 
 - `swift build`
 - `swift test`
-- `swiftlint`
+- `swiftlint lint --strict`

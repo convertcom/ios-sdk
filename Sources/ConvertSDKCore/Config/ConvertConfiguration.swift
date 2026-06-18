@@ -6,6 +6,11 @@ import Foundation
 
 /// Immutable configuration passed to the SDK initializer.
 ///
+/// ```swift
+/// let config = ConvertConfiguration(sdkKey: "your-sdk-key")
+/// let custom = ConvertConfiguration(sdkKey: "your-sdk-key", logLevel: .debug)
+/// ```
+///
 /// Every field except ``sdkKey`` carries a JS-SDK-parity default (see ``Defaults`` for the
 /// numeric knobs). All stored properties are `let`, so the struct is a `Sendable` value:
 /// once constructed it never mutates. It is deliberately NOT `Codable` — it is an input
