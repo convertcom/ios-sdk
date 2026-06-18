@@ -328,6 +328,44 @@ func makeGoalConfig(
     return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
 }
 
+/// A ``ProjectConfig`` snapshot carrying BOTH a 100%-traffic experience AND a goal under ONE shared
+/// `account_id` / `project.id` — the fixture AC1 of Story 5.4 (dynamic tracking control) needs so a
+/// SINGLE ready SDK can `runExperience(experienceKey)` (buckets the sole full-traffic variation) AND
+/// `trackConversion(goalKey)` (resolves the goal) against the SAME snapshot and the SAME sticky store
+/// key. The two halves are the union of what ``makeExperienceConfig`` and ``makeGoalConfig`` each cover
+/// in isolation: the experience half is one `type:"a/b"`, no-audience/no-location experience whose sole
+/// `traffic_allocation:100` variation covers the entire `0..<10000` bucket space (buckets EVERY visitor
+/// hash, so `runExperience` resolves THIS variation deterministically); the goal half carries `type` as
+/// the bare String `"advanced"` (the D3 drift `makeGoalConfig` documents — it sentinel-decodes and
+/// `goal(forKey:)` reconstructs `id`/`key`/`name`), so the goal is resolvable by key and yields its wire
+/// `id`. The `account_id` / `project.id` are the SHARED ``conversionFixtureAccountId`` /
+/// ``conversionFixtureProjectId`` (NOT `acc-run`/`proj-run`) so BOTH the bucketing store key and the
+/// conversion store key the context computes from `config.accountId` land on ONE well-formed, predictable
+/// `"<accountId>-<projectId>-<visitorId>"` — letting a test seed / observe one decision for both paths.
+///
+/// Assembled in fragments (variation → experience → goal → envelope) so each line stays ≤120 chars and
+/// no experience/goal literal is re-inlined; `throws` only on malformed JSON (`ProjectConfig.init(from:)`
+/// degrades per-field, so this shape never throws). `experienceKey` is what `runExperience(_:)` looks up
+/// and `variationId` the id its resolved variation carries; `goalKey` is what `trackConversion(_:)` looks
+/// up and `goalId` the wire id the resolved goal carries.
+func makeExperienceAndGoalConfig(
+    experienceKey: String,
+    variationId: String,
+    variationKey: String,
+    goalKey: String,
+    goalId: String,
+    experienceId: String = "exp-tt",
+    goalName: String = "Purchase"
+) throws -> ProjectConfig {
+    let variation = #"{"id":"\#(variationId)","key":"\#(variationKey)","traffic_allocation":100}"#
+    let expHead = #"{"id":"\#(experienceId)","key":"\#(experienceKey)","type":"a/b","#
+    let experience = expHead + #""audiences":[],"locations":[],"variations":[\#(variation)]}"#
+    let goal = #"{"id":"\#(goalId)","key":"\#(goalKey)","name":"\#(goalName)","type":"advanced"}"#
+    let ids = #""account_id":"\#(conversionFixtureAccountId)","project":{"id":"\#(conversionFixtureProjectId)"}"#
+    let envelope = #"{\#(ids),"experiences":[\#(experience)],"goals":[\#(goal)]}"#
+    return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
+}
+
 /// Sentinel marking the `live` argument of `makeSchedulerSut(...)` as OMITTED — distinct from an
 /// explicit `live: nil` (which the failure suites pass to force a failing fetch).
 ///
@@ -537,4 +575,98 @@ func drainUntil(maxRounds: Int = 200, _ condition: @Sendable () async -> Bool) a
         if await condition() { return }
         await drainMainActor()
     }
+}
+
+// MARK: - Tracking-batch builder (Epic 5 / Story 5 — full-chain payload structure)
+
+/// The SINGLE canonical batch-construction path for the Story 5 integration tests: wraps `events`
+/// in ONE ``Visitor`` (segments `[:]`) inside ONE ``TrackingEvent`` stamped with `accountId` /
+/// `projectId`. ALL FOUR integration test files build their batch through THIS factory and never
+/// inline the `TrackingEvent(...visitors:[Visitor(...)])` construction (SonarQube 3% new-duplicated-
+/// lines gate; CPD is token-based, so the shared builder — not renamed locals — holds the diff under
+/// it). The invariants are NOT caller-configurable on purpose: `segments` is always the canonical
+/// empty map `[:]` (the wire's `"segments": {}` shape — AC5), and `enrichData` / `source` are forced
+/// to `false` / `"ios-sdk"` by ``TrackingEvent``'s init (they are NOT init parameters — see that
+/// type's doc), so this factory cannot set them and a test asserting otherwise is asserting the model
+/// invariant the init guarantees.
+func makeTrackingBatch(
+    events: [TrackingEventEntry],
+    visitorId: String,
+    accountId: String,
+    projectId: String
+) -> TrackingEvent {
+    TrackingEvent(
+        accountId: accountId,
+        projectId: projectId,
+        visitors: [Visitor(visitorId: visitorId, segments: [:], events: events)]
+    )
+}
+
+// MARK: - Real EventQueue over a temp-file store (Epic 5 / Story 5 — concurrency staging)
+
+/// A REAL ``EventQueue`` over a temp-file store, the temp URL, AND the ``MockEventUploader`` driving its
+/// transport — the full handle ``makeQueueWithTempFileAndUploader()`` yields. A named struct (NOT a
+/// 3-tuple) keeps the `large_tuple` lint rule satisfied and lets tests read the members by name,
+/// mirroring this file's ``SchedulerSUT`` / ``EventCounter`` convention. `Sendable` with no suppression —
+/// every member is already `Sendable` (the `EventQueue` actor, `URL`, the `MockEventUploader` actor).
+struct QueueWithTempFile: Sendable {
+    /// The real queue under test, wired to the temp-file store and the mock uploader.
+    let queue: EventQueue
+    /// The UUID-named temp file backing the store — the CALLER removes it (see the factory doc).
+    let url: URL
+    /// The uploader the queue ships batches through; reach it to await / assert delivery (T3).
+    let uploader: MockEventUploader
+}
+
+/// Builds a REAL ``EventQueue`` over a ``CoordinatedFileEventQueueStore`` at a UUID-named temp file,
+/// returning the queue, that temp URL, AND the ``MockEventUploader`` driving its transport (as a
+/// ``QueueWithTempFile``).
+///
+/// This is the full-handle factory; ``makeQueueWithTempFile()`` delegates here and drops the uploader
+/// for the common case. The uploader handle is returned because the concurrency test (T3) must reach it
+/// to drive / assert delivery — `MockEventUploader`'s state is `private`, so a test can only observe an
+/// upload (``MockEventUploader/uploadedBatches()`` / ``MockEventUploader/callCount``) or await one
+/// (``MockEventUploader/waitForBatchCount(_:)``) through this returned reference; a queue-only return
+/// would strand those assertions. Reuses the EXISTING ``MockEventUploader`` from
+/// `MockBackgroundDelivery.swift` (no new uploader double is declared).
+///
+/// The temp URL is UUID-named PER CALL so each invocation gets an isolated on-disk queue — no two tests
+/// (even running in parallel) share a file, so neither the persisted-queue contents nor a leftover file
+/// leaks across cases (NFR21). Only `accountId` / `projectId` / `uploader` / `eventBus` / `store` are
+/// passed; `batchSize` (10), `releaseIntervalMs`, `trackingEnabled` (true), and `clock` keep their
+/// production defaults, so a single `enqueue` stays buffered (1 < 10) and is observable via `drain()`.
+///
+/// ── Cleanup is the CALLER's ─────────────────────────────────────────────────────────────────────
+/// The temp file is NOT removed here — the caller owns it (the smoke / integration tests remove it in a
+/// `defer { try? FileManager.default.removeItem(at: url) }`). A `CoordinatedFileEventQueueStore` only
+/// writes the file on a `persist` (a failed flush or `persistBeforeBackground`), so a test that merely
+/// enqueues + drains may leave NO file at all — the `try?` removal tolerates an absent file.
+///
+/// `async` only to satisfy the prompt's awaited factory contract (the construction itself is
+/// synchronous — the actor inits and the temp-URL build do not suspend); the `await` is a fixture hop,
+/// never a wall-clock wait (NFR21).
+func makeQueueWithTempFileAndUploader() async -> QueueWithTempFile {
+    let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+    let store = CoordinatedFileEventQueueStore(fileURL: tempURL, logger: NoopLogger())
+    let uploader = MockEventUploader()
+    let queue = EventQueue(
+        accountId: "10035569",
+        projectId: "10034190",
+        uploader: uploader,
+        eventBus: EventBus(),
+        store: store
+    )
+    return QueueWithTempFile(queue: queue, url: tempURL, uploader: uploader)
+}
+
+/// A REAL ``EventQueue`` over a ``CoordinatedFileEventQueueStore`` at a UUID-named temp file, plus that
+/// temp URL — the common-case factory for tests that drive the queue but do not need the uploader handle.
+/// Delegates to ``makeQueueWithTempFileAndUploader()`` (the SINGLE construction path) and drops the
+/// uploader, so the queue/store/temp-URL wiring lives in exactly one place (no duplicated construction —
+/// SonarQube 3% gate). See that factory for the UUID-isolation, the non-defaulted-vs-default init args,
+/// and the caller-owns-cleanup contract. The temp file is the CALLER's to remove (`defer { try?
+/// FileManager.default.removeItem(at: url) }`).
+func makeQueueWithTempFile() async -> (EventQueue, URL) {
+    let sut = await makeQueueWithTempFileAndUploader()
+    return (sut.queue, sut.url)
 }

@@ -9,16 +9,22 @@
 // API: the non-defaulted `store:` init param, the now-`async` `drain()`, and the new `start()`. The
 // mocks and helpers here (including `MockEventQueueStore`) compile against the already-updated ports.
 //
-// `file_length` is disabled file-wide (a single named rule — NOT `disable all`): this is ONE cohesive
+// `file_length` is disabled file-wide and `type_body_length` is disabled around the `EventQueueTests`
+// struct below (both named rules — never a blanket disable-of-all; the type_body_length disable is
+// paired with a matching enable directive right after the struct): this is ONE cohesive
 // `@Suite("EventQueue")` whose tests all share the `makeHarness` factory and the static entry/envelope
-// helpers, so splitting it across files to shave lines would fragment the suite for no readability gain.
-// The file crossed the 400-line default only when the Story-5.2 disk-persistence scenarios (AC1/3/5/9)
-// were appended. Mirrors the file-wide `file_length` disable convention in `MockCorePorts.swift` /
-// `Tests/ConvertSDKTests/Support/TestFixtures.swift`.
+// helpers, so splitting it across files to shave lines would fragment the suite for no readability gain
+// (and would force the private helpers to be duplicated — a SonarQube CPD risk). The file crossed the
+// 400-line `file_length` default with the Story-5.2 disk scenarios; the struct body crossed the 250-line
+// `type_body_length` default with the Story-5.3 cross-path exactly-once scenarios (F-052: Scenario 15
+// drain-guard / Scenario 16 cold-start-guard). Mirrors the file-wide `file_length` disable convention in
+// `MockCorePorts.swift` / `Tests/ConvertSDKTests/Support/TestFixtures.swift`.
 // swiftlint:disable file_length
 import Foundation
 import Testing
 @testable import ConvertSDKCore
+
+// swiftlint:disable type_body_length
 
 /// Contract for the `EventQueue` actor (Epic 5 / Story 1 — batching + foreground delivery,
 /// FR43 / NFR21 + AC1–AC9), EVOLVED by Story 5.2 (on-disk persistence & exactly-once). The
@@ -497,6 +503,189 @@ struct EventQueueTests {
         #expect(await harness.queue.drain().isEmpty)
     }
 
+    // MARK: Scenario 13 — background transition persists the live buffer to disk (Story 5.3, lifecycle)
+
+    /// Story-5.3 background-transition durability: `LifecycleObserver` calls `persistBeforeBackground()`
+    /// when the app backgrounds, so the in-memory buffer is flushed to disk BEFORE the OS can suspend
+    /// the process — closing the gap where a below-threshold buffer (never size/interval-flushed) would
+    /// be lost on a cold kill. `batchSize 100` keeps the three enqueues below threshold so NO auto-flush
+    /// races the explicit persist; the method assembles the buffer into the canonical envelope, hands it
+    /// to ``EventQueueStore/persist(_:)`` ONCE, and empties the buffer. The three distinct visitors group
+    /// into one envelope in first-seen order (`assemble`), so the persisted batch flattens to v1/v2/v3,
+    /// and a follow-up `drain()` returns them DISK-FIRST (the buffer is now empty, the store holds them) —
+    /// proving the in-memory buffer moved to disk rather than being duplicated across both surfaces.
+    @Test("persistBeforeBackground moves the buffer to the store and clears the in-memory buffer")
+    func persistBeforeBackgroundMovesBufferToDisk() async {
+        let harness = makeHarness(batchSize: 100)
+        await enqueueBucketing(1, for: "v1", on: harness.queue)
+        await enqueueBucketing(1, for: "v2", on: harness.queue)
+        await enqueueBucketing(1, for: "v3", on: harness.queue)
+
+        await harness.queue.persistBeforeBackground()
+
+        // Persisted exactly once, carrying all three visitors in first-seen order (one assembled envelope).
+        #expect(await harness.store.persistCallCount == 1)
+        #expect(Self.visitorIds(of: await harness.store.storedEvents) == ["v1", "v2", "v3"])
+        // The buffer was emptied, so the recovery drain loads the three back disk-first (not duplicated).
+        let drained = await harness.queue.drain()
+        #expect(Self.visitorIds(of: drained) == ["v1", "v2", "v3"])
+    }
+
+    // MARK: Scenario 14 — background persist is a no-op when the buffer is empty (Story 5.3, lifecycle)
+
+    /// The empty-buffer guard: a background transition with nothing buffered must NOT write an empty
+    /// envelope to disk (which would needlessly bump the persist count and could overwrite a queue file
+    /// the interval/size path is mid-flush of). `persistBeforeBackground` short-circuits on an empty
+    /// buffer, so `persistCallCount` stays at zero.
+    @Test("persistBeforeBackground is a no-op when the buffer is empty")
+    func persistBeforeBackgroundIsNoOpWhenBufferEmpty() async {
+        let harness = makeHarness()
+        await harness.queue.persistBeforeBackground()
+        #expect(await harness.store.persistCallCount == 0)
+    }
+
+    // MARK: Scenario 15 — drain declines while a background upload is in-flight (Story 5.3 / F-052)
+
+    /// Cross-path exactly-once (F-052): while a durable background `URLSession` upload of the queue file
+    /// is outstanding, `drain()` must NOT read or clear that file — nor drain the in-memory buffer — so a
+    /// foreground-recovery flush that races the background upload does not re-deliver the same on-disk
+    /// batch. The marker is staged via ``MockEventQueueStore/seedInFlight(_:)`` (a Core test has no real
+    /// background session); with it set, `drain()` returns nothing, the seeded disk batch is left intact
+    /// (`clearCallCount` stays 0), and the enqueued in-memory entry is retained. Once the marker clears
+    /// (as the delegate's reconcile would), the next `drain()` delivers BOTH surfaces exactly once.
+    @Test("drain declines to read or clear the queue file while a background upload is in-flight")
+    func drainDeclinesWhileBackgroundUploadInFlight() async {
+        let harness = makeHarness()
+        await harness.store.seed([Self.makeStoredEvent(visitorId: "disk-v1")])
+        await harness.store.seedInFlight(true)
+        await harness.queue.enqueue(Self.makeBucketingEntry(), for: "memory-v2", segments: nil)
+
+        // In-flight: drain delivers nothing and leaves the on-disk batch untouched for the background path.
+        let blocked = await harness.queue.drain()
+        #expect(blocked.isEmpty)
+        #expect(await harness.store.clearCallCount == 0)
+        #expect(Self.visitorIds(of: await harness.store.storedEvents) == ["disk-v1"])
+
+        // The reconcile clears the marker; the next drain now delivers the retained disk + memory once.
+        await harness.store.seedInFlight(false)
+        let recovered = await harness.queue.drain()
+        #expect(Self.visitorIds(of: recovered) == ["disk-v1", "memory-v2"])
+    }
+
+    // MARK: Scenario 16 — cold-start start() declines while a background upload is in-flight (F-052)
+
+    /// Cross-path exactly-once (F-052) on the cold-start path: if a background upload of the queue file is
+    /// outstanding from a prior process, `start()` must leave the file for the background session's
+    /// reconcile rather than load + clear it (which would double-deliver against the in-flight upload).
+    /// With the marker staged, `start()` does NOT consult `load()` and the seeded batch stays on disk;
+    /// once the marker clears, a `drain()` recovers it exactly once. Contrast Scenario 11, where `start()`
+    /// (no marker) loads the persisted queue.
+    @Test("start() leaves the persisted queue for the background path while an upload is in-flight")
+    func coldStartDeclinesWhileBackgroundUploadInFlight() async {
+        let harness = makeHarness()
+        await harness.store.seed([Self.makeStoredEvent(visitorId: "persisted-1")])
+        await harness.store.seedInFlight(true)
+
+        await harness.queue.start()
+
+        // start() declined to load the file (it is owned by the background path) and left it on disk.
+        #expect(await harness.store.loadCallCount == 0)
+        #expect(await harness.store.clearCallCount == 0)
+        #expect(Self.visitorIds(of: await harness.store.storedEvents) == ["persisted-1"])
+
+        // After the reconcile clears the marker, the file is recovered exactly once.
+        await harness.store.seedInFlight(false)
+        #expect(Self.visitorIds(of: await harness.queue.drain()).contains("persisted-1"))
+    }
+
+    // MARK: Scenario 17 — setTrackingEnabled(false) drops subsequent enqueues (Story 5.6 AC1, runtime gate)
+
+    /// Runtime tracking gate — CLOSE path: construct with `trackingEnabled: true` so the gate is
+    /// open. Enqueue one entry and confirm it buffers (drain is non-empty). Then call
+    /// `setTrackingEnabled(false)` to close the gate at runtime and enqueue a second entry; it must
+    /// be dropped (no buffering, no upload). The already-buffered first entry is NOT purged (Story
+    /// 5.6 AC notes "no queue purge on disable") — it is simply what remains in the buffer. No
+    /// wall-clock wait (NFR21).
+    @Test("setTrackingEnabled(false) drops subsequent enqueues without purging already-buffered entries")
+    func runtimeDisableDropsSubsequentEnqueues() async {
+        let harness = makeHarness()
+
+        // Gate open: enqueue one entry — it buffers.
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expA"), for: "vA", segments: nil)
+        let countBeforeDisable = await harness.queue.drain().first?.visitors.first?.events.count ?? 0
+        #expect(countBeforeDisable == 1, "open gate: first entry must buffer")
+
+        // Close the runtime gate then enqueue a second entry.
+        await harness.queue.setTrackingEnabled(false)
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expB"), for: "vB", segments: nil)
+
+        // The second entry was DROPPED — drain returns nothing (buffer was cleared by the prior drain;
+        // expB was never buffered because the gate was closed).
+        let drained = await harness.queue.drain()
+        #expect(drained.isEmpty, "closed runtime gate: entry after setTrackingEnabled(false) must be dropped")
+        // No upload was ever triggered (batchSize default is large; no flush Task launched).
+        #expect(await harness.uploader.callCount == 0)
+    }
+
+    // MARK: Scenario 18 — setTrackingEnabled(true) re-opens the gate (Story 5.6 AC2)
+
+    /// Runtime tracking gate — OPEN path: construct with `trackingEnabled: false` so the gate
+    /// starts closed (every enqueue is dropped). Confirm the gate is closed, then call
+    /// `setTrackingEnabled(true)` to re-open it at runtime. Enqueue a new entry; it must now buffer
+    /// and appear in `drain()`. Proves the setter RE-OPENS the gate (not just a constructor knob).
+    /// No wall-clock wait (NFR21).
+    @Test("setTrackingEnabled(true) re-opens a closed gate so subsequent enqueues buffer and deliver")
+    func runtimeEnableReopensGate() async {
+        let harness = makeHarness(trackingEnabled: false)
+
+        // Gate starts closed: an entry is dropped immediately.
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expDropped"), for: "vDropped", segments: nil)
+        #expect(await harness.queue.drain().isEmpty, "closed gate: entry before re-enable must be dropped")
+
+        // Re-open the gate at runtime.
+        await harness.queue.setTrackingEnabled(true)
+
+        // Gate is now open: a new entry must buffer.
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expKept"), for: "vKept", segments: nil)
+        let drained = await harness.queue.drain()
+        let visitorIds = Self.visitorIds(of: drained)
+        #expect(visitorIds == ["vKept"], "re-opened gate: entry after setTrackingEnabled(true) must buffer and drain")
+    }
+
+    // MARK: Scenario 19 — no replay: dropped entries are never buffered, nothing to replay (Story 5.6 AC2)
+
+    /// No-replay invariant at the `EventQueue` level: entries dropped during a closed window are
+    /// never stored in the buffer, so `setTrackingEnabled(true)` cannot replay them — the gate
+    /// re-opens the receive path, it does NOT flush a phantom buffer of dropped events. After
+    /// re-enable, a `drain()` returns ONLY the post-reopen entry, not the dropped ones.
+    ///
+    /// Distinct from Scenario 18 in that it specifically verifies identity: the delivered batch
+    /// contains ONLY the post-reopen visitor, confirming dropped entries left no residue.
+    @Test("after setTrackingEnabled(true), drain has only post-reopen entries — dropped ones never buffered")
+    func noReplayAfterRuntimeReEnable() async {
+        let harness = makeHarness(trackingEnabled: false)
+
+        // Drop two entries during the closed window.
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expDrop1"), for: "vDrop1", segments: nil)
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expDrop2"), for: "vDrop2", segments: nil)
+
+        // Re-open the gate.
+        await harness.queue.setTrackingEnabled(true)
+
+        // Enqueue a single post-reopen entry.
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expPost"), for: "vPost", segments: nil)
+
+        // Drain must contain ONLY the post-reopen entry — the two dropped visitors must not appear.
+        let drained = await harness.queue.drain()
+        let deliveredIds = Self.visitorIds(of: drained)
+        // Only the post-reopen visitor — no replay of dropped entries.
+        #expect(deliveredIds == ["vPost"], "no replay: only post-reopen entry; dropped entries not buffered")
+        // Exactly one entry in the batch (not three from a phantom replay).
+        #expect(drained.first?.visitors.count == 1)
+        // No upload was triggered (batchSize default; single post-reopen entry stays below threshold).
+        #expect(await harness.uploader.callCount == 0)
+    }
+
     /// Unwraps the `eventCount` carried by an `.apiQueueReleased` payload; `nil` for any other
     /// case. Keeps the `switch` out of the test body and gives the AC8 assertion one field to
     /// compare — mirrors `EventBusTests.experienceId(of:)` / `ConfigStoreTests.snapshotAccountId(of:)`.
@@ -505,6 +694,7 @@ struct EventQueueTests {
         return released.eventCount
     }
 }
+// swiftlint:enable type_body_length
 
 /// Actor sink the `apiQueueReleased` callback records the delivered event count into, so the AC8
 /// test can poll for the fire deterministically (the callback runs on a `MainActor` hop off the

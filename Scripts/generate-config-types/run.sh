@@ -3,6 +3,14 @@
 # and produce the FINAL, committed Sources/ConvertSDKCore/Generated/ConfigSchemas.swift
 # via the ratified Option-D rewrite.
 #
+# CROSS-REPO CONSUMER (keep this interface stable): besides local + in-repo CI use,
+# the backend serving pipeline (convertcom/backend, the `create-iOS-serving-PR` job
+# in .github/workflows/update-ts-api-serving.yml) invokes this script on macos-26 to
+# regenerate these types from the CANONICAL serving spec. That job depends on (1) the
+# `PYTHON` env-var seam below and (2) the output paths
+# Sources/ConvertSDKCore/Generated/{ConfigSchemas.swift,discriminator-manifest.json}.
+# Changing either requires updating that backend job in lockstep.
+#
 # ─────────────────────────────────────────────────────────────────────────────
 # OPTION D (maintainer-ratified): zero third-party runtime dependency (NFR16).
 #

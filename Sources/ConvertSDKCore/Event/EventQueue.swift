@@ -53,7 +53,10 @@ public actor EventQueue: EventSink {
     /// The shared bus the queue fires ``SystemEvent/apiQueueReleased`` on after a successful flush.
     private let eventBus: EventBus
     /// When `false`, every enqueue is dropped: nothing buffers and nothing uploads (AC9 / FR6).
-    private let trackingEnabled: Bool
+    /// Mutable so `ConvertSDK.setTrackingEnabled(_:)` can flip the runtime gate without
+    /// requiring a rebuild of the queue (Story 5.6). Actor isolation makes the mutation
+    /// race-free with no lock and no `@unchecked Sendable`. [Source: Story 5.6 / AC1]
+    private var trackingEnabled: Bool
     /// The injected time source the interval timer sleeps on (NFR21 determinism in tests).
     private let clock: any Clock
     /// The durable pending-event-queue persistence (Story 5.2 on-disk persistence + exactly-once).
@@ -116,6 +119,21 @@ public actor EventQueue: EventSink {
         timerTask?.cancel()
     }
 
+    // MARK: - Runtime tracking toggle (Story 5.6)
+
+    /// Sets the runtime tracking gate. When `enabled` transitions to `false` the next
+    /// `enqueue` call is dropped; when it transitions back to `true` new entries flow
+    /// through again. No queue purge on disable — already-buffered entries are delivered
+    /// on the next flush. [Source: Story 5.6 / AC1, AC2 (no replay / no purge)]
+    ///
+    /// `package` (NOT `public`) — only `ConvertSDK.setTrackingEnabled(_:)` in the same
+    /// package calls this, via a `resolvedSink as? EventQueue` downcast (the same access
+    /// pattern `flush()` and `persistBeforeBackground()` use for `LifecycleObserver`). External
+    /// SDK consumers reach the toggle only through the public ``ConvertSDK`` API.
+    package func setTrackingEnabled(_ value: Bool) {
+        trackingEnabled = value
+    }
+
     // MARK: - EventSink
 
     /// Buffers one produced entry for eventual delivery, tagged with its visitor and segments.
@@ -172,6 +190,17 @@ public actor EventQueue: EventSink {
     /// `store.load()`/`store.clear()` are wrapped in `try?`: a store error degrades to "nothing to
     /// recover" rather than throwing out of `start()`.
     public func start() async {
+        // Cross-path exactly-once guard (Story 5.3 / F-052): if a durable background `URLSession` upload
+        // of the queue file is outstanding from a prior process, leave the file for the background
+        // session's reconcile — the recreated background session reconnects to the outstanding task on
+        // this launch, and loading + clearing the file here would double-deliver against that in-flight
+        // upload. Just arm the timer; if the background upload ultimately FAILS, its reconcile clears the
+        // marker and leaves the file, so a later flush recovers it. A marker-read error degrades to "not
+        // in-flight" (recover normally).
+        if (try? await store.isBackgroundUploadInFlight()) == true {
+            ensureTimerStarted()
+            return
+        }
         let persisted = (try? await store.load()) ?? []
         // Re-expand each envelope's visitors[]/events back into BufferedEntry rows so the existing
         // assemble()/flush() path handles them identically to freshly-enqueued entries.
@@ -195,6 +224,28 @@ public actor EventQueue: EventSink {
         ensureTimerStarted()
     }
 
+    // MARK: - Background persistence
+
+    /// Persists the in-memory buffer to the on-disk store and empties it, so the on-disk file is the
+    /// authoritative record before the app is suspended (Story 5.3 / AC10 / FR36). Called by
+    /// `LifecycleObserver` on a background transition, BEFORE the background upload task is enqueued
+    /// from that same file. A no-op when the buffer is empty (a clean background with nothing pending
+    /// leaves no `[]` file behind — `store.persist([])` would clear, but the guard skips the call
+    /// entirely). `try?`: a store error degrades to "left in memory" rather than throwing out of the
+    /// lifecycle hook, matching the no-throw store philosophy used by `flush()`/`drain()`.
+    /// [Source: architecture.md#Durable Background Delivery — persist file on background]
+    ///
+    /// `package` (NOT `internal`): the `LifecycleObserver` lives in the sibling `ConvertSDK` target
+    /// and must reach this on a background transition, but external SDK consumers must NOT be able to
+    /// force a buffer persist. `package` grants exactly the in-package cross-target visibility the
+    /// observer needs while keeping it off the SDK's public surface — mirroring ``EventBus/fire`` and
+    /// ``VisitorContextManager``, both already consumed cross-target by `ConvertSDK`.
+    package func persistBeforeBackground() async {
+        guard !buffer.isEmpty else { return }
+        try? await store.persist(assemble(buffer))
+        buffer = []
+    }
+
     // MARK: - Drain
 
     /// Merges the persisted (on-disk) queue with the in-memory buffer — DISK-FIRST — and clears BOTH
@@ -216,6 +267,16 @@ public actor EventQueue: EventSink {
     /// - Returns: The disk-first merge of the persisted queue and the assembled buffer, or `[]` when
     ///   both surfaces are empty.
     public func drain() async -> [TrackingEvent] {
+        // Cross-path exactly-once guard (Story 5.3 / F-052): while a durable background `URLSession`
+        // upload of the queue file is outstanding, do NOT read or clear that file — NOR drain the
+        // buffer. The background path owns delivery of the on-disk batch; draining now would either
+        // re-upload the same file the background task already snapshotted (double-delivery) or, on a
+        // failed foreground upload, re-persist over the in-flight file (which the reconcile would then
+        // clear, losing those events). Buffered entries are retained and delivered by a later flush once
+        // the background reconcile clears the marker. A marker-read error degrades to "not in-flight".
+        if (try? await store.isBackgroundUploadInFlight()) == true {
+            return []
+        }
         // store.load() is the FIRST await: the on-disk snapshot is taken before any clear, and any
         // enqueue arriving while it is suspended is captured below by reading `buffer` AFTER the await.
         let diskEvents = (try? await store.load()) ?? []
@@ -287,7 +348,13 @@ public actor EventQueue: EventSink {
     /// `drain()` already cleared both surfaces, so re-persisting makes disk the single source of truth
     /// for the failed batch (never half-in-memory/half-on-disk), and a later flush/drain re-delivers
     /// it disk-first. A flush with nothing on disk or in memory is a no-op (no upload, no event).
-    private func flush() async {
+    ///
+    /// `package` (NOT `private`): the `LifecycleObserver` in the sibling `ConvertSDK` target drives
+    /// this on `didBecomeActive` for foreground recovery (Story 5.3 / AC6), so an undelivered batch a
+    /// prior session left on disk is delivered on return-to-foreground. `package` grants exactly the
+    /// in-package cross-target visibility the observer needs while keeping it off the SDK's public
+    /// surface — mirroring ``persistBeforeBackground()`` and ``EventBus/fire``.
+    package func flush() async {
         let envelopes = await drain()
         guard !envelopes.isEmpty else { return }
         do {
