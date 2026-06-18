@@ -6,6 +6,13 @@ import Foundation
 
 /// A single variation of an experience, as resolved by bucketing.
 ///
+/// ```swift
+/// // given a ready `context`
+/// if let variation = await context.runExperience("pricing-test") {
+///     print("\(variation.experienceKey) → \(variation.key)")
+/// }
+/// ```
+///
 /// `id` is modelled as `String` even though the JS SDK uses an integer — this keeps the
 /// type forward-compatible with the generated wire types (which widen identifiers) and
 /// avoids a lossy `Int`/`Int64` choice at the model boundary.

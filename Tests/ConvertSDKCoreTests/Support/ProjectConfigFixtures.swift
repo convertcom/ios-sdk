@@ -39,18 +39,26 @@ enum ProjectConfigFixtures {
     /// Decodes a `ProjectConfig` from the `ConfigResponseData` wire envelope, splicing in the
     /// caller-supplied array fragments. Unrelated arrays default to `[]` (which decodes to an empty
     /// typed array — never a degrade), so a test that cares only about experiences need not spell
-    /// out audiences/locations. Throws only if the spliced JSON is malformed (a test-authoring bug),
-    /// since `ProjectConfig.init(from:)` itself degrades rather than throws.
+    /// out audiences/locations/features. Throws only if the spliced JSON is malformed (a
+    /// test-authoring bug), since `ProjectConfig.init(from:)` itself degrades rather than throws.
+    ///
+    /// `featuresJSON` defaults to `"[]"` (so the EM-only callers are unaffected); the FeatureManager
+    /// suite passes a `config.features` array so `ProjectConfig.features` is populated — the
+    /// authoritative `variables[].type` list the feature path reads when typing `variables_data`.
     static func makeConfig(
         experiencesJSON: String,
         audiencesJSON: String = "[]",
-        locationsJSON: String = "[]"
+        locationsJSON: String = "[]",
+        featuresJSON: String = "[]",
+        goalsJSON: String = "[]"
     ) throws -> ProjectConfig {
         let envelope = """
         {"account_id":"a","project":{"id":"p"},\
         "experiences":\(experiencesJSON),\
         "audiences":\(audiencesJSON),\
-        "locations":\(locationsJSON)}
+        "locations":\(locationsJSON),\
+        "features":\(featuresJSON),\
+        "goals":\(goalsJSON)}
         """
         return try JSONDecoder().decode(ProjectConfig.self, from: Data(envelope.utf8))
     }
@@ -111,6 +119,103 @@ enum ProjectConfigFixtures {
         "[" + ids.map { "\"\($0)\"" }.joined(separator: ",") + "]"
     }
 
+    // MARK: - Feature wire fragments (FeatureManager suite — Epic 4 / Story 1)
+    //
+    // The feature path binds a `config.features[]` entry to the variation whose `fullStackFeature`
+    // change carries a matching `data.feature_id`. On the wire the binding is cross-type: the
+    // change's `feature_id` is an INT while `features[].id` is a STRING, so the implementation
+    // compares via `String(feature_id)` — these fragments therefore emit an integer `feature_id`
+    // and the SAME number as a quoted string `id` (see `featureCarriedByVariationConfig`). The
+    // variable TYPES come from `features[].variables[].type`, NOT from the change. Each fragment is
+    // written exactly once and composed through the builders below (SonarQube 3% gate; CPD is
+    // token-based, so reuse — not renaming — is what keeps the diff under the threshold).
+
+    /// One `ConfigExperience` JSON object whose sole variation carries a `fullStackFeature` change
+    /// (the feature-binding shape `{id:<Int>,type:"fullStackFeature","data":{feature_id,variables_data}}`).
+    /// NOTE the change `id` is an INTEGER (`ExperienceChangeIdReadOnly.id` is "the unique numerical
+    /// identifier") — a quoted-string id makes the FULL `ConfigExperience` decode throw `typeMismatch`,
+    /// which silently degrades the whole experience out of `rawExperiences` (verified against the
+    /// generated schema + `cdn-config-baseline.json`, where every change id is an integer).
+    /// `alloc` is the variation's 0–100 traffic percentage — `100` ⇒ a sole full-traffic variation
+    /// that always buckets (feature ENABLED), `0` ⇒ a variation that never buckets (feature stays
+    /// disabled for an otherwise-present carrier). No audiences/locations (the gates are bypassed),
+    /// so eligibility is driven purely by `alloc`.
+    ///
+    /// - Parameters:
+    ///   - featureIdInt: The `data.feature_id` integer the change references (bound to a feature
+    ///     whose string `id` is `String(featureIdInt)`).
+    ///   - variablesDataJSON: The raw-JSON object body for `data.variables_data` (e.g.
+    ///     `{"flag":true,"label":"hi"}`) — values are raw JSON; their type is set by the feature.
+    ///   - alloc: The carrying variation's 0–100 traffic percentage.
+    static func fullStackFeatureExperienceJSON(
+        featureIdInt: Int,
+        variablesDataJSON: String,
+        alloc: Int
+    ) -> String {
+        """
+        {"id":"feat-exp","key":"feat-exp-key","type":"a/b",\
+        "audiences":[],"locations":[],\
+        "variations":[{"id":"feat-var","key":"feat-var-key",\
+        "traffic_allocation":\(alloc),\
+        "changes":[{"id":1,"type":"fullStackFeature",\
+        "data":{"feature_id":\(featureIdInt),"variables_data":\(variablesDataJSON)}}]}]}
+        """
+    }
+
+    /// One `config.features` JSON object: a string `id`, a `key`, and a `variables` array of
+    /// `{key,type}` pairs (`type` ∈ boolean|float|json|integer|string — the five `FeatureVariable`
+    /// branches). The `variablesTypesJSON` body is the raw `variables` array contents so a caller
+    /// pins exactly the per-variable types the feature path uses to decode `variables_data`.
+    ///
+    /// - Parameters:
+    ///   - id: The feature's STRING `id` (matched against `String(change.feature_id)`).
+    ///   - key: The feature's `key` (what `evaluateFeature(key:)` looks up).
+    ///   - variablesJSON: The raw JSON array body for `variables` (e.g.
+    ///     `[{"key":"flag","type":"boolean"}]`); `"[]"` for a feature with no declared variables.
+    static func featureJSON(id: String, key: String, variablesJSON: String) -> String {
+        """
+        {"id":"\(id)","name":"\(key)-name","key":"\(key)","variables":\(variablesJSON)}
+        """
+    }
+
+    // MARK: - Goal wire fragments (goal(forKey:) accessor — Epic 4 / Story 2)
+    //
+    // `goal(forKey:)` resolves a goal by its `key` and exposes the embedded `ConfigGoalBase`
+    // (`id`/`key`) so the conversion-tracking path can map a caller's goalKey → the wire goalId.
+    //
+    // ── Verified decode reality (probed against the generated types, NOT assumed) ────────────
+    // On the wire every goal carries `type` as a bare String discriminator (`"advanced"`,
+    // `"dom_interaction"`, `"revenue"`, … — see `cdn-config-baseline.json`, where ALL three goals
+    // do). Decoding such a goal through `ConfigGoalOrSentinel` (= `SentinelWrapped<ConfigGoal>`)
+    // ALWAYS lands on `.sentinel`, never `.known`: `ConfigGoal.init` selects the oneOf case from
+    // the String `type`, then its embedded `ConfigGoalBase._type` is typed `[GoalTypes]` (an
+    // array) and the String `type` makes that nested decode throw `typeMismatch`, so the wrapper
+    // falls back to `.sentinel` (this is drift D3, documented in `ProjectConfig.swift`). The
+    // `.sentinel` payload retains every field as `JSONValue` (`id`/`key`/`type` all present —
+    // verified empirically). A goal with an UNKNOWN `type` (e.g. `"totally_unknown_type_xyz"`)
+    // also sentinels, by the unknown-discriminator path. `goal(forKey:)` must therefore resolve a
+    // goal's `key`/`id` from the retained payload (the `.known` arm is unreachable for goals); a
+    // `.known`-only reader would return nil for EVERY real goal and silently break goalKey→goalId
+    // resolution. These fragments emit the realistic scalar-`type` shape so the contract the
+    // GREEN impl is held to matches production wire data.
+
+    /// One `ConfigGoal` JSON object: `id`, `key`, `name`, and a bare String `type` discriminator —
+    /// the production wire shape (the baseline ships `type` as a scalar String on every goal). Pass
+    /// a KNOWN discriminator (`"advanced"`, `"dom_interaction"`, `"revenue"`, …) for a normal goal,
+    /// or an unknown value (e.g. `"totally_unknown_type_xyz"`) to model a goal whose discriminator
+    /// the SDK does not recognise — both decode to the `.sentinel` arm of `ConfigGoalOrSentinel`
+    /// (see the section note above), so `goal(forKey:)` must reach the base through the payload.
+    ///
+    /// - Parameters:
+    ///   - id: The goal's wire `id` (the goalId `goal(forKey:)` returns via the base's `.id`).
+    ///   - key: The goal's wire `key` (what `goal(forKey:)` looks up).
+    ///   - type: The wire `type` discriminator String (defaults to `"advanced"`, a known value).
+    static func goalJSON(id: String, key: String, type: String = "advanced") -> String {
+        """
+        {"id":"\(id)","key":"\(key)","name":"\(key)-name","type":"\(type)"}
+        """
+    }
+
     // MARK: - Convenience builders (one call → a decoded ProjectConfig)
     //
     // These wrap `makeConfig` + `experienceJSON` (+ `audienceJSON`) so a test makes ONE call and gets
@@ -160,5 +265,105 @@ enum ProjectConfigFixtures {
         )
         let audience = audienceJSON(id: audienceId, key: "\(audienceId)-key", countryEquals: countryEquals)
         return try makeConfig(experiencesJSON: "[\(experience)]", audiencesJSON: "[\(audience)]")
+    }
+
+    /// A `ProjectConfig` holding `count` experiences in DETERMINISTIC config order, keyed
+    /// `"exp-1"`…`"exp-{count}"` with ids `"id-1"`…`"id-{count}"`, variation ids `"var-1"`…
+    /// `"var-{count}"`, and variation keys `"control-1"`…`"control-{count}"`. Each is a sole
+    /// full-traffic (100%) variation so an eligible experience always buckets.
+    ///
+    /// By default every experience is no-audience (unrestricted) and therefore eligible — the
+    /// bulk-selection happy path. When `gatedFailCountry` is non-`nil`, ONLY the FIRST experience
+    /// (`"exp-1"` / `"id-1"`) is gated on a `country == gatedFailCountry` audience; the rest stay
+    /// unrestricted. Calling the bulk selector with `attributes["country"]` set to anything OTHER
+    /// than `gatedFailCountry` then fails exactly that one experience's gate, so the result holds
+    /// `count - 1` variations — the audience-fail-exclusion scenario.
+    ///
+    /// Composes `experienceJSON` once per index (and `audienceJSON` once for the gated leaf),
+    /// splicing the array fragments through a single `makeConfig` call — the envelope and the
+    /// single-experience builder's internals are never re-inlined (SonarQube 3% gate; CPD is
+    /// token-based, so reuse — not renaming — is what keeps this under the threshold).
+    ///
+    /// - Parameters:
+    ///   - count: How many experiences to emit (≥ 1 for a meaningful config).
+    ///   - gatedFailCountry: When set, `"exp-1"` is gated on `country == <value>`; the rest are
+    ///     unrestricted. `nil` (the default) leaves every experience eligible.
+    static func multiExperienceConfig(count: Int, gatedFailCountry: String? = nil) throws -> ProjectConfig {
+        let gateAudienceId = "aud-gate-1"
+        let experiences = (1...count).map { index in
+            experienceJSON(
+                id: "id-\(index)",
+                key: "exp-\(index)",
+                variationId: "var-\(index)",
+                variationKey: "control-\(index)",
+                alloc: 100,
+                audiences: (index == 1 && gatedFailCountry != nil) ? [gateAudienceId] : []
+            )
+        }
+        let experiencesJSON = "[" + experiences.joined(separator: ",") + "]"
+        guard let gatedFailCountry else {
+            return try makeConfig(experiencesJSON: experiencesJSON)
+        }
+        let audience = audienceJSON(
+            id: gateAudienceId, key: "\(gateAudienceId)-key", countryEquals: gatedFailCountry
+        )
+        return try makeConfig(experiencesJSON: experiencesJSON, audiencesJSON: "[\(audience)]")
+    }
+
+    /// A `ProjectConfig` holding ONE `config.features` entry (`key` = `featureKey`, string `id` =
+    /// `String(featureIdInt)`) and ONE experience whose sole variation carries a `fullStackFeature`
+    /// change. The single knob set decides every FeatureManager scenario through ONE builder:
+    ///
+    ///   * `carried == true`  → the change references `featureIdInt`, so the feature has a carrier.
+    ///     `alloc == 100` ⇒ the carrier always buckets ⇒ feature ENABLED with the typed
+    ///     `variablesData`; `alloc == 0` ⇒ the carrier never buckets ⇒ feature stays DISABLED.
+    ///   * `carried == false` → the change references a DIFFERENT feature id (`featureIdInt + 1`),
+    ///     so the `featureKey` feature has NO carrier (the orphan case) ⇒ DISABLED, no variables.
+    ///
+    /// The variable VALUES live in `variablesDataJSON` (raw JSON: `{"flag":true,...}`) and their
+    /// TYPES in `variablesTypesJSON` (the `features[].variables` array body:
+    /// `[{"key":"flag","type":"boolean"},...]`) — the feature path joins the two by variable name.
+    /// All fragments come from `fullStackFeatureExperienceJSON` / `featureJSON`, spliced through a
+    /// single `makeConfig` call, so no scenario re-inlines an envelope or a wire block (SonarQube 3%
+    /// gate; CPD is token-based — reuse, not renaming, is what holds the diff under the threshold).
+    ///
+    /// - Parameters:
+    ///   - featureKey: The feature's `key` (what `evaluateFeature(key:)` resolves).
+    ///   - featureIdInt: The feature's id as an integer; the feature's wire `id` is its string form.
+    ///   - variablesDataJSON: Raw-JSON body for the change's `data.variables_data`. Defaults to an
+    ///     empty object (`{}`) for scenarios that only assert status.
+    ///   - variablesTypesJSON: Raw-JSON body for `features[].variables`. Defaults to `[]` (no
+    ///     declared variables) for status-only scenarios.
+    ///   - alloc: The carrying variation's 0–100 traffic percentage (`100` ⇒ buckets, `0` ⇒ not).
+    ///   - carried: Whether the variation's change binds to THIS feature (`true`) or to a different
+    ///     id so the feature is an uncarried orphan (`false`). Defaults to `true`.
+    static func featureCarriedByVariationConfig(
+        featureKey: String,
+        featureIdInt: Int,
+        variablesDataJSON: String = "{}",
+        variablesTypesJSON: String = "[]",
+        alloc: Int = 100,
+        carried: Bool = true
+    ) throws -> ProjectConfig {
+        let experience = fullStackFeatureExperienceJSON(
+            featureIdInt: carried ? featureIdInt : featureIdInt + 1,
+            variablesDataJSON: variablesDataJSON,
+            alloc: alloc
+        )
+        let feature = featureJSON(
+            id: String(featureIdInt),
+            key: featureKey,
+            variablesJSON: variablesTypesJSON
+        )
+        return try makeConfig(experiencesJSON: "[\(experience)]", featuresJSON: "[\(feature)]")
+    }
+
+    /// A `ProjectConfig` carrying ONLY the supplied `goals` array (no experiences/audiences/etc.),
+    /// so a `goal(forKey:)` test composes the goal fragments it needs through ONE call. Keeps the
+    /// `[ <goal>, … ]` splice in a single place (SonarQube 3% gate; CPD is token-based, so reuse —
+    /// not renaming — is what holds the diff under the threshold). `goalsJSON` is the raw array
+    /// body (e.g. `"[\(goalJSON(id:…,key:…))]"`); pass `"[]"` for a goal-less config.
+    static func goalsConfig(goalsJSON: String) throws -> ProjectConfig {
+        try makeConfig(experiencesJSON: "[]", goalsJSON: goalsJSON)
     }
 }

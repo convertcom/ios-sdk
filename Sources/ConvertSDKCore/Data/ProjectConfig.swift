@@ -188,6 +188,83 @@ public struct ProjectConfig: Decodable, Sendable {
         locations?.first { $0.id == id }
     }
 
+    /// The embedded ``Components/Schemas/ConfigGoalBase`` (carrying `id`/`key`/`name`) of the goal
+    /// whose `key` equals `key`, or `nil` when no goal matches. The conversion-tracking path uses it
+    /// to map a caller's goalKey → the wire goalId (the base's `id`).
+    ///
+    /// ── Why this reads the `.sentinel` payload, NOT the `.known` arm (D3) ─────────────────────
+    /// On the wire every goal carries `type` as a bare String discriminator (`"advanced"`, …).
+    /// Decoding through ``ConfigGoalOrSentinel`` therefore ALWAYS lands on `.sentinel`, never
+    /// `.known`: ``Components/Schemas/ConfigGoal/init(from:)`` selects its `oneOf` case from the
+    /// String `type`, then the composed ``Components/Schemas/ConfigGoalBase/_type`` is typed
+    /// `[GoalTypes]` (an array) and the scalar String collides → `typeMismatch` → the wrapper falls
+    /// back to `.sentinel` (drift D3, see the type doc above). The `.sentinel` `JSONValue` payload
+    /// RETAINS every field (`id`/`key`/`name`/`type`), so this resolves the base from that payload.
+    /// A reader that inspected only the `.known` arm would return `nil` for EVERY real goal and
+    /// silently break goalKey→goalId resolution. The `.known` arm is still handled (a future schema
+    /// fix could make goals decode `.known`); a goal whose `.sentinel` payload lacks a `key` — or
+    /// whose `key` does not match — is simply skipped, never crashed.
+    public func goal(forKey key: String) -> Components.Schemas.ConfigGoalBase? {
+        goals?.lazy.compactMap(Self.goalBase(from:)).first { $0.key == key }
+    }
+
+    /// Extracts the embedded ``Components/Schemas/ConfigGoalBase`` from ONE goal element regardless
+    /// of which ``SentinelWrapped`` arm it decoded to: the `.value1` base for a (today unreachable)
+    /// `.known` goal, or a base reconstructed from the retained `JSONValue` payload for a `.sentinel`
+    /// goal (the production reality — see ``goal(forKey:)``). `nil` only if a sentinel payload is not
+    /// a JSON object (which a well-formed goal never is).
+    private static func goalBase(from goal: ConfigGoalOrSentinel) -> Components.Schemas.ConfigGoalBase? {
+        switch goal {
+        case let .known(configGoal):
+            return base(fromKnown: configGoal)
+        case let .sentinel(payload):
+            return base(fromSentinelPayload: payload)
+        }
+    }
+
+    /// The composed ``Components/Schemas/ConfigGoalBase`` (`value1`) of a decoded
+    /// ``Components/Schemas/ConfigGoal``. Every `oneOf` arm composes the base as its `value1`, so the
+    /// switch reaches it uniformly. Unreachable for production goal `type` today (they sentinel —
+    /// D3), but handled so a future `.known`-decoding goal still resolves.
+    private static func base(fromKnown goal: Components.Schemas.ConfigGoal) -> Components.Schemas.ConfigGoalBase {
+        switch goal {
+        case let .advanced(value): return value.value1
+        case let .clicks_element(value): return value.value1
+        case let .clicks_link(value): return value.value1
+        case let .code_trigger(value): return value.value1
+        case let .dom_interaction(value): return value.value1
+        case let .ga_import(value): return value.value1
+        case let .revenue(value): return value.value1
+        case let .scroll_percentage(value): return value.value1
+        case let .submits_form(value): return value.value1
+        case let .visits_page(value): return value.value1
+        }
+    }
+
+    /// Reconstructs a ``Components/Schemas/ConfigGoalBase`` from a `.sentinel` goal's retained
+    /// `JSONValue` payload by reading the `id`/`name`/`key` string members. `_type`/`rules` are left
+    /// `nil`: the scalar wire `type` cannot populate `[GoalTypes]` (that collision is WHY the goal
+    /// sentinels), and the conversion path needs only `id`/`key`. `nil` when the payload is not a
+    /// JSON object (a well-formed goal is always an object, so real goals always reconstruct).
+    private static func base(fromSentinelPayload payload: JSONValue) -> Components.Schemas.ConfigGoalBase? {
+        guard case let .object(pairs) = payload else { return nil }
+        return Components.Schemas.ConfigGoalBase(
+            id: stringValue(of: "id", in: pairs),
+            name: stringValue(of: "name", in: pairs),
+            key: stringValue(of: "key", in: pairs)
+        )
+    }
+
+    /// The `String` value of the `name`-keyed member in a `JSONValue` object's pairs, or `nil` when
+    /// the member is absent or not a JSON string. Centralizes the `.object` member read so the
+    /// sentinel reconstruction never inlines the find-then-unwrap per field.
+    private static func stringValue(of name: String, in pairs: [JSONValue.Pair]) -> String? {
+        guard case let .string(value)? = pairs.first(where: { $0.key == name })?.value else {
+            return nil
+        }
+        return value
+    }
+
     /// The degrading project sub-tree. Each field degrades independently so a drifted field
     /// (D1 `utc_offset`, D2 GA) never throws the whole project away.
     public struct Project: Decodable, Sendable {

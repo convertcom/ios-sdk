@@ -77,12 +77,15 @@ public struct ExperienceManager: Sendable {
     ///
     /// Wires:
     ///   * ``RuleManager`` over `logger` — evaluates the flattened audience / location rule groups.
-    ///   * ``BucketingManager`` over a ``NoopEventSink`` and `logger` — performs the deterministic
-    ///     bucket. The sink is the production default until Epic 5's `EventQueue` is built
-    ///     (bead bd-2pb): the bucketing enqueue is PRODUCED at the ``EventSink`` boundary but
-    ///     discarded by ``NoopEventSink`` until the real queue replaces it HERE (the single swap
-    ///     site). This does not weaken the Story 3.4 contract — the seam is exercised; only the
-    ///     downstream destination is deferred.
+    ///   * ``BucketingManager`` over the injected `eventSink` and `logger` — performs the
+    ///     deterministic bucket. `eventSink` DEFAULTS to ``NoopEventSink`` (the production stand-in
+    ///     until Epic 5's `EventQueue` is built, bead bd-2pb): the bucketing enqueue is PRODUCED at
+    ///     the ``EventSink`` boundary but discarded by ``NoopEventSink`` until the real queue is
+    ///     injected HERE — this is the single designated bucketing swap site (bd-2pb). The
+    ///     production composition root (``ConvertSDK``, a later task) threads the real `EventQueue`
+    ///     into this parameter; the default keeps existing callers/tests that omit it compiling and
+    ///     behaving identically. This does not weaken the Story 3.4 contract — the seam is exercised;
+    ///     only the downstream destination is deferred.
     ///   * `decisionStore` / `eventBus` — passed through verbatim so the manager reads/persists
     ///     sticky decisions on, and fires `.bucketing` on, the SAME instances the SDK shares across
     ///     every context (sticky parity + `.bucketing` subscribers both depend on shared identity).
@@ -91,16 +94,20 @@ public struct ExperienceManager: Sendable {
     ///   - decisionStore: The SDK's canonical sticky-decision store (shared across every context).
     ///   - eventBus: The SDK's shared bus — the manager fires `.bucketing` on it for new decisions.
     ///   - logger: The diagnostic sink for the manager and its collaborators.
+    ///   - eventSink: The sink the bucketing path enqueues through; defaults to ``NoopEventSink``,
+    ///     but the production composition root (``ConvertSDK``, a later task) injects the real
+    ///     `EventQueue` here — the designated bucketing swap site (bd-2pb).
     /// - Returns: A wired ``ExperienceManager`` ready to call
     ///   ``selectVariation(forKey:in:visitorId:accountId:projectId:attributes:locationProperties:enableTracking:)``.
     public static func makeDefault(
         decisionStore: DecisionStore,
         eventBus: EventBus,
-        logger: Logger
+        logger: Logger,
+        eventSink: any EventSink = NoopEventSink()
     ) -> ExperienceManager {
         ExperienceManager(
             ruleManager: RuleManager(logger: logger),
-            bucketingManager: BucketingManager(eventSink: NoopEventSink(), logger: logger),
+            bucketingManager: BucketingManager(eventSink: eventSink, logger: logger),
             decisionStore: decisionStore,
             eventBus: eventBus,
             logger: logger
@@ -180,6 +187,81 @@ public struct ExperienceManager: Sendable {
             ))
         )
         return variation
+    }
+
+    // The seven parameters mirror `selectVariation`'s call contract minus the single `key` (the bulk
+    // form enumerates keys from the config itself). Like its singular sibling this exceeds SwiftLint's
+    // default `function_parameter_count` warning threshold (5); a targeted disable on the `func` line
+    // (precedent: `selectVariation` above) keeps the `///` doc flush against the declaration (avoids
+    // `orphaned_doc_comment`) rather than raising the project-wide threshold.
+    /// Resolves the bucketed ``Variation`` for EVERY eligible experience in `config`, in config order.
+    ///
+    /// A thin bulk wrapper over
+    /// ``selectVariation(forKey:in:visitorId:accountId:projectId:attributes:locationProperties:enableTracking:)``
+    /// — it adds NO decisioning logic of its own. It enumerates ``ProjectConfig/rawExperiences`` (the
+    /// deterministic, decoded config order) and feeds each element's `key` through the FULL
+    /// single-experience pipeline (sticky → audience → location → bucket → persist → `.bucketing` fire).
+    /// All sticky resolution, rule evaluation, bucketing, ``DecisionStore`` access, and ``EventBus``
+    /// interaction stay owned by that one call; this method only enumerates, threads inputs, and
+    /// collects.
+    ///
+    /// Invariants:
+    ///   * NO duplicated decision logic — the loop body's sole decisioning call is `selectVariation`.
+    ///   * CONFIG ORDER — results are appended in `rawExperiences` array order; an excluded experience
+    ///     never reorders the survivors.
+    ///   * STRAIGHT-THROUGH TRACKING — `enableTracking` is forwarded UNCHANGED to each per-experience
+    ///     bucket (the per-call FR19 flag). The global `network.tracking` gate is an Epic 5 concern and
+    ///     is NOT resolved here.
+    ///   * NEVER THROWS — `selectVariation` degrades every failure mode to `nil`, so the loop is
+    ///     naturally crash-proof (AC9): an experience the visitor is ineligible for (unknown key, no id,
+    ///     audience/location gate fail, below-traffic bucket, or sticky-nil) returns `nil` and is
+    ///     silently excluded WITHOUT aborting the loop. Evaluated SEQUENTIALLY (one experience at a
+    ///     time) — not in parallel — to keep the ``DecisionStore`` actor interaction simple and the
+    ///     collected order deterministic.
+    ///
+    /// - Parameters:
+    ///   - config: The decoded project config whose ``ProjectConfig/rawExperiences`` are enumerated;
+    ///     `nil`/empty yields `[]`.
+    ///   - visitorId: The visitor being bucketed (forwarded to each `selectVariation`).
+    ///   - accountId: Account id — the first segment of the sticky store key.
+    ///   - projectId: Project id — the second segment of the sticky store key.
+    ///   - attributes: The data map each experience's audience gate evaluates against.
+    ///   - locationProperties: The data map each experience's location gate evaluates against.
+    ///   - enableTracking: Forwarded UNCHANGED to every per-experience bucket; when `false` the bucketing
+    ///     enqueue is suppressed (the variation is still selected, persisted, and fired).
+    /// - Returns: The assigned ``Variation`` for every eligible experience, in config order; `[]` when
+    ///   the config has no experiences or the visitor is eligible for none.
+    public func selectVariations( // swiftlint:disable:this function_parameter_count
+        in config: ProjectConfig,
+        visitorId: String,
+        accountId: String,
+        projectId: String,
+        attributes: [String: String],
+        locationProperties: [String: String],
+        enableTracking: Bool
+    ) async -> [Variation] {
+        guard let experiences = config.rawExperiences, !experiences.isEmpty else { return [] }
+        var results: [Variation] = []
+        results.reserveCapacity(experiences.count)
+        for experience in experiences {
+            // Skip an element with no `key` (cannot look it up) defensively — fixtures always carry a
+            // key, but a `nil` here must continue the loop, not crash. `selectVariation` owns every
+            // decision for the looked-up experience; a `nil` result is silently excluded.
+            guard let key = experience.key else { continue }
+            if let variation = await selectVariation(
+                forKey: key,
+                in: config,
+                visitorId: visitorId,
+                accountId: accountId,
+                projectId: projectId,
+                attributes: attributes,
+                locationProperties: locationProperties,
+                enableTracking: enableTracking
+            ) {
+                results.append(variation)
+            }
+        }
+        return results
     }
 
     /// Rebuilds the sticky ``Variation`` for `experienceId` under `storeKey`, or `nil` when no
