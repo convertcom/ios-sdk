@@ -1,0 +1,8 @@
+generate:
+  - types
+accessModifier: public
+filter:
+  schemas:
+    - ConfigResponseData
+    - ConfigMinimalResponseData
+    - ConfigOptionalResponseData
