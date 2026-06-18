@@ -124,7 +124,12 @@ public extension GoalData {
     /// (`[GoalDataEntry]`) the conversion event carries. The wire schema is an ARRAY of
     /// `{key, value}` objects (per the JS SDK `types.gen.ts:2811-2820`), not a flat object, so a
     /// dictionary cannot serialize to it directly — each pair becomes one `GoalDataEntry`.
+    ///
+    /// The array is sorted by `key.rawValue` (ascending, lexicographic) so that repeated calls on
+    /// the same `GoalData` always produce the same wire-array order regardless of Dictionary
+    /// iteration order, which is nondeterministic across executions.
     func toEntries() -> [GoalDataEntry] {
-        map { GoalDataEntry(key: $0.key, value: $0.value) }
+        sorted { $0.key.rawValue < $1.key.rawValue }
+            .map { GoalDataEntry(key: $0.key, value: $0.value) }
     }
 }

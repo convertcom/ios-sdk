@@ -157,30 +157,18 @@ final class DemoViewModel: ObservableObject {
     /// limit; on insert, the oldest rows past this many are trimmed from the tail.
     private let resultCardCap = 20
 
-    /// The buffer the Features screen renders, newest-first.
-    ///
-    /// Each run prepends one ``Feature`` per resolved feature via
-    /// ``prepend(_:into:cap:)`` (newest at index 0), mirroring ``resultCards`` and
-    /// ``events``. Exposed read-only — only the feature run methods mutate it. Bounded at
-    /// ``featureCap`` newest rows. `Feature` is not `Identifiable`, and its `id` is
-    /// `""` for a `.disabled` feature while `key` collides across re-runs of the same key, so
-    /// the View keys its `ForEach` on the enumerated offset (see ``FeaturesView``); this buffer
-    /// just exposes the values.
+    /// Features buffer the Features screen renders, newest-first. Mirrors ``resultCards``:
+    /// read-only, bounded at ``featureCap``, mutated via ``prepend(_:into:cap:)``. The View
+    /// keys `ForEach` on enumerated offset (not `id`) because `Feature.id` is `""` for
+    /// `.disabled` and `key` collides across re-runs.
     @Published private(set) var evaluatedFeatures: [Feature] = []
 
-    /// Upper bound on ``evaluatedFeatures`` so repeated runs can't grow the buffer without
-    /// limit; on insert, the oldest rows past this many are trimmed from the tail.
+    /// Upper bound on ``evaluatedFeatures``; oldest rows past it trimmed on insert.
     private let featureCap = 20
 
-    /// A neutral empty-state note for the Features screen, or `nil` when there is nothing
-    /// to surface.
-    ///
-    /// Set by ``runFeatures()`` ONLY when the SDK returns `[]` (degraded / not-ready /
-    /// ineligible) — a valid outcome, NOT an error. The Features screen renders this in a
-    /// neutral empty-state voice, deliberately NOT as a `ResultCard` error card (Features
-    /// does not use `ResultCard`; that is the Experiences screen's surface). Cleared (set to
-    /// `nil`) at the START of every ``runFeature()`` / ``runFeatures()`` call so a later
-    /// successful run clears a stale note.
+    /// Neutral empty-state note for the Features screen (`nil` when nothing to surface).
+    /// Set by ``runFeatures()`` when the SDK returns `[]` (valid degraded outcome, not an error);
+    /// cleared at the start of every ``runFeature()`` / ``runFeatures()`` call.
     @Published private(set) var featuresEmptyNote: String?
 
     // MARK: - Conversions (Story 7.5 / DEMO-5)
@@ -224,6 +212,11 @@ final class DemoViewModel: ObservableObject {
     /// `internal` setter — the monitor callback that writes it is cross-file (see +Config header).
     @Published var isOnline = true
 
+    /// Live runtime tracking flag for the Config toggle (Story 5.6). Seeded from
+    /// ``ConvertConfiguration/networkTracking``; updated by ``setTracking(_:)`` via
+    /// ``ConvertSDK/isTrackingEnabled()`` read-back. `internal` setter — writer is cross-file.
+    @Published var isRuntimeTrackingEnabled: Bool
+
     /// The `NWPathMonitor` backing ``isOnline`` (touched only from the main actor) and the serial
     /// queue it delivers updates on (`start(queue:)` requires one). See the +Config header.
     let pathMonitor = NWPathMonitor()
@@ -237,6 +230,8 @@ final class DemoViewModel: ObservableObject {
         sdk = ConvertSDK(configuration: configuration)
         // Eager sticky context (was a `lazy var`; `@Published` needs a non-lazy stored property).
         context = sdk.createContext()
+        // Seed the runtime toggle from the static init flag (networkTracking defaults true).
+        isRuntimeTrackingEnabled = configuration.networkTracking
     }
 
     /// Presents the Event Inspector sheet from any tab's toolbar button.

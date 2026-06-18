@@ -167,9 +167,26 @@ extension DemoViewModel {
     /// value like "production".
     var environmentLabel: String { configuration.environment ?? "default" }
 
-    /// Whether event/network tracking is enabled, read straight from
-    /// ``ConvertConfiguration/networkTracking``.
-    var trackingEnabled: Bool { configuration.networkTracking }
+    /// Whether event/network tracking is enabled at runtime.
+    ///
+    /// Reads the published ``DemoViewModel/isRuntimeTrackingEnabled`` — the live value
+    /// that ``setTracking(_:)`` updates — rather than the static
+    /// ``ConvertConfiguration/networkTracking`` init flag. This keeps the Config panel
+    /// in sync with runtime toggle changes without rebuilding the SDK.
+    var trackingEnabled: Bool { isRuntimeTrackingEnabled }
+
+    /// Applies a runtime tracking toggle: calls ``ConvertSDK/setTrackingEnabled(_:)``, then
+    /// reads back ``ConvertSDK/isTrackingEnabled()`` to confirm, and publishes the result to
+    /// ``DemoViewModel/isRuntimeTrackingEnabled`` so the Config panel toggle stays live.
+    ///
+    /// `@MainActor` (inherited). The two async SDK calls suspend without blocking the main actor.
+    /// The read-back pattern (set then confirm) matches the Android demo's `setTrackingEnabled`
+    /// wiring in `DemoApplication.kt` and keeps the published flag authoritative even if a future
+    /// SDK version clamps or overrides the requested value.
+    func setTracking(_ enabled: Bool) async {
+        await sdk.setTrackingEnabled(enabled)
+        isRuntimeTrackingEnabled = await sdk.isTrackingEnabled()
+    }
 
     /// The single value bundle the Config info panel (next task) renders, assembled from the
     /// accessors above plus the demo's target experience/feature keys. A small value type keeps

@@ -598,6 +598,94 @@ struct EventQueueTests {
         #expect(Self.visitorIds(of: await harness.queue.drain()).contains("persisted-1"))
     }
 
+    // MARK: Scenario 17 — setTrackingEnabled(false) drops subsequent enqueues (Story 5.6 AC1, runtime gate)
+
+    /// Runtime tracking gate — CLOSE path: construct with `trackingEnabled: true` so the gate is
+    /// open. Enqueue one entry and confirm it buffers (drain is non-empty). Then call
+    /// `setTrackingEnabled(false)` to close the gate at runtime and enqueue a second entry; it must
+    /// be dropped (no buffering, no upload). The already-buffered first entry is NOT purged (Story
+    /// 5.6 AC notes "no queue purge on disable") — it is simply what remains in the buffer. No
+    /// wall-clock wait (NFR21).
+    @Test("setTrackingEnabled(false) drops subsequent enqueues without purging already-buffered entries")
+    func runtimeDisableDropsSubsequentEnqueues() async {
+        let harness = makeHarness()
+
+        // Gate open: enqueue one entry — it buffers.
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expA"), for: "vA", segments: nil)
+        let countBeforeDisable = await harness.queue.drain().first?.visitors.first?.events.count ?? 0
+        #expect(countBeforeDisable == 1, "open gate: first entry must buffer")
+
+        // Close the runtime gate then enqueue a second entry.
+        await harness.queue.setTrackingEnabled(false)
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expB"), for: "vB", segments: nil)
+
+        // The second entry was DROPPED — drain returns nothing (buffer was cleared by the prior drain;
+        // expB was never buffered because the gate was closed).
+        let drained = await harness.queue.drain()
+        #expect(drained.isEmpty, "closed runtime gate: entry after setTrackingEnabled(false) must be dropped")
+        // No upload was ever triggered (batchSize default is large; no flush Task launched).
+        #expect(await harness.uploader.callCount == 0)
+    }
+
+    // MARK: Scenario 18 — setTrackingEnabled(true) re-opens the gate (Story 5.6 AC2)
+
+    /// Runtime tracking gate — OPEN path: construct with `trackingEnabled: false` so the gate
+    /// starts closed (every enqueue is dropped). Confirm the gate is closed, then call
+    /// `setTrackingEnabled(true)` to re-open it at runtime. Enqueue a new entry; it must now buffer
+    /// and appear in `drain()`. Proves the setter RE-OPENS the gate (not just a constructor knob).
+    /// No wall-clock wait (NFR21).
+    @Test("setTrackingEnabled(true) re-opens a closed gate so subsequent enqueues buffer and deliver")
+    func runtimeEnableReopensGate() async {
+        let harness = makeHarness(trackingEnabled: false)
+
+        // Gate starts closed: an entry is dropped immediately.
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expDropped"), for: "vDropped", segments: nil)
+        #expect(await harness.queue.drain().isEmpty, "closed gate: entry before re-enable must be dropped")
+
+        // Re-open the gate at runtime.
+        await harness.queue.setTrackingEnabled(true)
+
+        // Gate is now open: a new entry must buffer.
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expKept"), for: "vKept", segments: nil)
+        let drained = await harness.queue.drain()
+        let visitorIds = Self.visitorIds(of: drained)
+        #expect(visitorIds == ["vKept"], "re-opened gate: entry after setTrackingEnabled(true) must buffer and drain")
+    }
+
+    // MARK: Scenario 19 — no replay: dropped entries are never buffered, nothing to replay (Story 5.6 AC2)
+
+    /// No-replay invariant at the `EventQueue` level: entries dropped during a closed window are
+    /// never stored in the buffer, so `setTrackingEnabled(true)` cannot replay them — the gate
+    /// re-opens the receive path, it does NOT flush a phantom buffer of dropped events. After
+    /// re-enable, a `drain()` returns ONLY the post-reopen entry, not the dropped ones.
+    ///
+    /// Distinct from Scenario 18 in that it specifically verifies identity: the delivered batch
+    /// contains ONLY the post-reopen visitor, confirming dropped entries left no residue.
+    @Test("after setTrackingEnabled(true), drain has only post-reopen entries — dropped ones never buffered")
+    func noReplayAfterRuntimeReEnable() async {
+        let harness = makeHarness(trackingEnabled: false)
+
+        // Drop two entries during the closed window.
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expDrop1"), for: "vDrop1", segments: nil)
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expDrop2"), for: "vDrop2", segments: nil)
+
+        // Re-open the gate.
+        await harness.queue.setTrackingEnabled(true)
+
+        // Enqueue a single post-reopen entry.
+        await harness.queue.enqueue(Self.makeBucketingEntry(experienceId: "expPost"), for: "vPost", segments: nil)
+
+        // Drain must contain ONLY the post-reopen entry — the two dropped visitors must not appear.
+        let drained = await harness.queue.drain()
+        let deliveredIds = Self.visitorIds(of: drained)
+        // Only the post-reopen visitor — no replay of dropped entries.
+        #expect(deliveredIds == ["vPost"], "no replay: only post-reopen entry; dropped entries not buffered")
+        // Exactly one entry in the batch (not three from a phantom replay).
+        #expect(drained.first?.visitors.count == 1)
+        // No upload was triggered (batchSize default; single post-reopen entry stays below threshold).
+        #expect(await harness.uploader.callCount == 0)
+    }
+
     /// Unwraps the `eventCount` carried by an `.apiQueueReleased` payload; `nil` for any other
     /// case. Keeps the `switch` out of the test body and gives the AC8 assertion one field to
     /// compare — mirrors `EventBusTests.experienceId(of:)` / `ConfigStoreTests.snapshotAccountId(of:)`.

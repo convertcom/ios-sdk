@@ -158,8 +158,9 @@ public struct FeatureManager: Sendable {
         var results: [Feature] = []
         results.reserveCapacity(features.count)
         for feature in features {
+            guard let key = feature.key else { continue }
             let resolved = await evaluateFeature(
-                key: feature.key ?? "",
+                key: key,
                 in: config,
                 visitorId: visitorId,
                 accountId: accountId,
