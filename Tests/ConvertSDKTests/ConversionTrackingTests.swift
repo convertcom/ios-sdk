@@ -263,21 +263,29 @@ struct ConversionTrackingTests {
         #expect(data?.goalData == nil, "an omitted goalData must be absent on the event")
     }
 
-    /// AC1/AC8: `trackConversion` WITH `goalData` carries each metric onto the event as a
-    /// `GoalDataEntry`. Converts with `[.amount: .double(9.99), .transactionId: .string("txn-001")]`
-    /// (via `makeGoalData`) and asserts the recovered `goalData` contains BOTH entries structurally —
-    /// `amount == 9.99` and `transactionId == "txn-001"`. `GoalDataValue` is NOT `Equatable`, so the
-    /// assertion inspects each entry's `key` + unwrapped `value` rather than comparing `[GoalDataEntry]`.
-    /// FAILS today: the stub enqueues nothing, so `soleConversion` is `nil` and the entry lookups fail.
+    /// AC1/AC8 (Story 4.3 dedup): a FIRST `trackConversion` carrying `goalData` enqueues TWO conversion
+    /// entries — `recorded[0]` the CONVERSION event (`goalData == nil`) and `recorded[1]` the TRANSACTION
+    /// event carrying the caller's metrics (`goalData == makeGoalData().toEntries()`). Both are
+    /// `eventType == "conversion"`. Converts with `[.amount: .double(9.99), .transactionId:
+    /// .string("txn-001")]` (via `makeGoalData`), then recovers BOTH events via `conversionData(from:)`
+    /// and asserts the split: the conversion event carries no metrics, and the transaction event carries
+    /// BOTH structurally — `amount == 9.99` and `transactionId == "txn-001"`. `GoalDataValue` is NOT
+    /// `Equatable`, so the metric assertions inspect each entry's `key` + unwrapped `value` via the
+    /// structural readers rather than comparing `[GoalDataEntry]`. (Story 4.2 emitted a SINGLE event
+    /// carrying the metrics; the 4.3 dedup contract splits it in two.)
     @Test("trackConversion with goalData carries each metric as an entry")
     func goalDataCarriesEntries() async throws {
         let sut = try await makeReadySDK()
         await sut.sdk.createContext(visitorId: "user-1")
             .trackConversion(Self.goalKey, goalData: makeGoalData())
 
-        let data = await soleConversion(in: sut.sink)
-        let entries = data?.goalData ?? []
-        #expect(entries.count == 2, "both supplied metrics must be carried")
+        let recorded = await sut.sink.recordedEvents()
+        #expect(recorded.count == 2, "a first conversion with goalData enqueues a conversion + a transaction")
+        let first = conversionData(from: recorded[0])
+        let second = conversionData(from: recorded[1])
+        #expect(first?.goalData == nil, "the conversion event carries no goalData")
+        let entries = second?.goalData ?? []
+        #expect(entries.count == 2, "both supplied metrics are carried on the transaction event")
         #expect(doubleValue(of: .amount, in: entries) == 9.99)
         #expect(stringValue(of: .transactionId, in: entries) == "txn-001")
     }

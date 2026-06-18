@@ -157,7 +157,28 @@ struct ComparisonsTests {
         OperatorCase(matchType: "doesNotExist", value: nil, testAgainst: nil, negated: false,
                      expected: true, description: "doesNotExist aliases not_exists: nil → true"),
         OperatorCase(matchType: "doesNotExist", value: "x", testAgainst: nil, negated: false,
-                     expected: false, description: "doesNotExist: present value → false")
+                     expected: false, description: "doesNotExist: present value → false"),
+
+        // --- bd-vh1: less/lessEqual JS-isNumeric parity (Double() must NOT accept
+        //     sci-notation / hex / Infinity / leading-plus) ---
+        // RED today: Swift `numeric()` uses bare Double(), which accepts these strings; JS isNumeric()
+        // rejects them, so the non-numeric side stays a string and JS's typeof type-guard returns false.
+        OperatorCase(matchType: "less", value: "1e3", testAgainst: "2000", negated: false,
+                     expected: false, description: "less bd-vh1: '1e3' not JS-numeric -> type mismatch -> false"),
+        OperatorCase(matchType: "less", value: "0x10", testAgainst: "100", negated: false,
+                     expected: false, description: "less bd-vh1: hex '0x10' not JS-numeric -> false"),
+        OperatorCase(matchType: "less", value: "Infinity", testAgainst: "100", negated: false,
+                     expected: false, description: "less bd-vh1: 'Infinity' not JS-numeric -> false"),
+        OperatorCase(matchType: "lessEqual", value: "1e3", testAgainst: "2000", negated: false,
+                     expected: false, description: "lessEqual bd-vh1: '1e3' not JS-numeric -> type mismatch -> false"),
+        OperatorCase(matchType: "less", value: "5", testAgainst: "1e3", negated: false,
+                     expected: false, description: "less bd-vh1: testAgainst '1e3' not JS-numeric -> false"),
+        OperatorCase(matchType: "less", value: "+5", testAgainst: "10", negated: false,
+                     expected: false, description: "less bd-vh1: leading-plus '+5' not JS-numeric -> false"),
+        // POSITIVE guard: comma-grouped thousands IS JS-numeric (toNumber strips commas);
+        // the GREEN regex+strip must keep this true.
+        OperatorCase(matchType: "less", value: "1,000", testAgainst: "2000", negated: false,
+                     expected: true, description: "less bd-vh1: '1,000' IS JS-numeric (commas) -> 1000<2000 -> true")
     ]
 
     @Test("operator dispatch", arguments: operatorCases)

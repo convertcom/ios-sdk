@@ -11,7 +11,10 @@
 //      an empty / whitespace-only needle returns true (JS 78-86).
 //   3. `startsWith` / `endsWith` are case-INSENSITIVE — lowercase both (JS 122-140).
 //   4. `less` / `lessEqual` are TYPE-GUARDED: a non-numeric operand on either side yields
-//      false (mirrors JS `typeof value !== typeof testAgainst → false`), never a crash.
+//      false (mirrors JS `typeof value !== typeof testAgainst → false`), never a crash. The
+//      numeric gate (`numeric(_:)`) mirrors JS `isNumeric` (string-utils.ts:68-74): it REJECTS
+//      sci-notation / hex / `Infinity` / leading-plus and ACCEPTS comma-grouped thousands, so a
+//      bare `Double()` can't silently widen what counts as numeric (bd-vh1).
 //   5. `regexMatches` is case-INSENSITIVE (JS `'i'` flag); an invalid pattern yields false.
 //   6. `isIn` is ASYMMETRIC: the `value` candidates are NOT lowercased; the `testAgainst`
 //      allow-list IS lowercased (JS 95-108).
@@ -128,10 +131,24 @@ internal enum Comparisons {
         return lhs <= rhs
     }
 
-    /// Parses `value` as a `Double`, or `nil` when absent / non-numeric (the type-guard miss).
+    /// The JS `isNumeric` pattern (string-utils.ts:68-74): an optional leading `-`, then either
+    /// comma-grouped thousands (`1,000`) or plain digits, an optional decimal tail; OR a bare `.5`.
+    /// Pinned so the matcher REJECTS what JS rejects — scientific notation (`1e3`), hex (`0x10`),
+    /// `Infinity`/`nan`, and leading-plus (`+5`) — which Swift's bare `Double()` would otherwise
+    /// accept, silently diverging less/lessEqual from JS (bd-vh1). [Source: javascript-sdk
+    /// string-utils.ts:68-74]
+    private static let numericPattern = "^-?(?:(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?|\\.\\d+)$"
+
+    /// Parses `value` as a `Double` ONLY when it matches the JS-`isNumeric` shape, returning `nil`
+    /// otherwise (the type-guard miss). Commas are stripped before `Double()` to match JS
+    /// `toNumber`'s `replace(/,/g,'')` (string-utils.ts:81-91) so comma-grouped thousands (`1,000`)
+    /// parse as `1000`. The `^…$`-anchored ``numericPattern`` is what makes Swift reject the same
+    /// strings JS rejects; bare `Double()` alone would accept sci-notation / hex / `Infinity` /
+    /// leading-plus and break less/lessEqual parity (bd-vh1).
     private static func numeric(_ value: String?) -> Double? {
         guard let value else { return nil }
-        return Double(value)
+        guard value.range(of: numericPattern, options: .regularExpression) != nil else { return nil }
+        return Double(value.replacingOccurrences(of: ",", with: ""))
     }
 
     /// Case-insensitive substring test. `value` is the haystack, `testAgainst` the needle; an

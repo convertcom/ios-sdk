@@ -194,4 +194,203 @@ struct DecisionStoreTests {
 
         #expect(decoded.bucketing["exp-1"] == "var-a")
     }
+
+    // MARK: - Backward-compatible decode (AC6, bd-pi8)
+
+    /// RED-phase contract for AC6: a persisted `StoreData` JSON that PRE-DATES the `segments` and
+    /// `locations` fields (written by an SDK ≤ 4.4) must decode WITHOUT throwing, defaulting the
+    /// absent fields to `Segments()` and `[:]`. `StoreData` currently uses SYNTHESIZED Codable, so
+    /// its decoder calls `decode(_:forKey:)` (not `decodeIfPresent`) for the non-optional `segments`
+    /// and `locations` — meaning JSON missing those keys throws `keyNotFound` TODAY. These two tests
+    /// MUST FAIL (decode throws) until BE-2 adds a backward-compatible `init(from:)`.
+    ///
+    /// One decode call site for the two pre-4.4 fixtures so neither test re-inlines the decoder
+    /// (SonarQube CPD is token-based — this keeps the two cases from sharing a duplicate block).
+    private func decodeStoreData(fromJSON json: String) throws -> StoreData {
+        try JSONDecoder().decode(StoreData.self, from: Data(json.utf8))
+    }
+
+    @Test("StoreData decodes pre-4.4 JSON missing segments and locations (backward compat)")
+    func storeDataDecodesPre44JSONMissingSegmentsAndLocations() throws {
+        // No `segments` key, no `locations` key — the on-disk shape an SDK ≤ 4.4 persisted.
+        let decoded = try decodeStoreData(fromJSON: #"{"bucketing":{},"goalTriggered":{}}"#)
+
+        #expect(decoded.bucketing.isEmpty)
+        #expect(decoded.goalTriggered.isEmpty)
+        #expect(decoded.segments == Segments())
+        #expect(decoded.locations.isEmpty)
+    }
+
+    @Test("StoreData decodes pre-4.4 JSON with bucketing+goalTriggered data, missing segments")
+    func storeDataDecodesPre44JSONWithDataMissingSegments() throws {
+        // Pre-4.4 JSON carrying real bucketing + goalTriggered data, still no segments/locations.
+        let decoded = try decodeStoreData(
+            fromJSON: #"{"bucketing":{"exp-1":"var-a"},"goalTriggered":{"g-1":true}}"#
+        )
+
+        #expect(decoded.bucketing["exp-1"] == "var-a")
+        #expect(decoded.goalTriggered["g-1"] == true)
+        #expect(decoded.segments == Segments())
+        #expect(decoded.locations.isEmpty)
+    }
+
+    @Test("StoreData full round-trip preserves segments and locations")
+    func storeDataRoundTripPreservesSegmentsAndLocations() throws {
+        // Construct directly: this case needs non-default segments + locations, which the
+        // `makeStoreData(bucketing:)` factory cannot express (it seeds only bucketing).
+        let original = StoreData(
+            bucketing: ["exp-1": "var-a"],
+            goalTriggered: ["g-1": true],
+            segments: Segments(country: "DE"),
+            locations: ["loc-1": "active"]
+        )
+
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(StoreData.self, from: encoded)
+
+        #expect(decoded.bucketing["exp-1"] == "var-a")
+        #expect(decoded.goalTriggered["g-1"] == true)
+        #expect(decoded.segments.country == "DE")
+        #expect(decoded.locations["loc-1"] == "active")
+    }
+
+    // MARK: - Goal dedup (Story 4.3)
+
+    /// RED-phase contract for the NEW `markGoalTriggeredIfNeeded(goalId:forVisitorKey:)` (does NOT
+    /// exist yet): `func markGoalTriggeredIfNeeded(goalId: String, forVisitorKey: String) async -> Bool`.
+    /// It returns `true` the FIRST time a `(visitorKey, goalId)` pair is seen — marking the goal in
+    /// that key's `StoreData.goalTriggered[goalId]` and persisting the whole store exactly like
+    /// ``saveDecision(variationId:experienceId:storeKey:)`` — and `false` on every repeat. The dedup
+    /// key is the `(visitorKey, goalId)` PAIR: different goals under one visitor, and the same goal
+    /// under different visitors, are independent (matching the Android dedup-key semantics).
+
+    /// One call site for the method under test so no test inline-repeats the await (SonarQube CPD is
+    /// token-based; this keeps the three first/false/independence cases from sharing a duplicate block).
+    private func markGoal(_ goalId: String, on store: DecisionStore, key: String) async -> Bool {
+        await store.markGoalTriggeredIfNeeded(goalId: goalId, forVisitorKey: key)
+    }
+
+    @Test("markGoalTriggeredIfNeeded returns true first call, false second")
+    func goalDedupFirstTrueSecondFalse() async {
+        let store = makeDecisionStore()
+        let key = "acc-proj-v1"
+
+        let firstMark = await markGoal("g-1", on: store, key: key)
+        let repeatMark = await markGoal("g-1", on: store, key: key)
+
+        #expect(firstMark == true)
+        #expect(repeatMark == false)
+    }
+
+    @Test("a different goal on the same visitor is independent")
+    func goalDedupPerGoalWithinVisitor() async {
+        let store = makeDecisionStore()
+        let key = "acc-proj-v1"
+
+        #expect(await markGoal("g-1", on: store, key: key) == true)
+        // g-2 is a distinct goal for the same visitor → not yet triggered.
+        #expect(await markGoal("g-2", on: store, key: key) == true)
+        // g-1 was already marked above → repeat is deduped.
+        #expect(await markGoal("g-1", on: store, key: key) == false)
+    }
+
+    @Test("the same goal under a different visitor key is independent")
+    func goalDedupPerVisitorKey() async {
+        let store = makeDecisionStore()
+
+        #expect(await markGoal("g-1", on: store, key: "k-A") == true)
+        // Same goal id, different visitor key → the dedup key includes the visitor, so not deduped.
+        #expect(await markGoal("g-1", on: store, key: "k-B") == true)
+    }
+
+    @Test("markGoalTriggeredIfNeeded persists across a DecisionStore reload")
+    func goalDedupSurvivesReload() async {
+        // Two DecisionStores over ONE MockFileStore read/write the same persisted bytes, because
+        // the on-disk URL the store resolves is stable. Mirrors `lruOrderSurvivesReload`.
+        let fileStore = MockFileStore()
+        let first = makeDecisionStore(fileStore: fileStore)
+        await first.loadFromDisk()
+        _ = await first.markGoalTriggeredIfNeeded(goalId: "g-1", forVisitorKey: "k")
+
+        let second = makeDecisionStore(fileStore: fileStore)
+        await second.loadFromDisk()
+
+        // The goal is already triggered in the bytes the first store wrote → still deduped.
+        let result = await second.markGoalTriggeredIfNeeded(goalId: "g-1", forVisitorKey: "k")
+        #expect(result == false)
+    }
+
+    @Test("StoreData.goalTriggered survives a JSON encode/decode round-trip")
+    func storeDataGoalTriggeredRoundTrips() throws {
+        // `makeStoreData` only seeds bucketing; this case needs a goalTriggered flag, so construct
+        // the four-field `StoreData` directly (the one place a test re-inlines the init, by necessity).
+        let original = StoreData(bucketing: [:], goalTriggered: ["g-1": true], segments: Segments(), locations: [:])
+
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(StoreData.self, from: encoded)
+
+        #expect(decoded.goalTriggered["g-1"] == true)
+    }
+
+    // MARK: - Segment accessors (AC5, AC10, bd-aqw)
+
+    /// RED-phase contract for the TWO NEW segment accessors on `DecisionStore` (neither exists yet):
+    /// - `func currentSegments(forVisitorKey key: String) -> Segments` — returns that key's
+    ///   `StoreData.segments`, or `Segments()` when the store holds no entry. A NON-async in-memory
+    ///   actor read, mirroring ``bucketingDecisions(forStoreKey:)``.
+    /// - `func setSegments(_ segments: Segments, forVisitorKey key: String) async` — replaces that
+    ///   key's `StoreData.segments` (reconstructing the full `StoreData` so bucketing / goalTriggered /
+    ///   locations are PRESERVED), updates the in-memory map, and persists via `fileStore` (one trailing
+    ///   await) — mirroring the ``markGoalTriggeredIfNeeded(goalId:forVisitorKey:)`` write pattern.
+    ///
+    /// These tests MUST FAIL to COMPILE today ("value of type 'DecisionStore' has no member
+    /// 'currentSegments' / 'setSegments'"), which is valid RED for not-yet-existing members. They reuse
+    /// the `makeDecisionStore(...)` factory and the shared-`MockFileStore` reload pattern (no copied
+    /// setup blocks — SonarQube CPD is token-based).
+
+    @Test("setSegments persists and currentSegments retrieves (AC10 accessor round-trip)")
+    func setSegmentsThenCurrentSegmentsRoundTrips() async {
+        let store = makeDecisionStore()
+
+        await store.setSegments(Segments(country: "JP"), forVisitorKey: "acct-proj-visitor")
+        let segs = await store.currentSegments(forVisitorKey: "acct-proj-visitor")
+
+        #expect(segs == Segments(country: "JP"))
+    }
+
+    @Test("currentSegments returns empty Segments for an unknown key")
+    func currentSegmentsReturnsEmptyForUnknownKey() async {
+        let store = makeDecisionStore()
+
+        #expect(await store.currentSegments(forVisitorKey: "never-set") == Segments())
+    }
+
+    @Test("setSegments preserves bucketing and goalTriggered on the same key")
+    func setSegmentsPreservesOtherStoreDataFields() async {
+        // Seed a bucketing decision first, then set segments on the SAME key: the setSegments
+        // StoreData reconstruction must NOT wipe bucketing (this guards the preserve-other-fields path).
+        let store = makeDecisionStore()
+
+        await store.saveDecision(variationId: "var-a", experienceId: "exp-1", storeKey: "k")
+        await store.setSegments(Segments(country: "DE"), forVisitorKey: "k")
+
+        #expect(await store.currentSegments(forVisitorKey: "k") == Segments(country: "DE"))
+        #expect(await store.bucketingDecisions(forStoreKey: "k")["exp-1"] == "var-a")
+    }
+
+    @Test("segments persist across DecisionStore reload via shared MockFileStore (AC5)")
+    func setSegmentsSurvivesReload() async {
+        // Two DecisionStores over ONE MockFileStore read/write the same persisted bytes, because the
+        // on-disk URL the store resolves is stable. Mirrors `lruOrderSurvivesReload` / `goalDedupSurvivesReload`.
+        let fileStore = MockFileStore()
+        let first = makeDecisionStore(fileStore: fileStore)
+        await first.loadFromDisk()
+        await first.setSegments(Segments(country: "DE"), forVisitorKey: "acct-proj-visitor")
+
+        let second = makeDecisionStore(fileStore: fileStore)
+        await second.loadFromDisk()
+
+        // The segments the first store persisted must be observed by the second store after reload.
+        #expect(await second.currentSegments(forVisitorKey: "acct-proj-visitor") == Segments(country: "DE"))
+    }
 }

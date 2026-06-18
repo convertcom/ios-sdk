@@ -86,6 +86,21 @@ final class URLProtocolStub: URLProtocol {
     /// already have: it reads back only the request for the URL it itself drove.
     private nonisolated(unsafe) static var capturedRequests: [String: URLRequest] = [:]
 
+    /// Process-global PER-URL request COUNT, keyed on `url.absoluteString`: how many
+    /// requests have hit each URL since the last ``reset()``. ``capturedRequests`` above
+    /// retains only the LAST request per URL (it overwrites); this parallel registry
+    /// instead INCREMENTS, so a test can assert HOW MANY times a client called an endpoint
+    /// (e.g. a flush retried N times) via ``recordedRequestCount(for:)``.
+    ///
+    /// The FOURTH `nonisolated(unsafe)` declaration in the file, and it rides the EXACT
+    /// SAME carve-out as the other three (see the file header): the `NSObject`-subclass +
+    /// iOS-15-floor constraints that rule out an `actor` or `Synchronization.Mutex` apply
+    /// identically here. Sound because every access is serialized through the SAME ``lock``
+    /// — the increment lives inside ``startLoading()``'s existing single critical section
+    /// (one lock acquisition with the ``capturedRequests`` write, never a second), the wipe
+    /// inside ``reset()``'s, and the read inside ``recordedRequestCount(for:)``'s.
+    private nonisolated(unsafe) static var requestCounts: [String: Int] = [:]
+
     // MARK: - Registration
 
     /// Inserts `URLProtocolStub` at the front of the configuration's
@@ -121,13 +136,23 @@ final class URLProtocolStub: URLProtocol {
         lock.withLock { capturedRequests[url.absoluteString] }
     }
 
-    /// Clears every registry (responses and failures) and the captured request,
-    /// restoring the empty initial state.
+    /// How MANY requests have hit `url` since the last ``reset()`` — `0` if none. Read under
+    /// ``lock``. Complements ``recordedRequest(for:)`` (which returns only the LAST request for
+    /// a URL): this returns the COUNT, so a test can assert a client made exactly N calls to an
+    /// endpoint. Keyed by `url.absoluteString` so a concurrently-running suite hitting a different
+    /// URL cannot perturb this suite's tally.
+    static func recordedRequestCount(for url: URL) -> Int {
+        lock.withLock { requestCounts[url.absoluteString] ?? 0 }
+    }
+
+    /// Clears every registry (responses and failures), the captured request, and the per-URL
+    /// request count, restoring the empty initial state.
     static func reset() {
         lock.withLock {
             handlers.removeAll()
             failures.removeAll()
             capturedRequests.removeAll()
+            requestCounts.removeAll()
         }
     }
 
@@ -161,6 +186,9 @@ final class URLProtocolStub: URLProtocol {
         // consistent.
         let (failure, matched): (URLError?, StubResponse?) = Self.lock.withLock {
             Self.capturedRequests[url.absoluteString] = capturedRequest
+            // Same lock acquisition as the capture above (NOT a second one): bump the per-URL
+            // tally so a test can assert how MANY requests hit this URL, not just the last.
+            Self.requestCounts[url.absoluteString, default: 0] += 1
             return (Self.failures[url.absoluteString], Self.handlers[url.absoluteString])
         }
 
