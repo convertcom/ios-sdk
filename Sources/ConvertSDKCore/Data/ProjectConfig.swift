@@ -50,6 +50,14 @@ public struct ProjectConfig: Decodable, Sendable {
     /// Experiences decoded tolerantly (wire `experiences`, D4): each element keeps its `id` and
     /// degrades an unknown ``Experience/type`` to `nil` rather than throwing, retaining every entry.
     public var experiences: [ProjectConfig.Experience]?
+    /// The FULL generated experiences (wire `experiences`), retained alongside the stripped
+    /// ``experiences`` so sticky-assignment lookups can reach `key` and the `variations` array that
+    /// the stripped ``Experience`` drops. Decoded PER-ELEMENT (each element under its own `try?` via
+    /// ``DegradingExperience``) so a single drifted element — e.g. the `"a/b_fullstack"` value absent
+    /// from the generated `ExperienceTypes` enum — degrades out alone WITHOUT a whole-array
+    /// `dataCorrupted` throw nulling its valid siblings. `nil` when the field is absent or every
+    /// element degraded. Queried via ``fullExperience(forKey:)``.
+    public var rawExperiences: [Components.Schemas.ConfigExperience]?
     /// Audiences (wire `audiences`) — the generated element type decodes cleanly in the baseline.
     public var audiences: [Components.Schemas.ConfigAudience]?
     /// Segments (wire `segments`) — the generated element type decodes cleanly in the baseline.
@@ -117,6 +125,31 @@ public struct ProjectConfig: Decodable, Sendable {
             [ProjectConfig.Experience].self,
             forKey: .experiences
         )
+        // PC-1: retain the FULL generated experiences too, decoded PER-ELEMENT. A whole-array
+        // `try? decode([ConfigExperience])` would throw on the first drifted element (e.g. the
+        // unknown `"a/b_fullstack"` type → `dataCorrupted`) and the `try?` would null the ENTIRE
+        // array, losing valid siblings. Decoding each element through `DegradingExperience` (whose
+        // `init` never throws — it `try?`s the real type) keeps the unkeyed-container index always
+        // advancing by exactly one, so the loop terminates and a bad element degrades out alone.
+        if var rawArray = try? container.nestedUnkeyedContainer(forKey: .experiences) {
+            var collected: [Components.Schemas.ConfigExperience] = []
+            while !rawArray.isAtEnd {
+                // LOOP-TERMINATION INVARIANT: `DegradingExperience.init` NEVER throws (it `try?`s the
+                // real `ConfigExperience` decode internally), so `rawArray.decode(DegradingExperience
+                // .self)` ALWAYS succeeds and advances the unkeyed-container index by EXACTLY one per
+                // iteration — the `isAtEnd` guard is therefore guaranteed to flip after at most
+                // `count` iterations and the loop terminates. The outer `try?` is defensive/unreachable
+                // (the decode cannot throw). Do NOT remove the never-throws property of
+                // `DegradingExperience`: a throwing element decode here would leave the index un-
+                // advanced on a bad element, spinning this `while` FOREVER. (A drifted element still
+                // degrades out alone — `wrapped.experience` is `nil` — without nulling its siblings.)
+                if let wrapped = try? rawArray.decode(DegradingExperience.self),
+                   let experience = wrapped.experience {
+                    collected.append(experience)
+                }
+            }
+            rawExperiences = collected.isEmpty ? nil : collected
+        }
         audiences = try? container.decodeIfPresent(
             [Components.Schemas.ConfigAudience].self,
             forKey: .audiences
@@ -133,6 +166,103 @@ public struct ProjectConfig: Decodable, Sendable {
             [Components.Schemas.ConfigFeature].self,
             forKey: .features
         )
+    }
+
+    /// The FULL generated experience whose `key` equals `key`, or `nil` when no retained experience
+    /// matches (an unknown key, or an element that degraded out of ``rawExperiences``). Returns the
+    /// FULL ``Components/Schemas/ConfigExperience`` — `key`, `variations`, and the rest — not the
+    /// stripped ``Experience``, so sticky-variation assignment can read the variations array.
+    public func fullExperience(forKey key: String) -> Components.Schemas.ConfigExperience? {
+        rawExperiences?.first { $0.key == key }
+    }
+
+    /// The audience whose `id` equals `id` in the decoded ``audiences`` array, or `nil` for an
+    /// unknown id (lookup miss, not a degrade).
+    public func audience(id: String) -> Components.Schemas.ConfigAudience? {
+        audiences?.first { $0.id == id }
+    }
+
+    /// The location whose `id` equals `id` in the decoded ``locations`` array, or `nil` for an
+    /// unknown id (lookup miss, not a degrade).
+    public func location(id: String) -> Components.Schemas.ConfigLocation? {
+        locations?.first { $0.id == id }
+    }
+
+    /// The embedded ``Components/Schemas/ConfigGoalBase`` (carrying `id`/`key`/`name`) of the goal
+    /// whose `key` equals `key`, or `nil` when no goal matches. The conversion-tracking path uses it
+    /// to map a caller's goalKey → the wire goalId (the base's `id`).
+    ///
+    /// ── Why this reads the `.sentinel` payload, NOT the `.known` arm (D3) ─────────────────────
+    /// On the wire every goal carries `type` as a bare String discriminator (`"advanced"`, …).
+    /// Decoding through ``ConfigGoalOrSentinel`` therefore ALWAYS lands on `.sentinel`, never
+    /// `.known`: ``Components/Schemas/ConfigGoal/init(from:)`` selects its `oneOf` case from the
+    /// String `type`, then the composed ``Components/Schemas/ConfigGoalBase/_type`` is typed
+    /// `[GoalTypes]` (an array) and the scalar String collides → `typeMismatch` → the wrapper falls
+    /// back to `.sentinel` (drift D3, see the type doc above). The `.sentinel` `JSONValue` payload
+    /// RETAINS every field (`id`/`key`/`name`/`type`), so this resolves the base from that payload.
+    /// A reader that inspected only the `.known` arm would return `nil` for EVERY real goal and
+    /// silently break goalKey→goalId resolution. The `.known` arm is still handled (a future schema
+    /// fix could make goals decode `.known`); a goal whose `.sentinel` payload lacks a `key` — or
+    /// whose `key` does not match — is simply skipped, never crashed.
+    public func goal(forKey key: String) -> Components.Schemas.ConfigGoalBase? {
+        goals?.lazy.compactMap(Self.goalBase(from:)).first { $0.key == key }
+    }
+
+    /// Extracts the embedded ``Components/Schemas/ConfigGoalBase`` from ONE goal element regardless
+    /// of which ``SentinelWrapped`` arm it decoded to: the `.value1` base for a (today unreachable)
+    /// `.known` goal, or a base reconstructed from the retained `JSONValue` payload for a `.sentinel`
+    /// goal (the production reality — see ``goal(forKey:)``). `nil` only if a sentinel payload is not
+    /// a JSON object (which a well-formed goal never is).
+    private static func goalBase(from goal: ConfigGoalOrSentinel) -> Components.Schemas.ConfigGoalBase? {
+        switch goal {
+        case let .known(configGoal):
+            return base(fromKnown: configGoal)
+        case let .sentinel(payload):
+            return base(fromSentinelPayload: payload)
+        }
+    }
+
+    /// The composed ``Components/Schemas/ConfigGoalBase`` (`value1`) of a decoded
+    /// ``Components/Schemas/ConfigGoal``. Every `oneOf` arm composes the base as its `value1`, so the
+    /// switch reaches it uniformly. Unreachable for production goal `type` today (they sentinel —
+    /// D3), but handled so a future `.known`-decoding goal still resolves.
+    private static func base(fromKnown goal: Components.Schemas.ConfigGoal) -> Components.Schemas.ConfigGoalBase {
+        switch goal {
+        case let .advanced(value): return value.value1
+        case let .clicks_element(value): return value.value1
+        case let .clicks_link(value): return value.value1
+        case let .code_trigger(value): return value.value1
+        case let .dom_interaction(value): return value.value1
+        case let .ga_import(value): return value.value1
+        case let .revenue(value): return value.value1
+        case let .scroll_percentage(value): return value.value1
+        case let .submits_form(value): return value.value1
+        case let .visits_page(value): return value.value1
+        }
+    }
+
+    /// Reconstructs a ``Components/Schemas/ConfigGoalBase`` from a `.sentinel` goal's retained
+    /// `JSONValue` payload by reading the `id`/`name`/`key` string members. `_type`/`rules` are left
+    /// `nil`: the scalar wire `type` cannot populate `[GoalTypes]` (that collision is WHY the goal
+    /// sentinels), and the conversion path needs only `id`/`key`. `nil` when the payload is not a
+    /// JSON object (a well-formed goal is always an object, so real goals always reconstruct).
+    private static func base(fromSentinelPayload payload: JSONValue) -> Components.Schemas.ConfigGoalBase? {
+        guard case let .object(pairs) = payload else { return nil }
+        return Components.Schemas.ConfigGoalBase(
+            id: stringValue(of: "id", in: pairs),
+            name: stringValue(of: "name", in: pairs),
+            key: stringValue(of: "key", in: pairs)
+        )
+    }
+
+    /// The `String` value of the `name`-keyed member in a `JSONValue` object's pairs, or `nil` when
+    /// the member is absent or not a JSON string. Centralizes the `.object` member read so the
+    /// sentinel reconstruction never inlines the find-then-unwrap per field.
+    private static func stringValue(of name: String, in pairs: [JSONValue.Pair]) -> String? {
+        guard case let .string(value)? = pairs.first(where: { $0.key == name })?.value else {
+            return nil
+        }
+        return value
     }
 
     /// The degrading project sub-tree. Each field degrades independently so a drifted field
@@ -199,5 +329,28 @@ public struct ProjectConfig: Decodable, Sendable {
                 forKey: .type
             )
         }
+    }
+}
+
+/// Decodes ONE `experiences` array element permissively for ``ProjectConfig/rawExperiences``: its
+/// `init(from:)` ALWAYS succeeds (it `try?`s the real ``Components/Schemas/ConfigExperience`` decode),
+/// capturing the experience when the element decodes and leaving ``experience`` `nil` otherwise. That
+/// guarantee is load-bearing: when used with `UnkeyedDecodingContainer.decode(_:)`, a non-throwing
+/// element decode advances the container index by EXACTLY one per call, so the per-element retention
+/// loop in ``ProjectConfig/init(from:)`` always terminates (bounded by the array length) AND a single
+/// drifted element — e.g. an unknown `type` enum value that throws `dataCorrupted` — degrades to `nil`
+/// without aborting the whole array. File-private (depth 0) to stay within SwiftLint `nesting`.
+private struct DegradingExperience: Decodable {
+    /// The decoded experience, or `nil` when this element failed to decode (degraded out).
+    let experience: Components.Schemas.ConfigExperience?
+
+    init(from decoder: any Decoder) throws {
+        // NEVER rethrows — load-bearing: a failing `ConfigExperience` decode (e.g. unknown `type`)
+        // becomes `nil` rather than propagating. This is the property the per-element retention loop
+        // in `ProjectConfig.init(from:)` relies on for termination: because this `init` cannot throw,
+        // `UnkeyedDecodingContainer.decode(DegradingExperience.self)` always advances the container
+        // index by exactly one. If this were ever made to rethrow, a bad element would leave the index
+        // un-advanced and spin that loop forever. Do NOT remove the `try?`.
+        experience = try? Components.Schemas.ConfigExperience(from: decoder)
     }
 }
