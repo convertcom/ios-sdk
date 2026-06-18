@@ -53,7 +53,10 @@ public actor EventQueue: EventSink {
     /// The shared bus the queue fires ``SystemEvent/apiQueueReleased`` on after a successful flush.
     private let eventBus: EventBus
     /// When `false`, every enqueue is dropped: nothing buffers and nothing uploads (AC9 / FR6).
-    private let trackingEnabled: Bool
+    /// Mutable so `ConvertSDK.setTrackingEnabled(_:)` can flip the runtime gate without
+    /// requiring a rebuild of the queue (Story 5.6). Actor isolation makes the mutation
+    /// race-free with no lock and no `@unchecked Sendable`. [Source: Story 5.6 / AC1]
+    private var trackingEnabled: Bool
     /// The injected time source the interval timer sleeps on (NFR21 determinism in tests).
     private let clock: any Clock
     /// The durable pending-event-queue persistence (Story 5.2 on-disk persistence + exactly-once).
@@ -114,6 +117,21 @@ public actor EventQueue: EventSink {
     /// Cancels the interval-timer loop when the queue is released.
     deinit {
         timerTask?.cancel()
+    }
+
+    // MARK: - Runtime tracking toggle (Story 5.6)
+
+    /// Sets the runtime tracking gate. When `enabled` transitions to `false` the next
+    /// `enqueue` call is dropped; when it transitions back to `true` new entries flow
+    /// through again. No queue purge on disable — already-buffered entries are delivered
+    /// on the next flush. [Source: Story 5.6 / AC1, AC2 (no replay / no purge)]
+    ///
+    /// `package` (NOT `public`) — only `ConvertSDK.setTrackingEnabled(_:)` in the same
+    /// package calls this, via a `resolvedSink as? EventQueue` downcast (the same access
+    /// pattern `flush()` and `persistBeforeBackground()` use for `LifecycleObserver`). External
+    /// SDK consumers reach the toggle only through the public ``ConvertSDK`` API.
+    package func setTrackingEnabled(_ value: Bool) {
+        trackingEnabled = value
     }
 
     // MARK: - EventSink

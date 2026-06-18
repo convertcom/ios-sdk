@@ -1,17 +1,13 @@
 import ConvertSDK
+import Network
 import SwiftUI
 
 /// App-level state for the Convert SDK demo.
 ///
-/// Owns the single ``ConvertSDK`` instance (keeping the SDK out of the App
-/// struct and out of any View's value semantics) and publishes a coarse
-/// ``ConfigState`` the UI can observe. `@MainActor` because it publishes UI
-/// state that SwiftUI observes on the main actor.
-///
-/// Story 7.1 scope: construct the SDK against the FS-Test-Proj staging project
-/// and kick off readiness *best-effort*. It deliberately does NOT act on the
-/// outcome of `ready()` beyond flipping a minimal published state — the real
-/// config state machine (timeout, WARN-before-READY, retries) is Story 7.6.
+/// Owns the single ``ConvertSDK`` instance (keeping the SDK out of the App struct and any View's
+/// value semantics) and publishes the ``ConfigState`` readiness machine, the sticky decisioning
+/// ``context``, and the connectivity flag the UI observes. `@MainActor`. The state-machine,
+/// reset-visitor, and connectivity logic live in the `DemoViewModel+Config.swift` extension.
 @MainActor
 final class DemoViewModel: ObservableObject {
 
@@ -21,9 +17,16 @@ final class DemoViewModel: ObservableObject {
     /// `@unchecked` wrapper under `SWIFT_STRICT_CONCURRENCY: complete`.
     let sdk: ConvertSDK
 
-    /// Coarse readiness signal for the UI. Minimal Story 7.1 stub; Story 7.6
-    /// replaces the transitions here with the full state machine.
-    @Published private(set) var configState: ConfigState = .loading
+    /// The exact ``ConvertConfiguration`` the SDK was built from, retained because there is no
+    /// public config-snapshot accessor on ``ConvertSDK`` — the Config panel accessors (in
+    /// `DemoViewModel+Config.swift`) read the demo's own copy. `let` (NOT `private`) so that
+    /// cross-file extension reads it.
+    let configuration: ConvertConfiguration
+
+    /// Coarse readiness signal for the UI, driven by the ``ConfigState`` machine in `start()`.
+    /// `internal` setter (not `private(set)`) because that driver is cross-file in
+    /// `DemoViewModel+Config.swift` (like ``context``/``events``); no external code writes it.
+    @Published var configState: ConfigState = .loading
 
     /// The two segments of the Event Inspector sheet (Story 7.2 / DEMO-3).
     ///
@@ -109,33 +112,30 @@ final class DemoViewModel: ObservableObject {
     /// Swift `private` does not cross files even for the same type.
     let inspectorEventCap = 200
 
-    /// The single, reusable decisioning context for every experience run.
+    /// The current, reusable decisioning context every run-screen method buckets against.
     ///
-    /// Created lazily on first run (`sdk.createContext()` is synchronous on the main
-    /// actor) and reused thereafter so bucketing is sticky/deterministic: a re-run for
-    /// the same visitor yields the same variation (a fresh context would re-roll the
-    /// visitor and could bucket differently between taps). ``ConvertContext`` is
-    /// `Sendable`, so a `lazy var` on this `@MainActor` type is sound under
-    /// `SWIFT_STRICT_CONCURRENCY: complete`. `internal` (not `private`) so the
-    /// `DemoViewModel+Conversions.swift` extension's ``trackGoal()`` runs this SAME
-    /// sticky context across files (Swift `private` does not cross files).
-    lazy var context: ConvertContext = sdk.createContext()
+    /// Constructed once in ``init()`` and reused so bucketing is sticky/deterministic across
+    /// re-runs for the same visitor. `@Published` (not `lazy`) so ``resetVisitor()``'s context
+    /// SWAP republishes and every observing screen re-renders. `Sendable`, so publishing it from
+    /// this `@MainActor` type is concurrency-clean. `internal` setter (the swapper is cross-file —
+    /// see the `DemoViewModel+Config.swift` header for the full republish + access rationale).
+    @Published var context: ConvertContext
 
     /// The experience key the single-experience run targets.
     ///
-    /// A known-good, unaudienced, active key from the committed FS-Test-Proj staging
-    /// config, so a default context buckets it deterministically. The Config screen will
-    /// surface keys in a later story; until then the demo targets this one baseline key,
-    /// and a `nil` return is rendered as an actionable card, never a crash.
-    private static let singleExperienceKey = "test-experience-ab-fullstack-4"
+    /// A known-good, unaudienced, active key from the committed FS-Test-Proj staging config,
+    /// so a default context buckets it deterministically. A `nil` return is rendered as an
+    /// actionable card, never a crash. `static let` (NOT `private`) so the
+    /// `DemoViewModel+Config.swift` panel surfaces it across files (like ``absentVariableKey``).
+    static let singleExperienceKey = "test-experience-ab-fullstack-4"
 
     /// The feature key the single-feature run targets.
     ///
     /// A REAL key from the committed FS-Test-Proj staging config (feature id `100334`),
     /// carrying the richest typed-variable spread there: `price` (float), `button-height`
-    /// (integer), and `additionalData` (json). The single-feature Run resolves this key so
-    /// the Features screen can demonstrate all three variable types at once.
-    private static let singleFeatureKey = "feature-2"
+    /// (integer), and `additionalData` (json). `static let` (NOT `private`) so the
+    /// `DemoViewModel+Config.swift` panel surfaces it across files (like ``absentVariableKey``).
+    static let singleFeatureKey = "feature-2"
 
     /// A variable name guaranteed NOT present on any feature in the config.
     ///
@@ -157,30 +157,18 @@ final class DemoViewModel: ObservableObject {
     /// limit; on insert, the oldest rows past this many are trimmed from the tail.
     private let resultCardCap = 20
 
-    /// The buffer the Features screen renders, newest-first.
-    ///
-    /// Each run prepends one ``Feature`` per resolved feature via
-    /// ``prepend(_:into:cap:)`` (newest at index 0), mirroring ``resultCards`` and
-    /// ``events``. Exposed read-only — only the feature run methods mutate it. Bounded at
-    /// ``featureCap`` newest rows. `Feature` is not `Identifiable`, and its `id` is
-    /// `""` for a `.disabled` feature while `key` collides across re-runs of the same key, so
-    /// the View keys its `ForEach` on the enumerated offset (see ``FeaturesView``); this buffer
-    /// just exposes the values.
+    /// Features buffer the Features screen renders, newest-first. Mirrors ``resultCards``:
+    /// read-only, bounded at ``featureCap``, mutated via ``prepend(_:into:cap:)``. The View
+    /// keys `ForEach` on enumerated offset (not `id`) because `Feature.id` is `""` for
+    /// `.disabled` and `key` collides across re-runs.
     @Published private(set) var evaluatedFeatures: [Feature] = []
 
-    /// Upper bound on ``evaluatedFeatures`` so repeated runs can't grow the buffer without
-    /// limit; on insert, the oldest rows past this many are trimmed from the tail.
+    /// Upper bound on ``evaluatedFeatures``; oldest rows past it trimmed on insert.
     private let featureCap = 20
 
-    /// A neutral empty-state note for the Features screen, or `nil` when there is nothing
-    /// to surface.
-    ///
-    /// Set by ``runFeatures()`` ONLY when the SDK returns `[]` (degraded / not-ready /
-    /// ineligible) — a valid outcome, NOT an error. The Features screen renders this in a
-    /// neutral empty-state voice, deliberately NOT as a `ResultCard` error card (Features
-    /// does not use `ResultCard`; that is the Experiences screen's surface). Cleared (set to
-    /// `nil`) at the START of every ``runFeature()`` / ``runFeatures()`` call so a later
-    /// successful run clears a stale note.
+    /// Neutral empty-state note for the Features screen (`nil` when nothing to surface).
+    /// Set by ``runFeatures()`` when the SDK returns `[]` (valid degraded outcome, not an error);
+    /// cleared at the start of every ``runFeature()`` / ``runFeatures()`` call.
     @Published private(set) var featuresEmptyNote: String?
 
     // MARK: - Conversions (Story 7.5 / DEMO-5)
@@ -211,32 +199,39 @@ final class DemoViewModel: ObservableObject {
     /// ``absentVariableKey``), driving the red `.error` card WITHOUT an SDK call.
     static let unknownGoalKey = "__demo_unknown_goal__"
 
-    init() {
-        // FS-Test-Proj staging: account 10035569 / project 10034190. The
-        // "account/project" sdkKey form resolves to the live config URL
-        // {apiConfigEndpoint}/config/10035569/10034190 on the default CDN
-        // (cdn-4.convertexperiments.com/api/v1). No secret is required for
-        // the demo to compile and launch-init; live decisioning is Story 7.3+.
-        let configuration = ConvertConfiguration(sdkKey: "10035569/10034190")
-        sdk = ConvertSDK(configuration: configuration)
-    }
+    // MARK: - Reset-visitor & connectivity (Story 7.6 / DEMO-6)
+    // Stored state for the reset-visitor + connectivity features (stored props can't live in an
+    // extension). Its methods AND the full access-control / `NWPathMonitor` strict-concurrency
+    // rationale live in `DemoViewModel+Config.swift` — see that file's header.
 
-    /// Fires SDK readiness best-effort without blocking the UI.
-    ///
-    /// This method is `@MainActor` (inherited from the type), so it runs on the
-    /// main actor; `ready()` is awaited (it suspends; it does not block the main
-    /// actor — the SDK performs its network I/O internally) and
-    /// the throw is swallowed in Story 7.1 — a transient network failure resolves
-    /// degraded rather than throwing, and the only thrown case (unrecoverable
-    /// config) is surfaced through ``ConfigState`` here as a placeholder. Story 7.6
-    /// owns the real error surfacing.
-    func start() async {
-        do {
-            try await sdk.ready()
-            configState = .loaded
-        } catch {
-            configState = .failed(reason: error.localizedDescription)
-        }
+    /// Masked id of the visitor from the most recent ``resetVisitor()`` (`nil` before any reset);
+    /// PII-safe (prefix + ellipsis, never the full UUID), read by the Config screen.
+    @Published var lastResetVisitorMasked: String?
+
+    /// Whether the device has a satisfied network path (driven by ``pathMonitor``); defaults `true`.
+    /// `internal` setter — the monitor callback that writes it is cross-file (see +Config header).
+    @Published var isOnline = true
+
+    /// Live runtime tracking flag for the Config toggle (Story 5.6). Seeded from
+    /// ``ConvertConfiguration/networkTracking``; updated by ``setTracking(_:)`` via
+    /// ``ConvertSDK/isTrackingEnabled()`` read-back. `internal` setter — writer is cross-file.
+    @Published var isRuntimeTrackingEnabled: Bool
+
+    /// The `NWPathMonitor` backing ``isOnline`` (touched only from the main actor) and the serial
+    /// queue it delivers updates on (`start(queue:)` requires one). See the +Config header.
+    let pathMonitor = NWPathMonitor()
+    let pathMonitorQueue = DispatchQueue(label: "com.convert.demo.path-monitor")
+
+    init() {
+        // FS-Test-Proj staging: account 10035569 / project 10034190. The "account/project"
+        // sdkKey form resolves to {apiConfigEndpoint}/config/10035569/10034190 on the default
+        // CDN (cdn-4.convertexperiments.com/api/v1); no secret needed to compile + launch-init.
+        configuration = ConvertConfiguration(sdkKey: "10035569/10034190")
+        sdk = ConvertSDK(configuration: configuration)
+        // Eager sticky context (was a `lazy var`; `@Published` needs a non-lazy stored property).
+        context = sdk.createContext()
+        // Seed the runtime toggle from the static init flag (networkTracking defaults true).
+        isRuntimeTrackingEnabled = configuration.networkTracking
     }
 
     /// Presents the Event Inspector sheet from any tab's toolbar button.
