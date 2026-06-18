@@ -6,6 +6,15 @@ import Foundation
 
 /// The sole error type thrown by the SDK (AOD-6 — one thrown type, never bare `Error`).
 ///
+/// ```swift
+/// // given a constructed `sdk`
+/// do {
+///     try await sdk.ready()
+/// } catch let error as ConvertError {
+///     print(error.errorDescription ?? "unknown error")
+/// }
+/// ```
+///
 /// `errorDescription` follows the UX-DR18 voice: *what happened, then an actionable hint*.
 /// Messages never reduce to a bare code or the lone word "error".
 public enum ConvertError: LocalizedError, Sendable {

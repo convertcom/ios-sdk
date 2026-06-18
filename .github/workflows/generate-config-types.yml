@@ -1,0 +1,62 @@
+name: Generate Config Types
+on:
+  workflow_dispatch:
+  push:
+    # main only: the backend serving pipeline (update-ts-api-serving.yml) regenerates
+    # these config types and opens a PR here, so firing on every branch push would run
+    # a redundant no-diff codegen. On main this stays a determinism backstop.
+    branches: [main]
+    paths:
+      - "Scripts/generate-config-types/openapi.yaml"
+# Minimum required for peter-evans/create-pull-request to push a branch and open a
+# PR (AC3): contents:write to create the codegen branch, pull-requests:write to
+# open the PR. No other scopes are granted.
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  regenerate:
+    name: Regenerate config types & open PR
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Swift toolchain version
+        run: swift --version
+      - name: Install PyYAML in a venv (runner images ship no third-party Python packages)
+        # run.sh's discriminator-manifest derivation imports yaml; macos-26's
+        # Python 3.14 has no PyYAML and PEP 668 can block system pip installs —
+        # a throwaway venv + the PYTHON env var run.sh honors is the clean path.
+        run: |
+          python3 -m venv /tmp/pyyaml-venv
+          /tmp/pyyaml-venv/bin/pip install --quiet pyyaml
+          echo "PYTHON=/tmp/pyyaml-venv/bin/python" >> "$GITHUB_ENV"
+      - name: Regenerate config types (run.sh — generate + filter + Option-D rewrite + deprecation strip)
+        # CI runs run.sh end-to-end (ratified AC2), NOT the raw generator: this
+        # regenerates ConfigSchemas.swift + discriminator-manifest.json. The first
+        # `swift run` resolves+builds swift-openapi-generator 1.12.2 from the ISOLATED
+        # Scripts/generate-config-types/Package.swift manifest (never the root graph).
+        run: Scripts/generate-config-types/run.sh
+      - name: Open PR with regenerated config types
+        # No-ops if the working tree is clean (no spec change → no diff → no PR).
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676  # v7.0.11
+        with:
+          base: main
+          branch: codegen/regenerate-config-types
+          commit-message: "chore(codegen): regenerate config types from OpenAPI spec"
+          title: "chore(codegen): regenerate config types from OpenAPI spec"
+          body: |
+            Regenerated the config Codable types from the committed serving spec
+            (`Scripts/generate-config-types/openapi.yaml`).
+
+            **Trigger:** a change to the committed serving spec, or a manual
+            `workflow_dispatch`.
+
+            **What changed:** the diff is the deterministic output of
+            `Scripts/generate-config-types/run.sh` — swift-openapi-generator 1.12.2
+            (filtered, types-only) followed by the Option-D OpenAPIRuntime rewrite
+            and the upstream-#715 deprecation strip. Affected files:
+            `Sources/ConvertSDKCore/Generated/ConfigSchemas.swift` and
+            `Sources/ConvertSDKCore/Generated/discriminator-manifest.json`.
+
+            Review the diff and merge if the regenerated output is correct.
