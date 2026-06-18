@@ -1,0 +1,5 @@
+# Release tooling dependency tree — never committed. The pinned, reproducible
+# tree lives in package-lock.json (committed); node_modules is the materialized
+# install and stays local / CI-only. Keeps the isolated release manifest (AC5.3)
+# out of the SDK's git footprint.
+node_modules/
