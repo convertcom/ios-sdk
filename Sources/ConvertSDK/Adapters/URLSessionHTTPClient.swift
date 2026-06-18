@@ -7,13 +7,15 @@
 import ConvertSDKCore
 import Foundation
 
-// `URLSession`-backed implementation of the `HTTPClient` port.
-//
-// The SDK always stamps its own `User-Agent` ("ConvertAgent/<version>") on every
-// outbound request, applied AFTER the caller's headers so it always wins (a
-// caller-supplied `User-Agent` is overwritten, never appended).
-//
-// @unchecked Sendable: URLSession is thread-safe; session is immutable after init
+/// `URLSession`-backed implementation of the `HTTPClient` port for foreground config
+/// fetches and event delivery.
+///
+/// An infrastructure adapter, not part of the everyday decisioning API — it is `public`
+/// only so it can be injected for dependency-injection and testing. The SDK always stamps
+/// its own `User-Agent` (`ConvertAgent/<version>`) on every outbound request, applied after
+/// the caller's headers so it always wins (a caller-supplied `User-Agent` is overwritten,
+/// never appended). `@unchecked Sendable`: `URLSession` is thread-safe and the stored
+/// session is immutable after `init`.
 public final class URLSessionHTTPClient: @unchecked Sendable, HTTPClient {
     /// The session every request is issued through. Immutable after init; tests inject
     /// a stub-installed session, production uses ``makeDefaultSession()``.

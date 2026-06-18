@@ -481,3 +481,86 @@ actor MockClock: Clock {
         }
     }
 }
+
+// MARK: - MockEventQueueStore
+
+/// Test double for ``EventQueueStore`` (the durable pending-event-queue persistence port the
+/// `EventQueue` loads/persists/clears through, Story 5.2 on-disk persistence). Lives in THIS
+/// target — not shared from `ConvertSDKTests/MockPorts.swift` — for the same target-visibility
+/// reason as ``MockEventUploader`` / ``MockEventSink`` above: `ConvertSDKCoreTests` cannot see the
+/// `ConvertSDKTests` copy, and `EventQueueTests` lives here.
+///
+/// Shape: `actor` — `load`/`persist`/`clear` are all `async throws`, so actor isolation satisfies
+/// the port with NO `Sendable` suppression (matching ``MockEventUploader`` / ``MockFileStore``;
+/// unlike the synchronous mocks that need ``LockedBox``). It models disk as one in-memory
+/// `storedEvents` cell: ``persist(_:)`` overwrites it, ``clear()`` empties it, ``load()`` returns
+/// it — so a test can assert BOTH how many times each side effect fired (the three call counters)
+/// and WHAT currently sits "on disk" (``storedEvents``).
+///
+/// ── `seed(_:)` helper ─────────────────────────────────────────────────────────────────────────
+/// Pre-populates ``storedEvents`` WITHOUT bumping ``persistCallCount`` — it stages the cold-start /
+/// disk-first fixture the way a prior process would have left the queue file, so the counters still
+/// reflect only the calls the SUBJECT made during the test (a `persist` would conflate fixture setup
+/// with subject behavior). It is an `actor`-isolated method, so a test awaits it before the action.
+actor MockEventQueueStore: EventQueueStore {
+    /// The events currently "on disk": set by ``persist(_:)`` / ``seed(_:)``, emptied by ``clear()``,
+    /// returned by ``load()``. A test reads it to confirm a failed flush landed its batch on disk.
+    private(set) var storedEvents: [TrackingEvent] = []
+    /// Number of times ``load()`` was invoked (e.g. once per `drain()` / `start()` in the GREEN impl).
+    private(set) var loadCallCount = 0
+    /// Number of times ``persist(_:)`` was invoked — the failed-flush-persists-to-disk signal (AC1).
+    private(set) var persistCallCount = 0
+    /// Number of times ``clear()`` was invoked — the drain-clears-disk signal (AC3).
+    private(set) var clearCallCount = 0
+
+    func load() async throws -> [TrackingEvent] {
+        loadCallCount += 1
+        return storedEvents
+    }
+
+    func persist(_ events: [TrackingEvent]) async throws {
+        persistCallCount += 1
+        storedEvents = events
+    }
+
+    func clear() async throws {
+        clearCallCount += 1
+        storedEvents = []
+    }
+
+    /// Pre-populates ``storedEvents`` for a cold-start / disk-first fixture WITHOUT counting as a
+    /// ``persist(_:)`` — so the counters reflect only the subject's calls, not fixture setup.
+    func seed(_ events: [TrackingEvent]) {
+        storedEvents = events
+    }
+
+    // MARK: - Background-upload in-flight marker (Story 5.3 / F-052 — cross-path exactly-once)
+
+    /// Models the on-disk in-flight marker's presence: staged via ``seedInFlight(_:)`` or set/cleared by
+    /// the subject through the three port methods below. A test reads it to confirm the marker's state.
+    private(set) var inFlight = false
+    /// Number of times ``markBackgroundUploadInFlight()`` was invoked.
+    private(set) var markInFlightCallCount = 0
+    /// Number of times ``clearBackgroundUploadInFlight()`` was invoked — the reconcile-releases-marker signal.
+    private(set) var clearInFlightCallCount = 0
+
+    func markBackgroundUploadInFlight() async throws {
+        markInFlightCallCount += 1
+        inFlight = true
+    }
+
+    func clearBackgroundUploadInFlight() async throws {
+        clearInFlightCallCount += 1
+        inFlight = false
+    }
+
+    func isBackgroundUploadInFlight() async throws -> Bool {
+        inFlight
+    }
+
+    /// Stages the in-flight marker WITHOUT bumping ``markInFlightCallCount`` — fixture setup (mirrors
+    /// ``seed(_:)``), so the counters reflect only the subject's own calls.
+    func seedInFlight(_ value: Bool) {
+        inFlight = value
+    }
+}
