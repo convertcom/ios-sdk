@@ -2,6 +2,10 @@ name: Generate Config Types
 on:
   workflow_dispatch:
   push:
+    # main only: the backend serving pipeline (update-ts-api-serving.yml) regenerates
+    # these config types and opens a PR here, so firing on every branch push would run
+    # a redundant no-diff codegen. On main this stays a determinism backstop.
+    branches: [main]
     paths:
       - "Scripts/generate-config-types/openapi.yaml"
 # Minimum required for peter-evans/create-pull-request to push a branch and open a

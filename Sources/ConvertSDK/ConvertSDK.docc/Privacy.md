@@ -47,11 +47,12 @@ Paste the following into your App Store **App Privacy** questionnaire for the po
 
 ## No consent management — you own the decision
 
-The SDK ships **no consent-management UI and no opt-out API**. It does not store a consent flag, present a consent dialog, or gate itself on one. Consent is your decision to make, and you enforce it with three controls you already hold:
+The SDK ships **no consent-management UI**. It does not store a consent flag, present a consent dialog, or gate itself on one. Consent is your decision to make, and you enforce it with four controls you hold:
 
 - **Don't initialize.** If a user has not consented, simply do not construct the SDK. With no ``ConvertSDK/init(configuration:)`` call there is no identifier, no bucketing, and no event.
 - **Disable delivery for the whole SDK (static).** Construct the SDK with ``ConvertConfiguration/networkTracking`` set to `false`. Bucketing still resolves so your UI can decide, but no exposure or conversion event is ever sent. This is the reliable kill-switch for *all* tracking, including feature evaluation.
 - **Disable delivery for a single decision (per-call).** Pass `enableTracking: false` to ``ConvertContext/runExperience(_:enableTracking:)`` to bucket a visitor without emitting that exposure event. Note this per-call flag governs the **experience** path only; the **feature** path (``ConvertContext/runFeature(_:)``) takes no `enableTracking` parameter (Android parity), so use the static `networkTracking` flag when you need to suppress feature tracking.
+- **Disable delivery at runtime (whole SDK, mid-session).** Call ``ConvertSDK/setTrackingEnabled(_:)`` at any point after initialization. `await sdk.setTrackingEnabled(false)` stops NEW bucketing and conversion events from being collected; events already buffered before the call still flush on the next delivery cycle. `await sdk.setTrackingEnabled(true)` re-opens delivery (suppressed events are not replayed). ``ConvertSDK/isTrackingEnabled()`` reads the current state. This is the supported consent-withdrawal path for GDPR mid-session opt-out — the SDK ships the control; you own the decision.
 
 Whichever you choose, bucketing and tracking are independent of any advertising framework — there is no IDFA, IDFV, or ATT in the loop. For the full mechanics of how delivery is suppressed and how events behave offline, see <doc:OfflineAndBackgroundDelivery>.
 

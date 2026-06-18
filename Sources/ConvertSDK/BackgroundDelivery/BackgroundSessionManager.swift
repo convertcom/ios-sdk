@@ -58,7 +58,7 @@ final class BackgroundSessionManager: BackgroundUploadEnqueueing, @unchecked Sen
     /// The canonical, never-changing `URLSessionConfiguration.background(withIdentifier:)` identifier.
     /// This is the ONLY place the literal appears; the OS keys the resumable background session by it,
     /// so it must remain stable across launches and unique within the process.
-    static let sessionIdentifier = "com.convertexperiences.sdk.background-upload"
+    static let sessionIdentifier = "com.convertexperiments.sdk.background-upload"
 
     /// The SDK version stamped into the non-overridable `ConvertAgent/<version>` User-Agent.
     private let sdkVersion: String

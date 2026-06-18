@@ -165,19 +165,6 @@ public final class ConvertContext: Sendable {
         self.segmentsManager = SegmentsManager(decisionStore: decisionStore, logger: logger)
     }
 
-    /// Whether event delivery is enabled for this context's SDK (FR6 static `network.tracking`).
-    ///
-    /// The caller-side gate the enqueue sites honour: when `false`, bucketing/decisioning still runs and
-    /// returns decisions, but produced tracking events are NOT enqueued (suppression is a CALLER concern
-    /// here, not an `EventQueue` concern). Story 2.4 scaffolded this hook; Story 5.4 made it load-bearing —
-    /// ``trackConversion(_:goalData:forceMultipleTransactions:)`` reads ``ConvertSDK/networkTrackingEnabled``
-    /// directly to gate its two conversion enqueues, and ``runExperience(_:enableTracking:)`` /
-    /// ``runExperiences(enableTracking:)`` combine it with the per-call flag threaded into the bucketing
-    /// path. This accessor remains the public-intent expression of that same flag.
-    internal func trackingEnabled() -> Bool {
-        sdk.networkTrackingEnabled
-    }
-
     /// Runs one experience and returns the bucketed ``Variation``, or `nil` when none applies.
     ///
     /// ```swift
@@ -216,11 +203,12 @@ public final class ConvertContext: Sendable {
         // manager rebuilds internally; explicit createContext attributes still win on collision.
         let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
         let attributes = mergedAttributes(stringAttributes(), with: segments)
-        // Thread the COMBINED gate (FR6 global `network.tracking` AND the per-call `enableTracking`) into
+        // Thread the COMBINED gate (FR6 global tracking flag AND the per-call `enableTracking`) into
         // the manager: the variation is still selected/persisted/fired, but `BucketingManager` skips the
         // bucketing enqueue when EITHER flag is false — so a globally-disabled SDK enqueues nothing at the
-        // sink even though decisioning is unchanged (Story 5.4 / AC1, AC3). The public `enableTracking`
-        // parameter and its default are unchanged; only the value threaded down is combined.
+        // sink even though decisioning is unchanged (Story 5.4 / AC1, AC3; Story 5.6 extends to the
+        // runtime-mutable flag). The public `enableTracking` parameter and its default are unchanged;
+        // only the value threaded down is combined.
         return await experienceManager.selectVariation(
             forKey: key,
             in: config,
@@ -229,7 +217,7 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: [:],
-            enableTracking: sdk.networkTrackingEnabled && enableTracking
+            enableTracking: await sdk.isTrackingEnabled() && enableTracking
         )
     }
 
@@ -314,10 +302,11 @@ public final class ConvertContext: Sendable {
         // diverge) — each experience's audience gate sees the visitor's persisted segments.
         let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
         let attributes = mergedAttributes(stringAttributes(), with: segments)
-        // Thread the COMBINED gate (global `network.tracking` AND per-call `enableTracking`) into the bulk
-        // path, exactly as the single-experience path does (run-all mirrors run-single, not diverge): each
-        // per-experience bucketing enqueue is suppressed when EITHER flag is false, while every variation is
-        // still selected/persisted/fired (Story 5.4 / AC1, AC3).
+        // Thread the COMBINED gate (global runtime tracking flag AND per-call `enableTracking`) into the
+        // bulk path, exactly as the single-experience path does (run-all mirrors run-single, not diverge):
+        // each per-experience bucketing enqueue is suppressed when EITHER flag is false, while every
+        // variation is still selected/persisted/fired (Story 5.4 / AC1, AC3; Story 5.6 extends to
+        // the runtime-mutable flag).
         return await experienceManager.selectVariations(
             in: config,
             visitorId: visitorId,
@@ -325,7 +314,7 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: [:],
-            enableTracking: sdk.networkTrackingEnabled && enableTracking
+            enableTracking: await sdk.isTrackingEnabled() && enableTracking
         )
     }
 
@@ -510,13 +499,15 @@ public final class ConvertContext: Sendable {
         // the conversion, but NOT a forced txn). Written BEFORE the network gate below, so the dedup state
         // persists even with tracking off (Story 5.4 / AC5).
         let firstTrigger = await decisionStore.markGoalTriggeredIfNeeded(goalId: goalId, forVisitorKey: storeKey)
-        // Global `network.tracking` gate (FR6): a non-suspending read of the SDK flag. When OFF, NO entry
-        // enters the `EventSink` on EITHER gate below — but the dedup mark above STILL persists and the
-        // local `.conversion` bus signal STILL fires on first trigger (JS parity: `context.ts` fires
-        // `SystemEvents.CONVERSION` on trigger independent of the network gate — only delivery to the queue
-        // is suppressed). Exactly ONE DEBUG line records the suppression for this call (Story 5.4 / AC6);
-        // the message is a fixed descriptive tail carrying NO SDK key / secret (NFR6).
-        let networkTrackingOn = sdk.networkTrackingEnabled
+        // Runtime tracking gate (FR6 / Story 5.6): async read of the actor-isolated flag. Placed AFTER
+        // the dedup write above so the dedup mark persists even when tracking is off (Story 5.6 / AC4).
+        // When OFF, NO entry enters the `EventSink` on EITHER gate below — but the dedup mark STILL
+        // persists and the local `.conversion` bus signal STILL fires on first trigger (JS parity:
+        // `context.ts` fires `SystemEvents.CONVERSION` on trigger independent of the network gate —
+        // only delivery to the queue is suppressed). Exactly ONE DEBUG line records the suppression
+        // for this call (Story 5.4 / AC6); the message is a fixed descriptive tail carrying NO SDK key /
+        // secret (NFR6). [Source: Story 5.6 / AC1, AC4; Story 5.4 / AC5, AC6]
+        let networkTrackingOn = await sdk.isTrackingEnabled()
         if !networkTrackingOn {
             logger.log(
                 level: .debug,
