@@ -120,14 +120,24 @@ public struct AudiencesPayload: Sendable {
 /// associated value is a genuine value-type `Sendable` (`String`, `Int`, `[String]`,
 /// `[String: String]`, `Segments`) — no `@unchecked Sendable`.
 public enum EventPayloadValue: Sendable {
+    /// The SDK finished its first configuration load and is now ready to decide.
     case ready(ReadyPayload)
+    /// A new configuration snapshot was loaded, carrying the updated config.
     case configUpdated(ConfigUpdatedPayload)
+    /// A batch of queued tracking events was delivered to the network, carrying its size.
     case apiQueueReleased(ApiQueueReleasedPayload)
+    /// A visitor was bucketed into a variation, carrying the experience/variation/visitor ids.
     case bucketing(BucketingPayload)
+    /// A visitor converted on a goal, carrying the goal and visitor ids.
     case conversion(ConversionPayload)
+    /// A visitor's segmentation attributes were resolved, carrying the resolved segments.
     case segments(SegmentsPayload)
+    /// A location became active for the visitor, carrying its properties.
     case locationActivated(LocationActivatedPayload)
+    /// A previously active location was deactivated for the visitor.
     case locationDeactivated(LocationDeactivatedPayload)
+    /// The audiences a visitor belongs to were resolved, carrying their identifiers.
     case audiences(AudiencesPayload)
+    /// The on-disk data store's pending queue was flushed.
     case dataStoreQueueReleased(DataStoreQueueReleasedPayload)
 }

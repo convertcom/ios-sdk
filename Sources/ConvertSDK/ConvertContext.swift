@@ -14,6 +14,14 @@ import Foundation
 
 /// A visitor-scoped handle for running experiences/features and tracking conversions.
 ///
+/// ```swift
+/// // given a ready `sdk`
+/// let context = sdk.createContext()
+/// if let variation = await context.runExperience("pricing-test") {
+///     print("Variation \(variation.key)")
+/// }
+/// ```
+///
 /// Story 2.2 ships the public surface as a stub: every decisioning method returns its DEGRADED
 /// value and never throws (AOD-6 — the public API never surfaces a thrown error to callers), so an
 /// integration compiles and runs against the final signatures before the Epic 3–4 engines land.
@@ -32,7 +40,7 @@ public final class ConvertContext: Sendable {
     /// back-reference) and `Sendable` (``ConvertSDK`` is `Sendable`).
     private let sdk: ConvertSDK
 
-    /// The effective visitor identifier resolved at creation by ``VisitorContextManager`` — an
+    /// The effective visitor identifier resolved at creation by `VisitorContextManager` — an
     /// explicit caller-supplied ID verbatim, else the persisted Keychain/mirror value, else a freshly
     /// generated + persisted `UUID().uuidString`. Immutable for the context's lifetime (bucketing
     /// parity depends on a stable per-context identity).
@@ -86,6 +94,14 @@ public final class ConvertContext: Sendable {
     /// refines `Sendable`, so this `let` keeps the class an all-`let` `Sendable final class` with no
     /// suppression.
     private let logger: any Logger
+
+    /// The SDK's segment assignment engine, constructed over the SAME canonical ``decisionStore`` this
+    /// context is injected with (Story 4.4). ``setDefaultSegments(_:)`` / ``setCustomSegments(_:)``
+    /// delegate to it, and ``runExperience(_:enableTracking:)`` reads the persisted result back from that
+    /// shared store to overlay onto the audience-rule attribute map (AC11). ``SegmentsManager`` is a
+    /// stateless `Sendable` `struct` (it owns no mutable state — the `actor` store does), so storing it as
+    /// a `let` keeps this class an all-`let` `Sendable final class` with no suppression.
+    private let segmentsManager: SegmentsManager
 
     /// The visitor attributes as a loosely-typed `[String: Any]` map, reconstructed on each access
     /// from the internal ``ConvertValue`` storage via ``ConvertValue/anyValue`` — so a value supplied
@@ -144,25 +160,25 @@ public final class ConvertContext: Sendable {
         self.eventSink = eventSink
         self.eventBus = eventBus
         self.logger = logger
-    }
-
-    /// Whether event delivery is enabled for this context's SDK (FR6 static `network.tracking`).
-    ///
-    /// The real gate a future `eventSink.enqueue` call site checks: when `false`, bucketing/decisioning
-    /// still runs and returns decisions, but produced tracking events are NOT enqueued (suppression is a
-    /// CALLER concern here, not an `EventQueue` concern). The enqueue sites arrive in Epics 3-4; this hook
-    /// is scaffolded now so the toggle is already in place when they do (Story 2.4 Task 4 / AC8).
-    internal func trackingEnabled() -> Bool {
-        sdk.networkTrackingEnabled
+        // Built over the injected canonical store (not a separate parameter — callers do not pass it), so
+        // every context from the same SDK records segments into the ONE store the decisioning path reads.
+        self.segmentsManager = SegmentsManager(decisionStore: decisionStore, logger: logger)
     }
 
     /// Runs one experience and returns the bucketed ``Variation``, or `nil` when none applies.
+    ///
+    /// ```swift
+    /// // given a ready `context`
+    /// if let variation = await context.runExperience("pricing-test") {
+    ///     print("Variation \(variation.key)")   // switch your UI on the key
+    /// }
+    /// ```
     ///
     /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready,
     /// or a degraded load that resolved with no config) short-circuits to `nil` WITHOUT touching the
     /// manager (AC10 / AOD-6 — the degraded path returns `nil`, never throws). Otherwise delegates to
     /// the injected ``ExperienceManager``, which honours sticky assignment, the audience / location
-    /// gates, and `enableTracking`, returning its ``Variation?`` verbatim. Never throws.
+    /// gates, and `enableTracking`, returning its ``Variation`` (or `nil`) verbatim. Never throws.
     ///
     /// `accountId` / `projectId` come from the snapshot (`account_id` / `project.id`), defaulting to
     /// `""` when absent — they form the sticky store key `"<accountId>-<projectId>-<visitorId>"`, so an
@@ -182,15 +198,26 @@ public final class ConvertContext: Sendable {
             // manager (AC10, no throw).
             return nil
         }
+        // AC11: overlay the visitor's persisted segments onto the explicit attribute map so an audience
+        // rule can match on a `setDefaultSegments` value (e.g. country). Read under the SAME store key the
+        // manager rebuilds internally; explicit createContext attributes still win on collision.
+        let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
+        let attributes = mergedAttributes(stringAttributes(), with: segments)
+        // Thread the COMBINED gate (FR6 global tracking flag AND the per-call `enableTracking`) into
+        // the manager: the variation is still selected/persisted/fired, but `BucketingManager` skips the
+        // bucketing enqueue when EITHER flag is false — so a globally-disabled SDK enqueues nothing at the
+        // sink even though decisioning is unchanged (Story 5.4 / AC1, AC3; Story 5.6 extends to the
+        // runtime-mutable flag). The public `enableTracking` parameter and its default are unchanged;
+        // only the value threaded down is combined.
         return await experienceManager.selectVariation(
             forKey: key,
             in: config,
             visitorId: visitorId,
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
-            attributes: stringAttributes(),
+            attributes: attributes,
             locationProperties: [:],
-            enableTracking: enableTracking
+            enableTracking: await sdk.isTrackingEnabled() && enableTracking
         )
     }
 
@@ -213,21 +240,56 @@ public final class ConvertContext: Sendable {
         }
     }
 
+    /// The sticky store key `"<accountId>-<projectId>-<visitorId>"` for the given config snapshot.
+    /// `accountId`/`projectId` default to `""` when absent (a stable, if empty-segmented, key). One owner
+    /// of the key shape that ``trackConversion(_:goalData:forceMultipleTransactions:)``, the new
+    /// segmentation methods, and ``runExperience(_:enableTracking:)``'s segment overlay all share — and the
+    /// same shape ``ExperienceManager`` rebuilds internally, so the segments overlay reads under the SAME
+    /// key the manager buckets against.
+    private func storeKey(for config: ProjectConfig) -> String {
+        "\(config.accountId ?? "")-\(config.project?.id ?? "")-\(visitorId)"
+    }
+
+    /// Overlays the visitor's non-nil string segment fields onto the explicit attribute map so audience
+    /// rules can match on `country`/`visitorType`/etc. Explicit attributes WIN on key collision (the
+    /// caller's createContext attribute is more specific than a stored segment). `customSegments` is an
+    /// array, not a scalar attribute, so it is NOT overlaid. [Source: AC11]
+    private func mergedAttributes(_ attributes: [String: String], with segments: Segments) -> [String: String] {
+        var merged = attributes
+        let segmentPairs: [(String, String?)] = [
+            ("country", segments.country), ("browser", segments.browser), ("devices", segments.devices),
+            ("source", segments.source), ("campaign", segments.campaign), ("visitorType", segments.visitorType)
+        ]
+        for (key, value) in segmentPairs where merged[key] == nil {
+            if let value { merged[key] = value }
+        }
+        return merged
+    }
+
     /// Runs every configured experience for this visitor and returns the bucketed ``Variation`` for
-    /// each eligible one, in config order. Reads the SDK's current config snapshot from its
+    /// each eligible one, in config order.
+    ///
+    /// ```swift
+    /// // given a ready `context`
+    /// for variation in await context.runExperiences() {
+    ///     print("\(variation.experienceKey) → \(variation.key)")
+    /// }
+    /// ```
+    ///
+    /// Reads the SDK's current config snapshot from its
     /// ``ConfigStore``; a `nil` snapshot (pre-ready / degraded) returns `[]` WITHOUT touching the
     /// manager (AOD-6 — degraded returns empty, never throws). Otherwise delegates to the injected
-    /// ``ExperienceManager/selectVariations(...)`` bulk path, which evaluates every experience through
+    /// `ExperienceManager`'s bulk path, which evaluates every experience through
     /// the full single-experience pipeline (sticky /
     /// audience / location / bucket / persist / event) and returns only the eligible variations. A thin
     /// bulk twin of ``runExperience(_:enableTracking:)``.
     ///
-    /// `enableTracking` is threaded straight through to the bulk path (per-call FR19), exactly as
-    /// ``runExperience(_:enableTracking:)`` threads it — the global `network.tracking` gate is NOT
-    /// applied here (it is an Epic 5 concern; `runExperience` does not apply it either, and run-all
-    /// must mirror run-single, not diverge). `accountId` / `projectId` come from the snapshot
-    /// (defaulting to `""` when absent), and `locationProperties` is empty on native — identical to
-    /// the single-experience path. Never throws.
+    /// `enableTracking` is combined with the SDK's global `network.tracking` flag and the result threaded
+    /// to the bulk path, exactly as ``runExperience(_:enableTracking:)`` threads it (run-all mirrors
+    /// run-single, not diverge): the per-experience bucketing enqueue is suppressed when EITHER flag is
+    /// false (Story 5.4 / FR6), while each variation is still selected, persisted, and fired. `accountId` /
+    /// `projectId` come from the snapshot (defaulting to `""` when absent), and `locationProperties` is
+    /// empty on native — identical to the single-experience path. Never throws.
     /// - Parameter enableTracking: When `false`, variations are still computed but the per-experience
     ///   bucketing enqueue is suppressed (passed through to the bulk path); defaults to `true`.
     /// - Returns: The bucketed ``Variation`` for each eligible experience in config order, or `[]`
@@ -236,19 +298,34 @@ public final class ConvertContext: Sendable {
         guard let config = await sdk.configStore.getSnapshot() else {
             return []
         }
+        // AC11: same segment overlay as the single-experience path (run-all mirrors run-single, not
+        // diverge) — each experience's audience gate sees the visitor's persisted segments.
+        let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
+        let attributes = mergedAttributes(stringAttributes(), with: segments)
+        // Thread the COMBINED gate (global runtime tracking flag AND per-call `enableTracking`) into the
+        // bulk path, exactly as the single-experience path does (run-all mirrors run-single, not diverge):
+        // each per-experience bucketing enqueue is suppressed when EITHER flag is false, while every
+        // variation is still selected/persisted/fired (Story 5.4 / AC1, AC3; Story 5.6 extends to
+        // the runtime-mutable flag).
         return await experienceManager.selectVariations(
             in: config,
             visitorId: visitorId,
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
-            attributes: stringAttributes(),
+            attributes: attributes,
             locationProperties: [:],
-            enableTracking: enableTracking
+            enableTracking: await sdk.isTrackingEnabled() && enableTracking
         )
     }
 
     /// Resolves one feature flag and returns its ``Feature`` — non-optional by contract, so
     /// the degraded answer is a DISABLED feature (never a throw, AOD-6).
+    ///
+    /// ```swift
+    /// // given a ready `context`
+    /// let feature = await context.runFeature("new-checkout")
+    /// if feature.status == .enabled { /* show the new checkout */ }
+    /// ```
     ///
     /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready,
     /// or a degraded load that resolved with no config) short-circuits to ``Feature/disabled(key:)``
@@ -263,6 +340,16 @@ public final class ConvertContext: Sendable {
     /// Unlike the experience API, this method takes NO `enableTracking` parameter (Android parity, F-171):
     /// the feature path is not per-call tracking-gated; feature evaluation delegates to ``FeatureManager``,
     /// which lets the underlying experience bucketing track per its own contract.
+    ///
+    /// SCOPE ASYMMETRY (Story 5.4, deliberate): unlike ``runExperience(_:enableTracking:)`` /
+    /// ``runExperiences(enableTracking:)`` (which combine the global `network.tracking` flag into the
+    /// bucketing path) and ``trackConversion(_:goalData:forceMultipleTransactions:)`` (which gates its
+    /// enqueues on it), the feature path is NOT caller-gated by `network.tracking` in this story — Story
+    /// 5.4's AC1 names only `runExperience`/`runExperiences`/`trackConversion`. A feature whose carrying
+    /// experience buckets here still produces a bucketing enqueue at the ``EventSink``; when
+    /// `network.tracking` is off, the PRODUCTION ``EventQueue`` drops that entry at its own static gate
+    /// (`trackingEnabled`), so no event reaches the network — the suppression happens one seam later than
+    /// on the experience/conversion paths, not at this caller.
     /// - Parameter key: The feature `key` to look up and resolve.
     /// - Returns: The resolved ``Feature`` — `.enabled` with typed variables, or `.disabled` on a
     ///   missing snapshot / miss.
@@ -272,18 +359,30 @@ public final class ConvertContext: Sendable {
             // manager (AOD-6, no throw).
             return Feature.disabled(key: key)
         }
+        // AC11 (JS parity, bd-0ca): overlay the visitor's persisted segments onto the explicit attribute map
+        // so the carrying experience's audience gate can match on a `setDefaultSegments` value, exactly as
+        // runExperience does — JS context.ts calls getVisitorProperties identically on the feature path.
+        let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
+        let attributes = mergedAttributes(stringAttributes(), with: segments)
         return await featureManager.evaluateFeature(
             key: key,
             in: config,
             visitorId: visitorId,
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
-            attributes: stringAttributes(),
+            attributes: attributes,
             locationProperties: [:]
         )
     }
 
     /// Resolves every feature in the config and returns its ``Feature``, in config order.
+    ///
+    /// ```swift
+    /// // given a ready `context`
+    /// for feature in await context.runFeatures() where feature.status == .enabled {
+    ///     print("enabled: \(feature.key)")
+    /// }
+    /// ```
     ///
     /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready /
     /// degraded) returns `[]` WITHOUT touching the manager (AOD-6 — degraded returns empty, never throws),
@@ -301,18 +400,28 @@ public final class ConvertContext: Sendable {
         guard let config = await sdk.configStore.getSnapshot() else {
             return []
         }
+        // AC11 (JS parity, bd-0ca): same segment overlay as the single-feature path (run-all mirrors
+        // run-single, not diverge) — each feature's carrying-experience audience gate sees the visitor's
+        // persisted segments.
+        let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
+        let attributes = mergedAttributes(stringAttributes(), with: segments)
         return await featureManager.evaluateAllFeatures(
             in: config,
             visitorId: visitorId,
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
-            attributes: stringAttributes(),
+            attributes: attributes,
             locationProperties: [:]
         )
     }
 
     /// Tracks a conversion for `goalKey`, optionally carrying per-goal ``GoalData`` metrics, with a
     /// per-visitor dedup gate and an opt-in multiple-transactions override.
+    ///
+    /// ```swift
+    /// // given a ready `context`
+    /// await context.trackConversion("purchase-goal", goalData: [.amount: .double(49.99)])
+    /// ```
     ///
     /// `async` but NEVER throws (AOD-6). Two degraded inputs each WARN and DROP (enqueuing nothing),
     /// returning BEFORE the dedup gate: no usable config snapshot (pre-ready / degraded load) → WARN
@@ -336,8 +445,11 @@ public final class ConvertContext: Sendable {
     ///     `goalData` is present AND (first trigger OR `forceMultipleTransactions`), recording a deliberate
     ///     repeat purchase as a second transaction without re-emitting the conversion.
     ///
-    /// The global `network.tracking` gate (FR6) is deliberately NOT applied here — an Epic 5 concern, and
-    /// ``runExperience(_:enableTracking:)`` does not apply it either (``trackingEnabled()`` is the hook).
+    /// The global `network.tracking` gate (FR6) IS applied here (Story 5.4): when off, neither the
+    /// conversion event nor the transaction event is enqueued at the ``EventSink`` (one DEBUG line records
+    /// the suppression), while the dedup mark still persists and the ``SystemEvent/conversion`` bus signal
+    /// still fires on first trigger (JS parity — only delivery is gated). The conversion path has no
+    /// per-call `enableTracking` (FR23), so it gates on the global flag alone.
     /// - Parameters:
     ///   - goalKey: The goal `key` to look up in the config and convert on.
     ///   - goalData: Optional per-goal metrics (e.g. revenue `amount`, `transactionId`); drives the
@@ -345,7 +457,16 @@ public final class ConvertContext: Sendable {
     ///   - forceMultipleTransactions: When `true`, the TRANSACTION event is emitted for `goalData` even on
     ///     an ALREADY-triggered goal (the conversion + bus signal stay suppressed). Defaults to `false`
     ///     (plain repeat call is a WARN-only no-op); has no effect without `goalData`.
-    public func trackConversion(
+    ///
+    /// The body exceeds the 50-line `function_body_length` default by ONE line because the Story 5.4
+    /// `network.tracking` gate added the suppression-log block + the two enqueue guards on top of the
+    /// already-dense two-degrade-guard / dedup / conversion-gate / transaction-gate pipeline (each carrying
+    /// its mandated FR/AR/AC rationale inline). Splitting the gate out would scatter the dedup ↔ bus-fire ↔
+    /// enqueue ordering that the inline comments document as load-bearing. Targeted disable on this one
+    /// method (precedent: `ConvertSDK.init` / `ExperienceManager.selectVariation` in this codebase) rather
+    /// than raising the project-wide threshold; the directive is on the `func` line so the `///` doc stays
+    /// flush against the declaration (avoids `orphaned_doc_comment`).
+    public func trackConversion( // swiftlint:disable:this function_body_length
         _ goalKey: String,
         goalData: GoalData? = nil,
         forceMultipleTransactions: Bool = false
@@ -375,13 +496,34 @@ public final class ConvertContext: Sendable {
         let bucketingData = decisions.isEmpty ? nil : decisions
         let goalId = goal.id ?? ""
         // Atomic check-and-mark: `true` ⇒ first trigger (proceed), `false` ⇒ already triggered (suppress
-        // the conversion, but NOT a forced txn).
+        // the conversion, but NOT a forced txn). Written BEFORE the network gate below, so the dedup state
+        // persists even with tracking off (Story 5.4 / AC5).
         let firstTrigger = await decisionStore.markGoalTriggeredIfNeeded(goalId: goalId, forVisitorKey: storeKey)
-        // CONVERSION gate — first trigger enqueues the conversion event and fires `.conversion` once. A
-        // repeat trigger WARNs and (crucially) does NOT `return`: control falls through to the txn gate.
+        // Runtime tracking gate (FR6 / Story 5.6): async read of the actor-isolated flag. Placed AFTER
+        // the dedup write above so the dedup mark persists even when tracking is off (Story 5.6 / AC4).
+        // When OFF, NO entry enters the `EventSink` on EITHER gate below — but the dedup mark STILL
+        // persists and the local `.conversion` bus signal STILL fires on first trigger (JS parity:
+        // `context.ts` fires `SystemEvents.CONVERSION` on trigger independent of the network gate —
+        // only delivery to the queue is suppressed). Exactly ONE DEBUG line records the suppression
+        // for this call (Story 5.4 / AC6); the message is a fixed descriptive tail carrying NO SDK key /
+        // secret (NFR6). [Source: Story 5.6 / AC1, AC4; Story 5.4 / AC5, AC6]
+        let networkTrackingOn = await sdk.isTrackingEnabled()
+        if !networkTrackingOn {
+            logger.log(
+                level: .debug,
+                type: "ConvertContext",
+                method: "trackConversion",
+                message: "event suppressed — networkTracking=false"
+            )
+        }
+        // CONVERSION gate — first trigger enqueues the conversion event (only when tracking is on) and
+        // fires `.conversion` once REGARDLESS of the network gate. A repeat trigger WARNs and (crucially)
+        // does NOT `return`: control falls through to the txn gate.
         if firstTrigger {
-            let event = ConversionEventData(goalId: goalId, goalData: nil, bucketingData: bucketingData)
-            await eventSink.enqueue(.conversion(event))
+            if networkTrackingOn {
+                let event = ConversionEventData(goalId: goalId, goalData: nil, bucketingData: bucketingData)
+                await eventSink.enqueue(.conversion(event), for: visitorId, segments: nil)
+            }
             let payload = ConversionPayload(goalId: goalId, visitorId: visitorId)
             await eventBus.fire(.conversion, payload: .conversion(payload))
         } else {
@@ -393,21 +535,75 @@ public final class ConvertContext: Sendable {
             )
         }
         // TRANSACTION gate (independent) — emits the goalData event on the first trigger OR when
-        // `forceMultipleTransactions` overrides dedup for a deliberate repeat purchase.
-        if let data = goalData, firstTrigger || forceMultipleTransactions {
+        // `forceMultipleTransactions` overrides dedup for a deliberate repeat purchase, but only when
+        // network tracking is on (the suppression was already logged once above).
+        if networkTrackingOn, let data = goalData, firstTrigger || forceMultipleTransactions {
             let event = ConversionEventData(goalId: goalId, goalData: data.toEntries(), bucketingData: bucketingData)
-            await eventSink.enqueue(.conversion(event))
+            await eventSink.enqueue(.conversion(event), for: visitorId, segments: nil)
         }
     }
 
-    /// Sets the default visitor ``Segments``. Stub: no-op until Epic 4 wires segmentation.
-    public func setDefaultSegments(_ segments: Segments) {
-        // [WARN] ConvertContext.setDefaultSegments: not yet implemented (Epic 4).
+    /// Sets default visitor segments (merge semantics) and fires ``SystemEvent/segments`` once.
+    ///
+    /// ```swift
+    /// // given a ready `context`
+    /// await context.setDefaultSegments(["country": "US", "visitorType": "returning"])
+    /// ```
+    ///
+    /// `async` but NEVER throws (AOD-6). Delegates the merge to ``SegmentsManager`` (each of the six
+    /// recognised string keys overlays the visitor's existing segments; unknown keys WARN and are
+    /// ignored), reads the resolved ``Segments`` back from the shared `decisionStore`, and fires
+    /// ``SystemEvent/segments`` ONCE with a ``SegmentsPayload`` carrying them (AC12). A `nil` config
+    /// snapshot (pre-ready / degraded) means there is no account/project to form the sticky store key —
+    /// it WARNs and returns WITHOUT firing, the same degrade ``trackConversion(_:goalData:forceMultipleTransactions:)``
+    /// applies on a not-ready SDK. The WARN `message` is ONLY the descriptive tail; the adapter composes
+    /// the `[WARN] ConvertContext.setDefaultSegments: …` prefix from `type`/`method` (UX-DR19).
+    /// - Parameter segments: The wire-keyed string segment fields to merge (`country`, `browser`,
+    ///   `devices`, `source`, `campaign`, `visitorType`); unrecognised keys are ignored with a WARN.
+    /// [Source: AC1, AC12]
+    public func setDefaultSegments(_ segments: [String: String]) async {
+        guard let config = await sdk.configStore.getSnapshot() else {
+            logger.log(
+                level: .warn,
+                type: "ConvertContext",
+                method: "setDefaultSegments",
+                message: "SDK not ready, dropping segments update."
+            )
+            return
+        }
+        let key = storeKey(for: config)
+        await segmentsManager.setDefaultSegments(segments, forVisitorKey: key)
+        let updated = await segmentsManager.currentSegments(forVisitorKey: key)
+        await eventBus.fire(.segments, payload: .segments(SegmentsPayload(visitorId: visitorId, segments: updated)))
     }
 
-    /// Sets the custom segment identifiers for the visitor. Stub: no-op until Epic 4 wires
-    /// custom segmentation.
-    public func setCustomSegments(_ segmentIds: [String]) {
-        // [WARN] ConvertContext.setCustomSegments: not yet implemented (Epic 4).
+    /// Appends custom segment identifiers for the visitor and fires ``SystemEvent/segments`` once.
+    ///
+    /// ```swift
+    /// // given a ready `context`
+    /// await context.setCustomSegments(["vip", "beta-tester"])
+    /// ```
+    ///
+    /// `async` but NEVER throws (AOD-6). Delegates the append to ``SegmentsManager`` (the ids are added to
+    /// the visitor's existing `customSegments`; backend owns dedup, matching JS), reads the resolved
+    /// ``Segments`` back from the shared `decisionStore`, and fires ``SystemEvent/segments`` ONCE with a
+    /// ``SegmentsPayload`` (AC12). A `nil` config snapshot (pre-ready / degraded) WARNs and returns WITHOUT
+    /// firing — the same not-ready degrade as ``setDefaultSegments(_:)``.
+    /// - Parameter segmentIds: The custom segment identifiers to append to the visitor's `customSegments`.
+    /// [Source: AC2, AC12]
+    public func setCustomSegments(_ segmentIds: [String]) async {
+        guard let config = await sdk.configStore.getSnapshot() else {
+            logger.log(
+                level: .warn,
+                type: "ConvertContext",
+                method: "setCustomSegments",
+                message: "SDK not ready, dropping custom segments update."
+            )
+            return
+        }
+        let key = storeKey(for: config)
+        await segmentsManager.setCustomSegments(segmentIds, forVisitorKey: key)
+        let updated = await segmentsManager.currentSegments(forVisitorKey: key)
+        await eventBus.fire(.segments, payload: .segments(SegmentsPayload(visitorId: visitorId, segments: updated)))
     }
 }
