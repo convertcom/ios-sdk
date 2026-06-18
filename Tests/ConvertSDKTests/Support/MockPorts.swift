@@ -14,10 +14,11 @@
 //     requirement on these ports is `async`, so an actor satisfies them with the
 //     compiler fully reasoning about isolation: NO `@unchecked Sendable`, NO
 //     `nonisolated(unsafe)`, NO lock.
-//   * `final class` + `LockedBox` — `MockLogger`, `MockClock`. Their requirements
-//     are SYNCHRONOUS (`func log(...)`, `var now: Date { get }`), which an actor
-//     cannot satisfy (actor access is async). Their mutable state is held in a
-//     single `LockedBox` cell (see below).
+//   * `final class` + `LockedBox` — `MockLogger` (here) and `MockClock` (extracted to the
+//     sibling `MockClock.swift` once its stepping API outgrew this file's 400-line lint limit).
+//     Their requirements are SYNCHRONOUS (`func log(...)`, `var now: Date { get }`), which an
+//     actor cannot satisfy (actor access is async). Their mutable state is held in a single
+//     `LockedBox` cell (see below).
 //
 // `Mutex<Value>` from `Synchronization` — the modern lock-cell that the compiler
 // accepts as `Sendable` with mutable contents and needs no annotation — is NOT
@@ -37,7 +38,7 @@ import ConvertSDK
 // MARK: - LockedBox
 
 /// A `Sendable` lock-protected storage cell — the single concurrency primitive
-/// behind the synchronous mocks (`MockLogger`, `MockClock`).
+/// behind the synchronous mocks (`MockLogger` here, `MockClock` in `MockClock.swift`).
 ///
 /// `value` is the only `nonisolated(unsafe)` declaration in this file. It is sound
 /// because every read and write goes through `lock.withLock`, so accesses are
@@ -145,13 +146,15 @@ actor MockHTTPClient: HTTPClient {
 
 /// Test double for ``EventSink``.
 ///
-/// Shape: `actor` — `enqueue(_:)` is `async`, so actor isolation satisfies the
+/// Shape: `actor` — `enqueue(_:for:segments:)` is `async`, so actor isolation satisfies the
 /// port with no `Sendable` suppression. Records enqueued entries; tests read them
-/// non-destructively via ``recordedEvents()`` or destructively via ``drain()``.
+/// non-destructively via ``recordedEvents()`` or destructively via ``drain()``. The widened
+/// seam's `visitorId` / `segments` are ACCEPTED-AND-IGNORED: the mock records only the bare
+/// entry, so existing assertions over `recordedEvents()` / `drain()` keep working unchanged.
 actor MockEventSink: EventSink {
     private var recorded: [TrackingEventEntry] = []
 
-    func enqueue(_ event: TrackingEventEntry) async {
+    func enqueue(_ event: TrackingEventEntry, for visitorId: String, segments: [String: String]?) async {
         recorded.append(event)
     }
 
@@ -223,44 +226,172 @@ final class MockLogger: Logger {
         let message: String
     }
 
-    private let box = LockedBox<[LogEntry]>([])
+    /// One awaiter parked by ``waitForEntry(level:type:method:messageContains:)``: the predicate it
+    /// is waiting on plus the continuation to resume once a matching entry is logged. A named struct
+    /// keeps the `large_tuple` lint rule satisfied. `match` is `@Sendable` because it is stored in
+    /// the `Sendable` `LockedBox` state and invoked from whatever thread calls `log`.
+    private struct EntryAwaiter {
+        let match: @Sendable (LogEntry) -> Bool
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    /// All mutable state in ONE `LockedBox` cell (the logged entries + parked awaiters), mirroring
+    /// ``MockClock``'s single-`State` discipline: every continuation is captured UNDER the lock and
+    /// resumed AFTER the lock is released, so a continuation is never resumed while the lock is held
+    /// and each parked continuation is resumed exactly once.
+    private struct State {
+        var entries: [LogEntry] = []
+        var awaiters: [EntryAwaiter] = []
+    }
+    private let state = LockedBox<State>(State())
 
     func log(level: LogLevel, type: String, method: String, message: String) {
-        box.withLock {
-            $0.append(LogEntry(level: level, type: type, method: method, message: message))
+        let entry = LogEntry(level: level, type: type, method: method, message: message)
+        // Append the entry, then collect (and remove) every awaiter this entry satisfies, all under
+        // the lock; resume them OUTSIDE the lock (LockedBox discipline — never resume while held).
+        let toResume: [CheckedContinuation<Void, Never>] = state.withLock { state in
+            state.entries.append(entry)
+            let ready = state.awaiters.filter { $0.match(entry) }
+            state.awaiters.removeAll { $0.match(entry) }
+            return ready.map(\.continuation)
+        }
+        for continuation in toResume {
+            continuation.resume()
         }
     }
 
     /// Returns captured entries, optionally filtered by `type` and/or `method`.
     /// A `nil` filter matches any value for that field.
     func entries(type: String? = nil, method: String? = nil) -> [LogEntry] {
-        box.get.filter { entry in
+        state.withLock { $0.entries }.filter { entry in
             (type == nil || entry.type == type) && (method == nil || entry.method == method)
+        }
+    }
+
+    /// Suspends until a `log(...)` call matching ALL the supplied filters has landed, then resumes —
+    /// a genuine happens-before on "the scheduler emitted that line", replacing a bounded
+    /// `drainUntil` poll for log-driven waits (the within-TTL `.debug` skip line and the failed-
+    /// refresh `.warn` line). A `nil` filter matches any value for that field; `messageContains`
+    /// matches when the entry's `message` contains the substring. Returns immediately if a matching
+    /// entry is already present; otherwise parks a continuation that ``log(...)`` resumes the moment
+    /// a matching entry is logged. A pure continuation handoff — no wall-clock wait (NFR21).
+    func waitForEntry(
+        level: LogLevel? = nil,
+        type: String? = nil,
+        method: String? = nil,
+        messageContains: String? = nil
+    ) async {
+        let predicate: @Sendable (LogEntry) -> Bool = { entry in
+            (level == nil || entry.level == level)
+                && (type == nil || entry.type == type)
+                && (method == nil || entry.method == method)
+                && (messageContains.map(entry.message.contains) ?? true)
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // Park-or-resume decided under the lock so an entry logged concurrently with this call
+            // cannot be missed: if one already matches, resume at once; else enqueue the awaiter.
+            let alreadyMatched: Bool = state.withLock { state in
+                if state.entries.contains(where: predicate) { return true }
+                state.awaiters.append(EntryAwaiter(match: predicate, continuation: continuation))
+                return false
+            }
+            if alreadyMatched {
+                continuation.resume()
+            }
         }
     }
 }
 
-// MARK: - MockClock
+// MARK: - MockConfigProvider
 
-/// Test double for ``Clock``.
+/// Test double for ``ConfigProviding`` — the config-fetch seam ``ConvertSDK.init`` injects
+/// (the GREEN step adds `: ConfigProviding` to the real `ConfigFetchService`, which already
+/// has these two methods). This REPLACES the role the old `ConfigLoader` mocks
+/// (`MockConfigLoader` / `FailingMockConfigLoader` / `GateConfigLoader`) played for the
+/// previous seam: a unit test injects one of these so `ConvertSDK.init` never builds the real
+/// `ConfigFetchService` and never touches the network.
 ///
-/// Shape: `final class` + ``LockedBox`` — `now` is a synchronous getter, which an
-/// actor cannot satisfy, so this is the one port for which `final class` + a lock
-/// is mandatory. Tests inject deterministic time via ``setNow(_:)``. Defaults to
-/// the Unix epoch so an unconfigured clock is still deterministic.
-final class MockClock: Clock {
-    private let box: LockedBox<Date>
+/// Shape: `actor` — ``ConfigProviding`` refines `Sendable` and BOTH requirements are `async`,
+/// so actor isolation satisfies the protocol with NO `Sendable` suppression (mirrors
+/// ``MockHTTPClient`` / ``MockEventSink`` / ``MockFileStore``).
+///
+/// ── Canned cache + live results ───────────────────────────────────────────────────────────
+/// Constructed with a `cached` and a `live` value, each `ProjectConfig?`. ``loadCachedConfig()``
+/// returns `cached`; ``fetchLiveConfig()`` returns `live`. The four combinations model the AC3
+/// matrix the entry-point suites assert:
+///   * `(cached: nil,   live: someConfig)` — cache miss, live succeeds → ready (non-degraded).
+///   * `(cached: nil,   live: nil)`        — cache miss + network failed → ready DEGRADED.
+///   * `(cached: someConfig, live: nil)`   — cache HIT, network failed   → ready from cache.
+///   * `(cached: someConfig, live: someConfig)` — both present.
+/// Because the SDK calls `store.setConfig(cached)` then unconditionally `store.setConfig(live)`,
+/// and ``ConfigStore/setConfig(_:)`` latches the ready signal on the first non-terminal call,
+/// every combination resolves `ready()` exactly once — even all-`nil` (degraded). The mock holds
+/// no process-global state, so suites using it are parallel-safe (no `URLProtocolStub` nesting).
+///
+/// ── Optional fetch gate (ordering tests) ──────────────────────────────────────────────────
+/// A gated instance (``makeGated(cached:live:)``) parks ``fetchLiveConfig()`` on a continuation
+/// until ``release()`` is called, mirroring the previous `GateConfigLoader` pattern. This lets a
+/// test register a `.ready` subscriber via `sut.on(.ready)` BEFORE the init task fires `.ready`
+/// (which happens only after the config provider resolves and `setConfig` runs), making
+/// `.ready` delivery deterministic under parallel execution. It is a pure continuation handoff —
+/// no sleep, no wall-clock wait (NFR21/22). ``loadCachedConfig()`` is NEVER gated; only the live
+/// fetch is, because in the all-`nil`-cache ordering tests the ready signal is driven by the live
+/// `setConfig` call, so gating the live fetch is what controls when `.ready` fires.
+actor MockConfigProvider: ConfigProviding {
+    private let cached: ProjectConfig?
+    private let live: ProjectConfig?
 
-    init(now: Date = Date(timeIntervalSince1970: 0)) {
-        self.box = LockedBox(now)
+    /// Whether ``fetchLiveConfig()`` should park until ``release()`` (the ordering-test gate).
+    private let gated: Bool
+    /// The parked `fetchLiveConfig` continuation, present only while a gated fetch is suspended.
+    private var continuation: CheckedContinuation<Void, Never>?
+    /// Whether ``release()`` has already fired, so a fetch arriving after the release does not
+    /// park (mirrors `GateConfigLoader`'s `released` latch).
+    private var released = false
+
+    /// Designated initializer. `gated` is internal; production-shaped construction goes through
+    /// the two named factories below so call sites read intent (`ungated` vs `makeGated`).
+    private init(cached: ProjectConfig?, live: ProjectConfig?, gated: Bool) {
+        self.cached = cached
+        self.live = live
+        self.gated = gated
     }
 
-    var now: Date {
-        box.get
+    /// An UNGATED provider: ``fetchLiveConfig()`` returns `live` immediately. The common case —
+    /// the happy-path, degraded, and cache-hit suites all use this.
+    static func ungated(cached: ProjectConfig?, live: ProjectConfig?) -> MockConfigProvider {
+        MockConfigProvider(cached: cached, live: live, gated: false)
     }
 
-    /// Sets the instant returned by ``now``.
-    func setNow(_ date: Date) {
-        box.set(date)
+    /// A GATED provider: ``fetchLiveConfig()`` parks until ``release()``, so the `.ready` fire
+    /// (driven by the live `setConfig`) happens strictly after a `.ready` subscriber is
+    /// registered. Used by the deterministic-ordering suites.
+    static func makeGated(cached: ProjectConfig?, live: ProjectConfig?) -> MockConfigProvider {
+        MockConfigProvider(cached: cached, live: live, gated: true)
+    }
+
+    /// Returns the configured cached value. NEVER parks — only the live fetch is gated.
+    func loadCachedConfig() async -> ProjectConfig? {
+        cached
+    }
+
+    /// Returns the configured live value, after the optional gate. When `gated` and not yet
+    /// released, parks on a continuation until ``release()`` resumes it; returns immediately
+    /// once released (or when ungated).
+    func fetchLiveConfig() async -> ProjectConfig? {
+        if gated, !released {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                self.continuation = cont
+            }
+        }
+        return live
+    }
+
+    /// Unblocks a parked (or future) ``fetchLiveConfig()``, letting the init task proceed to
+    /// `setConfig(live)` and thus fire `.ready`. Idempotent.
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }
