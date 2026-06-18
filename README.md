@@ -53,11 +53,41 @@ Call `ready()` once after construction and await it before deciding. `runExperie
 
 A `nil` variation also covers the visitor being ineligible or the experience key being unknown. None of these are errors. `ready()` is the only call that throws, and only on an unrecoverable configuration error such as an empty SDK key.
 
+## Tracking control
+
+The SDK ships three independent delivery controls:
+
+- **Static (init-time):** set `ConvertConfiguration.networkTracking = false` before constructing the SDK to suppress all events for the session.
+- **Per-call:** pass `enableTracking: false` to `runExperience(_:enableTracking:)` to bucket without emitting that one exposure event.
+- **Runtime (mid-session):** call `setTrackingEnabled(_:)` after initialization — the supported path for GDPR consent withdrawal.
+
+```swift
+// Opt out at runtime (e.g. on consent withdrawal):
+await sdk.setTrackingEnabled(false)
+
+// Opt back in (suppressed events are not replayed):
+await sdk.setTrackingEnabled(true)
+
+// Read the current state:
+let isOn = await sdk.isTrackingEnabled()
+```
+
+Completion-handler twins exist for callback-style call sites:
+
+```swift
+sdk.setTrackingEnabled(false) {
+    // called on MainActor when the gate is closed
+}
+sdk.isTrackingEnabled { isOn in
+    // called on MainActor with the current flag
+}
+```
+
 ## Documentation
 
 - **<doc:GettingStarted>** — the linear install → init → ready → context → decide → track path.
 - **<doc:OfflineAndBackgroundDelivery>** — how decisions and queued bucketing events behave offline and after the app is suspended.
 - **<doc:FailureDetection>** — detecting a failed or slow start.
-- **<doc:Privacy>** — the privacy manifest and visitor-identity guidance.
+- **<doc:Privacy>** — the privacy manifest, visitor-identity guidance, and all delivery controls.
 
 The full guide and the symbol-level API reference are the DocC articles in `Sources/ConvertSDK/ConvertSDK.docc/`.
