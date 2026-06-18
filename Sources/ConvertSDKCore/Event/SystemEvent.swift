@@ -6,6 +6,11 @@ import Foundation
 
 /// The frozen JS-parity set of internal system events (FR52).
 ///
+/// ```swift
+/// // given a constructed `sdk`
+/// let token = await sdk.on(.ready) { _ in print("ready") }
+/// ```
+///
 /// Raw values are the exact JS wire strings, source-verified against
 /// `system-events.ts:12-23`. This set is a frozen contract: NO new case may ever be
 /// added. In particular there is deliberately no `systemError` / `configStale` case —

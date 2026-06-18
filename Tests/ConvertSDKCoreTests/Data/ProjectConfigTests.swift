@@ -159,4 +159,210 @@ struct ProjectConfigTests {
         let project = try #require(config.project, "clean payload must carry a decoded project")
         #expect(project.id == "proj-7", "clean project.id must populate")
     }
+
+    // MARK: - PC-1 shared builders (full-experience retention + audience/location lookups)
+    // (DRY: the `{"account_id":…,"experiences":[…],…}` envelope and the valid-experience JSON
+    // each appear ONCE here so no test body repeats a ≥10-line literal — SonarQube CPD is
+    // token-based, so the shared envelope/experience literals are what keep the diff under the
+    // 3% `new_duplicated_lines_density` gate. Each test passes only the array fragment it needs.)
+
+    /// Wraps array fragments in the `ConfigResponseData` wire envelope so each PC-1 test supplies
+    /// only the slice it exercises. Defaults keep the unrelated arrays empty (`[]` decodes to an
+    /// empty typed array, never a degrade) so a test that cares only about experiences need not
+    /// spell out audiences/locations, and vice-versa.
+    static func makeConfigData(
+        experiencesJSON: String = "[]",
+        audiencesJSON: String = "[]",
+        locationsJSON: String = "[]"
+    ) -> Data {
+        Data(
+            """
+            {"account_id":"acc","project":{"id":"p"},\
+            "experiences":\(experiencesJSON),\
+            "audiences":\(audiencesJSON),\
+            "locations":\(locationsJSON)}
+            """.utf8
+        )
+    }
+
+    /// A single well-formed `ConfigExperience` JSON object carrying the FULL shape PC-1 must
+    /// retain (`id`, `key`, a known `type`, and a `variations` array) — the part the stripped
+    /// `ProjectConfig.Experience` drops. Shared by the valid-type and per-element-degrade tests
+    /// so the variations literal is written once.
+    static func validExperienceJSON(id: String, key: String) -> String {
+        """
+        {"id":"\(id)","key":"\(key)","type":"a/b",\
+        "variations":[{"id":"var-a","key":"control","traffic_allocation":100}]}
+        """
+    }
+
+    // MARK: - PC-1: fullExperience(forKey:) returns the FULL generated experience
+
+    /// `fullExperience(forKey:)` returns the FULL generated `ConfigExperience` — with `key` and
+    /// the `variations` array — not the stripped `ProjectConfig.Experience` (which carries only
+    /// `id`/`type`). Proves the new raw retention exposes variations for sticky assignment.
+    @Test("fullExperience returns the full generated type (with variations) for a valid experience")
+    func fullExperienceReturnsFullTypeForValidExperience() throws {
+        let data = Self.makeConfigData(
+            experiencesJSON: "[\(Self.validExperienceJSON(id: "exp-100", key: "valid-exp"))]"
+        )
+
+        let config = try Self.decode(data)
+
+        let full = try #require(
+            config.fullExperience(forKey: "valid-exp"),
+            "the valid experience must be retrievable by key from the raw retention"
+        )
+        #expect(full.id == "exp-100", "the full experience must carry its wire id")
+        #expect(full.key == "valid-exp", "the full experience must carry its wire key")
+        let variation = try #require(
+            full.variations?.first,
+            "the FULL type must retain variations (the stripped Experience drops them)"
+        )
+        #expect(variation.id == "var-a", "the retained variation must carry its wire id")
+    }
+
+    /// THE critical PC-1 test: per-element-degrade, NOT whole-array-throw. The array holds one
+    /// valid experience and one drifted `a/b_fullstack` element (unknown `ExperienceTypes` →
+    /// `dataCorrupted`). A naive whole-array `[ConfigExperience]` decode throws on the drifted
+    /// element and loses BOTH; the contract requires each element to decode under its own `try?`,
+    /// so the valid sibling SURVIVES (with variations) and only the drifted element degrades out.
+    @Test("fullExperience per-element degrade keeps the valid sibling, drops the drifted one")
+    func fullExperiencePerElementDegradeKeepsValidSibling() throws {
+        let drifted = #"{"id":"exp-bad","key":"bad","type":"a/b_fullstack"}"#
+        let data = Self.makeConfigData(
+            experiencesJSON: "[\(Self.validExperienceJSON(id: "exp-good", key: "good")),\(drifted)]"
+        )
+
+        let config = try Self.decode(data)
+
+        // The valid sibling survived per-element decode — proves NOT a whole-array throw-to-nil.
+        let good = try #require(
+            config.fullExperience(forKey: "good"),
+            "the valid sibling must survive when a drifted element shares the array"
+        )
+        #expect(
+            good.variations?.first?.id == "var-a",
+            "the surviving sibling must retain its variations intact"
+        )
+        // The drifted element degraded out of the raw retention — proves per-element `try?`.
+        #expect(
+            config.fullExperience(forKey: "bad") == nil,
+            "the drifted a/b_fullstack element must degrade out, not be retained"
+        )
+    }
+
+    /// A key with no matching experience returns nil (lookup miss, not a degrade).
+    @Test("fullExperience returns nil for an unknown key")
+    func fullExperienceReturnsNilForUnknownKey() throws {
+        let data = Self.makeConfigData(
+            experiencesJSON: "[\(Self.validExperienceJSON(id: "exp-100", key: "valid-exp"))]"
+        )
+
+        let config = try Self.decode(data)
+
+        #expect(
+            config.fullExperience(forKey: "no-such") == nil,
+            "an unmatched key must return nil"
+        )
+    }
+
+    // MARK: - PC-1: audience(id:) / location(id:) lookups over the existing typed arrays
+
+    /// `audience(id:)` and `location(id:)` look up by id in the already-decoded `audiences` /
+    /// `locations` arrays; an unknown id returns nil. Audience/location JSON is kept minimal
+    /// (`rules` is optional on both generated types, so it is omitted — only id/key are needed
+    /// to decode through `ConfigAudience` / `ConfigLocation`).
+    @Test("audience(id:) and location(id:) resolve by id, and miss to nil for unknown ids")
+    func audienceAndLocationLookupById() throws {
+        let data = Self.makeConfigData(
+            audiencesJSON: #"[{"id":"aud-1","key":"k"}]"#,
+            locationsJSON: #"[{"id":"loc-1","key":"k"}]"#
+        )
+
+        let config = try Self.decode(data)
+
+        #expect(config.audience(id: "aud-1")?.id == "aud-1", "audience must resolve by id")
+        #expect(config.location(id: "loc-1")?.id == "loc-1", "location must resolve by id")
+        #expect(config.audience(id: "missing") == nil, "unknown audience id must miss to nil")
+        #expect(config.location(id: "missing") == nil, "unknown location id must miss to nil")
+    }
+
+    // MARK: - goal(forKey:) returns the embedded ConfigGoalBase (Epic 4 / Story 2)
+    //
+    // RED-phase contract for the NEW `goal(forKey:)` accessor (does NOT exist yet):
+    //
+    //     public func goal(forKey key: String) -> Components.Schemas.ConfigGoalBase?
+    //
+    // The conversion-tracking path resolves a caller's goalKey → the wire goalId by looking the
+    // goal up by `key` and reading the embedded base's `id`. These tests pin that lookup AND the
+    // crash-safety the sentinel-degraded goal arm demands.
+    //
+    // ── A note on the decode reality these tests are written against (probed, not assumed) ────
+    // On the wire EVERY goal carries `type` as a bare String discriminator, which makes
+    // `ConfigGoalOrSentinel` land on `.sentinel` (the embedded `ConfigGoalBase._type` is
+    // `[GoalTypes]`, so the String collides → `typeMismatch` → sentinel; this is drift D3). The
+    // `.sentinel` payload retains every field (`id`/`key`/`type`) as `JSONValue` — VERIFIED by an
+    // empirical decode probe. There is therefore NO goal that decodes to the `.known` arm from any
+    // production wire shape, so `goal(forKey:)` MUST resolve the base from the retained payload; a
+    // reader that only inspects `.known` arms would return nil for every real goal and silently
+    // break goalKey→goalId resolution. (See the matching note in `ProjectConfigFixtures.goalJSON`.)
+
+    /// Decodes a `ProjectConfig` from the goal fragments alone (no other arrays). One splice point
+    /// so neither goal test re-inlines the `[ <goal>, … ]` envelope (SonarQube 3% gate; CPD is
+    /// token-based — reuse, not renaming, holds the diff under the threshold).
+    static func goalConfig(_ goals: String...) throws -> ProjectConfig {
+        try ProjectConfigFixtures.goalsConfig(goalsJSON: "[" + goals.joined(separator: ",") + "]")
+    }
+
+    /// `goal(forKey:)` resolves a goal by its `key` and exposes the embedded `ConfigGoalBase` —
+    /// `id` (the wire goalId the conversion path emits) and `key` — and misses to `nil` for a key
+    /// no goal carries. Two goals prove the lookup discriminates by key rather than returning the
+    /// first goal unconditionally.
+    @Test("goal(forKey:) returns the base (id + key) for a known key, nil for an unknown one")
+    func goalReturnsBaseForKnownKeyNilForUnknown() throws {
+        let config = try Self.goalConfig(
+            ProjectConfigFixtures.goalJSON(id: "g-1", key: "primary"),
+            ProjectConfigFixtures.goalJSON(id: "g-2", key: "secondary")
+        )
+
+        let base = try #require(
+            config.goal(forKey: "primary"),
+            "a goal present by key must resolve to its embedded ConfigGoalBase"
+        )
+        #expect(base.id == "g-1", "the resolved base must carry the wire goalId")
+        #expect(base.key == "primary", "the resolved base must carry the looked-up key")
+        // A second key resolves independently — proves the lookup keys on `key`, not array position.
+        #expect(config.goal(forKey: "secondary")?.id == "g-2", "the other goal must resolve by its key")
+        #expect(config.goal(forKey: "no-such") == nil, "an unmatched goal key must miss to nil")
+    }
+
+    /// Crash-safety: `goal(forKey:)` MUST NOT crash when a sentinel-decoded goal sits in the array,
+    /// must still resolve a sibling by key, and must still miss cleanly to `nil` for an absent key.
+    ///
+    /// BOTH goals here decode to `.sentinel`, not just the `type:"totally_unknown_type_xyz"` one: per
+    /// drift D3 EVERY wire goal sentinels (the `"advanced"` discriminator collides with
+    /// `ConfigGoalBase._type: [GoalTypes]` → `typeMismatch` → `SentinelWrapped` falls to `.sentinel`),
+    /// so this test exercises the `.sentinel` payload path TWICE — once with a recognised-but-still-
+    /// sentineled `type`, once with a genuinely unknown `type`. The `.known` arm of `goalBase(from:)`
+    /// is therefore NOT exercised by any current fixture; when D3 is resolved and goals begin decoding
+    /// via `.known`, add a companion test that pins `base(fromKnown:)` (reaching `.value1`).
+    @Test("goal(forKey:) tolerates a sentinel-decoded goal: a sibling resolves, a miss returns nil")
+    func goalLookupToleratesSentinelDegradedGoal() throws {
+        let config = try Self.goalConfig(
+            ProjectConfigFixtures.goalJSON(id: "g-good", key: "resolvable-goal"),
+            ProjectConfigFixtures.goalJSON(id: "g-degraded", key: "degraded-goal", type: "totally_unknown_type_xyz")
+        )
+
+        // A sentineled goal still resolves by its key with another sentineled goal present in the array.
+        #expect(
+            config.goal(forKey: "resolvable-goal")?.id == "g-good",
+            "a resolvable goal must survive a sentinel-decoded sibling in the same array"
+        )
+        // A key no goal carries still misses to nil — the sentinel element does not crash the scan.
+        #expect(
+            config.goal(forKey: "absent-key") == nil,
+            "a miss must return nil even with a sentinel-degraded goal in the array, never crash"
+        )
+    }
 }
