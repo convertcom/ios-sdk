@@ -4,6 +4,10 @@
 included:
   - Sources
   - Tests
+  - Demo  # Epic 7 SwiftUI demo app. The CI gate (`swiftlint lint --strict`, ci.yml) resolves
+          # files from this list; adding Demo makes the zero-warnings gate genuinely cover every
+          # demo Swift file (a force-unwrap in a later demo story fails CI, not just local checks).
+          # The demo is otherwise inert to the SDK build (Package.swift has 0 Demo refs).
 
 excluded:
   - Sources/ConvertSDKCore/Generated  # auto-generated, do not lint

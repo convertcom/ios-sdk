@@ -1,0 +1,5 @@
+# Scratch + SwiftPM artifacts for the isolated generator manifest — never committed.
+_genout/
+.build/
+.swiftpm/
+Package.resolved
