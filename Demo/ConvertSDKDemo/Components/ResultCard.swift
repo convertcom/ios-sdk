@@ -50,6 +50,8 @@ struct ResultCard: View {
         /// No variation was returned — config still loading, ineligible visitor,
         /// or a misconfigured experience.
         case error
+        /// A repeat conversion for the same goal+visitor was deduped — no second conversion event.
+        case dedup
 
         /// Thin leading rule down the card's leading edge — a UI-element hue (>=3:1),
         /// never used as body text.
@@ -57,6 +59,7 @@ struct ResultCard: View {
             switch self {
             case .success: return ConvertTheme.success
             case .error: return ConvertTheme.error
+            case .dedup: return Color(.secondaryLabel)
             }
         }
 
@@ -65,6 +68,7 @@ struct ResultCard: View {
             switch self {
             case .success: return ConvertTheme.successSoft
             case .error: return ConvertTheme.errorSoft
+            case .dedup: return Color(.secondarySystemFill)
             }
         }
 
@@ -73,6 +77,7 @@ struct ResultCard: View {
             switch self {
             case .success: return ConvertTheme.successText
             case .error: return ConvertTheme.errorText
+            case .dedup: return Color(.secondaryLabel)
             }
         }
 
@@ -82,6 +87,7 @@ struct ResultCard: View {
             switch self {
             case .success: return "checkmark.circle"
             case .error: return "exclamationmark.triangle"
+            case .dedup: return "arrow.uturn.left"
             }
         }
 
@@ -90,6 +96,7 @@ struct ResultCard: View {
             switch self {
             case .success: return "Success"
             case .error: return "Error"
+            case .dedup: return "Deduped"
             }
         }
 
@@ -118,6 +125,8 @@ struct ResultCard: View {
                 return detail
             case .error:
                 return "Error: \(detail)"
+            case .dedup:
+                return "Deduplicated: \(detail)"
             }
         }
     }
@@ -298,6 +307,13 @@ struct ResultCard_Previews: PreviewProvider {
                     title: "No variation",
                     detail: "No variation yet — SDK still loading config, or the visitor is ineligible.",
                     variant: .error
+                )
+            )
+            ResultCard(
+                ResultCard.Item(
+                    title: "purchase-goal",
+                    detail: "Conversion already tracked (dedup)",
+                    variant: .dedup
                 )
             )
         }
