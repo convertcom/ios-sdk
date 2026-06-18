@@ -6,6 +6,12 @@ import Foundation
 
 /// Visitor segmentation attributes.
 ///
+/// ```swift
+/// var segments = Segments()
+/// segments.country = "US"
+/// segments.visitorType = "returning"
+/// ```
+///
 /// Every field is optional so callers populate only what they have. `CodingKeys` are
 /// declared explicitly to pin the camelCase wire spelling — in particular `visitorType`
 /// and `customSegments` must never serialize as `visitor_type` / `custom_segments`.

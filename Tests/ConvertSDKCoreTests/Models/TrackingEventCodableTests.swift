@@ -241,4 +241,84 @@ struct TrackingEventCodableTests {
         #expect(visitors.last?["visitorId"] as? String == "v2")
         #expect(Self.eventTypes(of: visitors[1]) == ["conversion"])
     }
+
+    // AC2 (FR68) — one parameterized body proves `eventType` is EXACTLY the canonical wire
+    // string for BOTH kinds, replacing the two separate substring checks in `bucketingWireShape`
+    // / `conversionWireShape` with a single exact-equality matrix (AC7/Task 2.2 wants the
+    // eventType check parameterized to avoid copy-paste). Element type is spelled out so the
+    // type-checker stays off the "expression too complex" path the untyped tuple array triggers;
+    // `TrackingEventEntry` is `Sendable`, so it is a legal `@Test` argument.
+    static let eventTypeCases: [(TrackingEventEntry, String)] = [
+        (.bucketing(BucketingEventData(experienceId: "exp1", variationId: "var1")), "bucketing"),
+        (.conversion(ConversionEventData(goalId: "goal1")), "conversion")
+    ]
+
+    @Test("eventType is exactly the canonical wire string", arguments: eventTypeCases)
+    func eventTypeIsExactWireString(entry: TrackingEventEntry, expectedType: String) {
+        guard let visitor = Self.visitorsArray(of: Self.event(visitorId: "vis1", entry: entry))?.first else {
+            return  // visitorsArray already recorded the Issue on a shape miss.
+        }
+        #expect(Self.eventTypes(of: visitor) == [expectedType])
+    }
+
+    /// AC2 (FR68) no-extra-keys — a `BucketingEvent`'s `data` key-set is EXACTLY
+    /// `{experienceId, variationId}`. Stronger than `bucketingWireShape`, which only proves the
+    /// two keys are PRESENT (a stray extra key would slip past a substring check). Reuses
+    /// `firstEventData` so it adds no new decode block (3% CPD gate).
+    @Test("bucketing data carries exactly experienceId and variationId, no extra keys")
+    func bucketingDataKeySetIsExact() {
+        let entry = TrackingEventEntry.bucketing(
+            BucketingEventData(experienceId: "exp1", variationId: "var1")
+        )
+        guard let data = Self.firstEventData(of: Self.event(visitorId: "vis1", entry: entry)) else {
+            Issue.record("bucketing event data object missing")
+            return
+        }
+        #expect(Set(data.keys) == ["experienceId", "variationId"])
+    }
+
+    /// AC2 (FR68) bounded key-set — a `ConversionEvent`'s `data` keys are a SUBSET of
+    /// `{goalId, goalData, bucketingData}` (no compact/extra keys), with `goalData` and
+    /// `bucketingData` present when supplied. Complements `conversionGoalDataArrayShape` (which
+    /// asserts the VALUES) by bounding the key-set itself. Reuses `firstEventData`.
+    @Test("conversion data keys are a subset of {goalId, goalData, bucketingData}")
+    func conversionDataKeySetIsBounded() {
+        let entry = TrackingEventEntry.conversion(
+            ConversionEventData(
+                goalId: "goal1",
+                goalData: [GoalDataEntry(key: .amount, value: .double(9.99))],
+                bucketingData: ["exp1": "var1"]
+            )
+        )
+        guard let data = Self.firstEventData(of: Self.event(visitorId: "vis1", entry: entry)) else {
+            Issue.record("conversion event data object missing")
+            return
+        }
+        #expect(Set(data.keys).isSubset(of: ["goalId", "goalData", "bucketingData"]))
+        #expect(data["goalData"] != nil)
+        #expect(data["bucketingData"] != nil)
+    }
+
+    /// FR43 "no compact payload variant may appear anywhere" — the encoded full envelope must
+    /// NOT contain any abbreviated key spelling for the four camelCase fields it carries
+    /// (`experienceId`/`variationId`/`goalId`/`eventType`). Complements the
+    /// `viewExp`/`hitGoal`/`tr` legacy-name negatives in `bucketingWireShape` with the
+    /// compact-key-name negatives. Reuses the shared `encodeJSONString` helper.
+    @Test("encoded envelope contains no compact/abbreviated key names")
+    func envelopeHasNoAbbreviatedKeys() {
+        let event = Self.event(
+            visitorId: "vis1",
+            entries: [
+                .bucketing(BucketingEventData(experienceId: "exp1", variationId: "var1")),
+                .conversion(ConversionEventData(goalId: "goal1"))
+            ]
+        )
+        guard let json = CodableTestHelpers.encodeJSONString(event) else {
+            Issue.record("full-envelope TrackingEvent failed to encode to a JSON string")
+            return
+        }
+        for abbreviated in ["\"eId\"", "\"vId\"", "\"gId\"", "\"evt\""] {
+            #expect(!json.contains(abbreviated), "compact key \(abbreviated) leaked onto the wire")
+        }
+    }
 }
