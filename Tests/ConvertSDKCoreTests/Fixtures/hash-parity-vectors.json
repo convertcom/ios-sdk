@@ -1,0 +1,890 @@
+[
+  {
+    "description": "ASCII experience=exp_1 visitor=visitor_001",
+    "visitorId": "visitor_001",
+    "experienceId": "exp_1",
+    "seed": 9999,
+    "expectedValue": 2987,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_1 visitor=visitor_abc",
+    "visitorId": "visitor_abc",
+    "experienceId": "exp_1",
+    "seed": 9999,
+    "expectedValue": 833,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_1 visitor=user-42",
+    "visitorId": "user-42",
+    "experienceId": "exp_1",
+    "seed": 9999,
+    "expectedValue": 3284,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_1 visitor=alice.smith@example.com",
+    "visitorId": "alice.smith@example.com",
+    "experienceId": "exp_1",
+    "seed": 9999,
+    "expectedValue": 393,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_1 visitor=u_01HXZY8K3Q7JN5R2V4W6YAM8BC",
+    "visitorId": "u_01HXZY8K3Q7JN5R2V4W6YAM8BC",
+    "experienceId": "exp_1",
+    "seed": 9999,
+    "expectedValue": 1015,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_1 visitor=anon",
+    "visitorId": "anon",
+    "experienceId": "exp_1",
+    "seed": 9999,
+    "expectedValue": 1235,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_1 visitor=v",
+    "visitorId": "v",
+    "experienceId": "exp_1",
+    "seed": 9999,
+    "expectedValue": 1029,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_1 visitor=session_token_xyz123",
+    "visitorId": "session_token_xyz123",
+    "experienceId": "exp_1",
+    "seed": 9999,
+    "expectedValue": 289,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_1 visitor=A1B2C3D4E5F6",
+    "visitorId": "A1B2C3D4E5F6",
+    "experienceId": "exp_1",
+    "seed": 9999,
+    "expectedValue": 4974,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_1 visitor=convert-user-0000000001",
+    "visitorId": "convert-user-0000000001",
+    "experienceId": "exp_1",
+    "seed": 9999,
+    "expectedValue": 3967,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=experiment-hero-cta visitor=visitor_001",
+    "visitorId": "visitor_001",
+    "experienceId": "experiment-hero-cta",
+    "seed": 9999,
+    "expectedValue": 2332,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=experiment-hero-cta visitor=visitor_abc",
+    "visitorId": "visitor_abc",
+    "experienceId": "experiment-hero-cta",
+    "seed": 9999,
+    "expectedValue": 8719,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=experiment-hero-cta visitor=user-42",
+    "visitorId": "user-42",
+    "experienceId": "experiment-hero-cta",
+    "seed": 9999,
+    "expectedValue": 7655,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=experiment-hero-cta visitor=alice.smith@example.com",
+    "visitorId": "alice.smith@example.com",
+    "experienceId": "experiment-hero-cta",
+    "seed": 9999,
+    "expectedValue": 1764,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=experiment-hero-cta visitor=u_01HXZY8K3Q7JN5R2V4W6YAM8BC",
+    "visitorId": "u_01HXZY8K3Q7JN5R2V4W6YAM8BC",
+    "experienceId": "experiment-hero-cta",
+    "seed": 9999,
+    "expectedValue": 7989,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=experiment-hero-cta visitor=anon",
+    "visitorId": "anon",
+    "experienceId": "experiment-hero-cta",
+    "seed": 9999,
+    "expectedValue": 6922,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=experiment-hero-cta visitor=v",
+    "visitorId": "v",
+    "experienceId": "experiment-hero-cta",
+    "seed": 9999,
+    "expectedValue": 4314,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=experiment-hero-cta visitor=session_token_xyz123",
+    "visitorId": "session_token_xyz123",
+    "experienceId": "experiment-hero-cta",
+    "seed": 9999,
+    "expectedValue": 6103,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=experiment-hero-cta visitor=A1B2C3D4E5F6",
+    "visitorId": "A1B2C3D4E5F6",
+    "experienceId": "experiment-hero-cta",
+    "seed": 9999,
+    "expectedValue": 3332,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=experiment-hero-cta visitor=convert-user-0000000001",
+    "visitorId": "convert-user-0000000001",
+    "experienceId": "experiment-hero-cta",
+    "seed": 9999,
+    "expectedValue": 341,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=E2 visitor=visitor_001",
+    "visitorId": "visitor_001",
+    "experienceId": "E2",
+    "seed": 9999,
+    "expectedValue": 1421,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=E2 visitor=visitor_abc",
+    "visitorId": "visitor_abc",
+    "experienceId": "E2",
+    "seed": 9999,
+    "expectedValue": 7350,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=E2 visitor=user-42",
+    "visitorId": "user-42",
+    "experienceId": "E2",
+    "seed": 9999,
+    "expectedValue": 6605,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=E2 visitor=alice.smith@example.com",
+    "visitorId": "alice.smith@example.com",
+    "experienceId": "E2",
+    "seed": 9999,
+    "expectedValue": 3265,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=E2 visitor=u_01HXZY8K3Q7JN5R2V4W6YAM8BC",
+    "visitorId": "u_01HXZY8K3Q7JN5R2V4W6YAM8BC",
+    "experienceId": "E2",
+    "seed": 9999,
+    "expectedValue": 924,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=E2 visitor=anon",
+    "visitorId": "anon",
+    "experienceId": "E2",
+    "seed": 9999,
+    "expectedValue": 6612,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=E2 visitor=v",
+    "visitorId": "v",
+    "experienceId": "E2",
+    "seed": 9999,
+    "expectedValue": 5287,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=E2 visitor=session_token_xyz123",
+    "visitorId": "session_token_xyz123",
+    "experienceId": "E2",
+    "seed": 9999,
+    "expectedValue": 6816,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=E2 visitor=A1B2C3D4E5F6",
+    "visitorId": "A1B2C3D4E5F6",
+    "experienceId": "E2",
+    "seed": 9999,
+    "expectedValue": 3984,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=E2 visitor=convert-user-0000000001",
+    "visitorId": "convert-user-0000000001",
+    "experienceId": "E2",
+    "seed": 9999,
+    "expectedValue": 586,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_with_long_name_2026_q2_pricing_test visitor=visitor_001",
+    "visitorId": "visitor_001",
+    "experienceId": "exp_with_long_name_2026_q2_pricing_test",
+    "seed": 9999,
+    "expectedValue": 5394,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_with_long_name_2026_q2_pricing_test visitor=visitor_abc",
+    "visitorId": "visitor_abc",
+    "experienceId": "exp_with_long_name_2026_q2_pricing_test",
+    "seed": 9999,
+    "expectedValue": 7420,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_with_long_name_2026_q2_pricing_test visitor=user-42",
+    "visitorId": "user-42",
+    "experienceId": "exp_with_long_name_2026_q2_pricing_test",
+    "seed": 9999,
+    "expectedValue": 3676,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_with_long_name_2026_q2_pricing_test visitor=alice.smith@example.com",
+    "visitorId": "alice.smith@example.com",
+    "experienceId": "exp_with_long_name_2026_q2_pricing_test",
+    "seed": 9999,
+    "expectedValue": 7307,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_with_long_name_2026_q2_pricing_test visitor=u_01HXZY8K3Q7JN5R2V4W6YAM8BC",
+    "visitorId": "u_01HXZY8K3Q7JN5R2V4W6YAM8BC",
+    "experienceId": "exp_with_long_name_2026_q2_pricing_test",
+    "seed": 9999,
+    "expectedValue": 6627,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_with_long_name_2026_q2_pricing_test visitor=anon",
+    "visitorId": "anon",
+    "experienceId": "exp_with_long_name_2026_q2_pricing_test",
+    "seed": 9999,
+    "expectedValue": 1795,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_with_long_name_2026_q2_pricing_test visitor=v",
+    "visitorId": "v",
+    "experienceId": "exp_with_long_name_2026_q2_pricing_test",
+    "seed": 9999,
+    "expectedValue": 6156,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_with_long_name_2026_q2_pricing_test visitor=session_token_xyz123",
+    "visitorId": "session_token_xyz123",
+    "experienceId": "exp_with_long_name_2026_q2_pricing_test",
+    "seed": 9999,
+    "expectedValue": 6546,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_with_long_name_2026_q2_pricing_test visitor=A1B2C3D4E5F6",
+    "visitorId": "A1B2C3D4E5F6",
+    "experienceId": "exp_with_long_name_2026_q2_pricing_test",
+    "seed": 9999,
+    "expectedValue": 2534,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=exp_with_long_name_2026_q2_pricing_test visitor=convert-user-0000000001",
+    "visitorId": "convert-user-0000000001",
+    "experienceId": "exp_with_long_name_2026_q2_pricing_test",
+    "seed": 9999,
+    "expectedValue": 3330,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=x visitor=visitor_001",
+    "visitorId": "visitor_001",
+    "experienceId": "x",
+    "seed": 9999,
+    "expectedValue": 7158,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=x visitor=visitor_abc",
+    "visitorId": "visitor_abc",
+    "experienceId": "x",
+    "seed": 9999,
+    "expectedValue": 5329,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=x visitor=user-42",
+    "visitorId": "user-42",
+    "experienceId": "x",
+    "seed": 9999,
+    "expectedValue": 8718,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=x visitor=alice.smith@example.com",
+    "visitorId": "alice.smith@example.com",
+    "experienceId": "x",
+    "seed": 9999,
+    "expectedValue": 5419,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=x visitor=u_01HXZY8K3Q7JN5R2V4W6YAM8BC",
+    "visitorId": "u_01HXZY8K3Q7JN5R2V4W6YAM8BC",
+    "experienceId": "x",
+    "seed": 9999,
+    "expectedValue": 6619,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=x visitor=anon",
+    "visitorId": "anon",
+    "experienceId": "x",
+    "seed": 9999,
+    "expectedValue": 2842,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=x visitor=v",
+    "visitorId": "v",
+    "experienceId": "x",
+    "seed": 9999,
+    "expectedValue": 9489,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=x visitor=session_token_xyz123",
+    "visitorId": "session_token_xyz123",
+    "experienceId": "x",
+    "seed": 9999,
+    "expectedValue": 9900,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=x visitor=A1B2C3D4E5F6",
+    "visitorId": "A1B2C3D4E5F6",
+    "experienceId": "x",
+    "seed": 9999,
+    "expectedValue": 8067,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "ASCII experience=x visitor=convert-user-0000000001",
+    "visitorId": "convert-user-0000000001",
+    "experienceId": "x",
+    "seed": 9999,
+    "expectedValue": 8594,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Unicode: waving-hand emoji with medium-skin-tone modifier",
+    "visitorId": "👋🏼",
+    "experienceId": "exp_unicode",
+    "seed": 9999,
+    "expectedValue": 2644,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Unicode: CJK (Japanese) — 日本語",
+    "visitorId": "日本語",
+    "experienceId": "exp_unicode",
+    "seed": 9999,
+    "expectedValue": 9060,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Unicode: combining-char precomposed é (U+00E9)",
+    "visitorId": "café",
+    "experienceId": "exp_unicode",
+    "seed": 9999,
+    "expectedValue": 5532,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Unicode: mixed BMP + supplementary planes 𝕔𝕠𝕟𝕧𝕖𝕣𝕥",
+    "visitorId": "𝕔𝕠𝕟𝕧𝕖𝕣𝕥",
+    "experienceId": "exp_unicode",
+    "seed": 9999,
+    "expectedValue": 4544,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Unicode: RTL Arabic script محمد",
+    "visitorId": "محمد",
+    "experienceId": "exp_unicode",
+    "seed": 9999,
+    "expectedValue": 351,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Empty: both visitor and experience ids are empty",
+    "visitorId": "",
+    "experienceId": "",
+    "seed": 9999,
+    "expectedValue": 8204,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Numeric string: \"0\"",
+    "visitorId": "0",
+    "experienceId": "exp_num",
+    "seed": 9999,
+    "expectedValue": 7474,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Numeric string: \"12345\"",
+    "visitorId": "12345",
+    "experienceId": "exp_num",
+    "seed": 9999,
+    "expectedValue": 3667,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Numeric string: \"99999999999999999999\" (beyond JS safe int)",
+    "visitorId": "99999999999999999999",
+    "experienceId": "exp_num",
+    "seed": 9999,
+    "expectedValue": 1660,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Long ASCII: 1024 repeated x",
+    "visitorId": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "experienceId": "exp_long",
+    "seed": 9999,
+    "expectedValue": 5420,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Long ASCII: ~1.1 KB hex-like pattern",
+    "visitorId": "convert-visitor-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef0123456789-abcdef012345",
+    "experienceId": "exp_long",
+    "seed": 9999,
+    "expectedValue": 548,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Long Unicode: 512 CJK chars (~1.5 KB UTF-8)",
+    "visitorId": "日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日",
+    "experienceId": "exp_long",
+    "seed": 9999,
+    "expectedValue": 5764,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Edge: NFC-precomposed é (U+00E9) — 2-byte UTF-8",
+    "visitorId": "é",
+    "experienceId": "exp_edge",
+    "seed": 9999,
+    "expectedValue": 9240,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Edge: NFD-decomposed e + combining acute (U+0065 U+0301) — 3-byte UTF-8",
+    "visitorId": "é",
+    "experienceId": "exp_edge",
+    "seed": 9999,
+    "expectedValue": 8186,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Edge: trailing whitespace — \"visitor_trail \"",
+    "visitorId": "visitor_trail ",
+    "experienceId": "exp_edge",
+    "seed": 9999,
+    "expectedValue": 3740,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Edge: mid-string NUL character — \"a\\u0000b\"",
+    "visitorId": "a\u0000b",
+    "experienceId": "exp_edge",
+    "seed": 9999,
+    "expectedValue": 6986,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Seed=0: zero-seed must be treated as a valid seed, not null fallback",
+    "visitorId": "visitor_42",
+    "experienceId": "",
+    "seed": 0,
+    "expectedValue": 1051,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Seed=12345: single-char visitor with non-default seed",
+    "visitorId": "a",
+    "experienceId": "",
+    "seed": 12345,
+    "expectedValue": 5828,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "Seed=2147483647: int32 max seed",
+    "visitorId": "visitor_boundary",
+    "experienceId": "exp_seed",
+    "seed": 2147483647,
+    "expectedValue": 1045,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "iOS-specific: Unicode visitorId with CJK characters (Japanese)",
+    "visitorId": "こんにちは世界_東京",
+    "experienceId": "ios_exp_unicode",
+    "seed": 9999,
+    "expectedValue": 4616,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "iOS-specific: long visitorId (256 chars, >= 200)",
+    "visitorId": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "experienceId": "ios_exp_long",
+    "seed": 9999,
+    "expectedValue": 8945,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "iOS-specific: empty visitorId with non-empty experienceId",
+    "visitorId": "",
+    "experienceId": "ios_exp_empty_visitor",
+    "seed": 9999,
+    "expectedValue": 4440,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "iOS-specific: standard hyphenated UUID visitorId",
+    "visitorId": "0b0e64d5-adf0-4c43-9c1f-4f6a81e4e87e",
+    "experienceId": "ios_exp_uuid",
+    "seed": 9999,
+    "expectedValue": 5270,
+    "expectedVariationId": "varB",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  },
+  {
+    "description": "iOS-specific: visitorId containing spaces",
+    "visitorId": "visitor with internal spaces",
+    "experienceId": "ios_exp_spaces",
+    "seed": 9999,
+    "expectedValue": 3061,
+    "expectedVariationId": "varA",
+    "buckets": {
+      "varA": 50,
+      "varB": 50
+    }
+  }
+]

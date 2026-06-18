@@ -59,6 +59,32 @@ struct ConfigStoreTests {
         await MainActor.run { }
     }
 
+    /// Drives the ready → refresh transition once: the FIRST `setConfig(first)` flips the gate
+    /// ready (fires `.ready`), the SECOND `setConfig(second)` is a post-ready refresh (fires
+    /// `.configUpdated` with `second` as its snapshot), then drains so every dispatched
+    /// `MainActor` callback has run before the caller asserts. Single owner of the two-call
+    /// refresh sequence so neither refresh test re-inlines it (SonarQube CPD is token-based, so
+    /// the duplicated block — not the variable names — is what would trip the gate).
+    private func fireRefresh(
+        on sut: (store: ConfigStore, bus: EventBus),
+        first: ProjectConfig?,
+        second: ProjectConfig?
+    ) async {
+        await sut.store.setConfig(first)
+        await sut.store.setConfig(second)
+        await drain()
+    }
+
+    /// Unwraps the `accountId` carried by a `.configUpdated` payload's snapshot; `nil` for any
+    /// other case (or a snapshot-less payload). Keeps the `switch` out of the test bodies and
+    /// gives the refresh-payload assertion one identifying field to compare — `ProjectConfig`
+    /// is `Decodable`/`Sendable` but NOT `Equatable`, so a field compare is the sanctioned check.
+    /// Mirrors `EventBusTests.experienceId(of:)`.
+    private static func snapshotAccountId(of payload: EventPayloadValue) -> String? {
+        guard case let .configUpdated(updated) = payload else { return nil }
+        return updated.snapshot?.accountId
+    }
+
     // MARK: Scenario 1 — waitForReady resumes once config is set
 
     @Test("waitForReady() resumes after the first setConfig(_:)")
@@ -144,7 +170,53 @@ struct ConfigStoreTests {
         #expect(await sut.store.getSnapshot()?.accountId == "acc-1")
     }
 
-    // MARK: Scenario 7 — cancellation propagates promptly out of waitForReady() (F-170, AC13)
+    // MARK: Scenario 7 — a post-ready setConfig fires .configUpdated once, .ready not re-fired
+
+    /// CORE-1 refresh contract (POSITIVE side): the FIRST `setConfig(_:)` signals ready and fires
+    /// `.ready` (NOT `.configUpdated`); the SECOND fires `.configUpdated` EXACTLY ONCE and does
+    /// NOT re-fire `.ready`. Both invariants are folded into ONE test (two confirmations over the
+    /// same two-call sequence) rather than split across two near-identical tests — that keeps the
+    /// `.ready`-once invariant adjacent to the new `.configUpdated`-once firing AND avoids a CPD
+    /// duplicate of the existing `secondSetConfigDoesNotReFireReady` setup. The two configs carry
+    /// DIFFERENT account ids so the refresh is a genuine change, not a no-op re-set.
+    @Test("a second setConfig(_:) on a ready store fires .configUpdated exactly once")
+    func secondSetConfigFiresConfigUpdated() async throws {
+        let sut = makeSut()
+        let first = try makeConfig(accountId: "acc-1")
+        let second = try makeConfig(accountId: "acc-2")
+        await confirmation(".configUpdated is delivered exactly once", expectedCount: 1) { updated in
+            await confirmation(".ready is delivered exactly once", expectedCount: 1) { ready in
+                _ = await sut.bus.on(.ready) { _ in ready() }
+                _ = await sut.bus.on(.configUpdated) { _ in updated() }
+                await fireRefresh(on: sut, first: first, second: second)
+            }
+        }
+    }
+
+    // MARK: Scenario 8 — the refresh .configUpdated payload carries the NEW snapshot
+
+    /// CORE-1 refresh contract (PAYLOAD side): the `.configUpdated` fired by the post-ready
+    /// `setConfig(_:)` carries the NEW config as its `snapshot`. Asserted INSIDE the `.configUpdated`
+    /// callback (which runs on the `MainActor`), so the captured value never crosses an actor
+    /// boundary as mutable state — the same in-closure assertion shape `EventBusTests` uses for
+    /// payload checks. `ProjectConfig` is not `Equatable`, so the stable `accountId` identifies the
+    /// snapshot: it must be the SECOND config's id, proving the refresh payload reflects the update
+    /// rather than the first (ready) config.
+    @Test("the refresh .configUpdated payload carries the new snapshot")
+    func configUpdatedPayloadCarriesSnapshot() async throws {
+        let sut = makeSut()
+        let first = try makeConfig(accountId: "acc-1")
+        let second = try makeConfig(accountId: "acc-2")
+        await confirmation(".configUpdated carries the new snapshot", expectedCount: 1) { received in
+            _ = await sut.bus.on(.configUpdated) { payload in
+                #expect(Self.snapshotAccountId(of: payload) == "acc-2")
+                received()
+            }
+            await fireRefresh(on: sut, first: first, second: second)
+        }
+    }
+
+    // MARK: Scenario 9 — cancellation propagates promptly out of waitForReady() (F-170, AC13)
 
     @Test("a cancelled waitForReady() waiter throws CancellationError without blocking on the request timeout")
     func cancelledWaiterThrowsPromptly() async {
@@ -160,7 +232,7 @@ struct ConfigStoreTests {
         #expect(throws: CancellationError.self) { try result.get() }
     }
 
-    // MARK: Scenario 8 — cancelling one waiter de-registers only that waiter (F-170, AC13)
+    // MARK: Scenario 10 — cancelling one waiter de-registers only that waiter (F-170, AC13)
 
     @Test("cancelling one waiter leaves a concurrent waiter to resolve on the gate's terminal transition")
     func cancellingOneWaiterLeavesOthersToResolve() async {

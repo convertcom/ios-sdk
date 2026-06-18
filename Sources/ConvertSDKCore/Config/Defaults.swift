@@ -41,4 +41,7 @@ public enum Defaults {
     /// Whole-resource timeout (seconds) for foreground HTTP. FR45: bounded with generous
     /// headroom for large configs on slow links (5 min), NOT the 7-day default.
     public static let resourceTimeoutSeconds: TimeInterval = 300
+
+    /// LRU cap for the in-memory visitor decision cache (NFR4) — mirrors JS LOCAL_STORE_LIMIT.
+    public static let localStoreLimit = 10_000
 }

@@ -1,4 +1,14 @@
 // Tests/ConvertSDKTests/Adapters/URLSessionHTTPClientTests.swift
+//
+// MAINTENANCE NOTE (file length): this file is the canonical home for EVERY URLProtocolStub-driving
+// suite, because they must all nest under the ONE shared `.serialized` parent (URLProtocolStubBackedTests)
+// so they run serially relative to each other (the parent installs `isParallelizationEnabled = false` for
+// its whole subtree). Story 5.5 added the RecordedRequestCountTests child here, putting the file AT the
+// 400-line file-length limit. A future stub-backed suite added here will breach it — at that point add a
+// named file-length lint suppression at the top (mirroring TestFixtures.swift / ConvertContextTests.swift)
+// rather than splitting the stub-backed suites across files, which would re-introduce the cross-suite
+// reset() race the single parent exists to prevent. (Such a suppression is intentionally NOT present yet:
+// the linter rejects it as superfluous until the limit is actually exceeded.)
 import Testing
 import Foundation
 import ConvertSDK
@@ -312,6 +322,78 @@ enum URLProtocolStubBackedTests {
             await #expect(throws: (any Error).self) {
                 _ = try await sut.get(url: endpoint, headers: [:])
             }
+        }
+    }
+
+    // RED phase (Epic 5, Story 5.5, T0): this suite exercises
+    // `URLProtocolStub.recordedRequestCount(for:)`, the per-URL request COUNT
+    // accessor added to `Support/URLProtocolStub.swift`. The existing
+    // `recordedRequest(for:)` returns only the LAST request for a URL; the new
+    // accessor returns HOW MANY hit it (lock-guarded + `reset()`-aware).
+    //
+    // It lives HERE — as a third child of the one `URLProtocolStub-backed`
+    // `.serialized` parent, alongside `URLProtocolStubTests` and
+    // `URLSessionHTTPClientTests` — precisely because it drives the same
+    // PROCESS-GLOBAL stub registries (now including the per-URL counter). A
+    // SEPARATE top-level `.serialized` suite would still run in PARALLEL relative
+    // to these (`.serialized` orders cases WITHIN a suite, never across two
+    // top-level parents), so a sibling case's `reset()` (a global wipe) could
+    // clobber this suite's tally between its requests and its assertion. Nesting
+    // under the shared parent inherits the parent's `isParallelizationEnabled =
+    // false` scope, serializing this suite RELATIVE TO the other stub-driving
+    // suites — the only thing that closes that cross-suite race (see this file's
+    // header for the mechanism). Kept `.serialized` as belt-and-suspenders.
+    @Suite("URLProtocolStub.recordedRequestCount", .serialized)
+    struct RecordedRequestCountTests {
+        /// Endpoint hit THREE times — its counter must read 3.
+        static let urlA = URL(string: "https://example.com/count-a")
+        /// Endpoint hit ONCE — its counter must read 1, proving the count is per-URL (not global).
+        static let urlB = URL(string: "https://example.com/count-b")
+
+        /// Builds an ephemeral session wired to a freshly-reset `URLProtocolStub`, so neither the
+        /// install nor the reset block is copy-pasted into the test body (SonarQube new-code
+        /// duplication discipline). Mirrors `URLProtocolStubTests.makeStubbedSession`.
+        private func makeStubbedSession() -> URLSession {
+            URLProtocolStub.reset()
+            let configuration = URLSessionConfiguration.ephemeral
+            URLProtocolStub.install(into: configuration)
+            return URLSession(configuration: configuration)
+        }
+
+        /// Fires `count` GET requests to `url` through `session`, ignoring each result (the stub
+        /// answers them all). Extracted so the 3×/1× drive loop is written once, not inlined twice.
+        private func fire(_ count: Int, to url: URL, on session: URLSession) async throws {
+            for _ in 0..<count {
+                _ = try await session.data(from: url)
+            }
+        }
+
+        /// `recordedRequestCount(for:)` counts requests PER URL: after 3 hits to A and 1 to B it
+        /// reads 3 / 1, and after `reset()` both read 0 (the NFR21 teardown contract — the counter
+        /// is wiped alongside the other registries).
+        @Test("recordedRequestCount counts per URL and resets to zero")
+        func countsPerURLAndResets() async throws {
+            let session = makeStubbedSession()
+
+            guard let urlA = Self.urlA, let urlB = Self.urlB else {
+                Issue.record("Failed to construct test URLs")
+                return
+            }
+            // Stub both so the requests are answered (the stub records the request either way, but
+            // stubbing keeps the drive on the canned-response path rather than the 404 fallback).
+            let emptyBody = Data()
+            URLProtocolStub.stub(url: urlA, statusCode: 200, data: emptyBody, headers: [:])
+            URLProtocolStub.stub(url: urlB, statusCode: 200, data: emptyBody, headers: [:])
+
+            try await fire(3, to: urlA, on: session)
+            try await fire(1, to: urlB, on: session)
+
+            #expect(URLProtocolStub.recordedRequestCount(for: urlA) == 3)
+            #expect(URLProtocolStub.recordedRequestCount(for: urlB) == 1)
+
+            URLProtocolStub.reset()
+            #expect(URLProtocolStub.recordedRequestCount(for: urlA) == 0)
+            #expect(URLProtocolStub.recordedRequestCount(for: urlB) == 0)
         }
     }
 }

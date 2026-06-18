@@ -52,21 +52,37 @@ public actor ConfigStore {
         self.eventBus = eventBus
     }
 
-    /// Stores `config` as the current ``snapshot`` and, on the FIRST non-terminal call, marks
-    /// config present: fires `SystemEvent.ready` exactly once via the owned ``EventBus`` and
-    /// resumes every ``waitForReady()`` waiter. A `nil` argument is a valid DEGRADED first load
-    /// (F-019): it STILL signals ready (the guard passes), preventing a forever-hang when both
-    /// cache and network fail, just with a `nil` snapshot.
+    /// Stores `config` as the current ``snapshot`` and resolves down ONE of two branches.
     ///
-    /// The snapshot is stored BEFORE the latch guard, so a SECOND (post-ready) call still
-    /// UPDATES the snapshot to the latest config — but then returns without re-firing `.ready`
-    /// or re-signalling waiters (the gate latches; the first terminal transition already won).
-    /// `.ready` is fired BEFORE resuming continuations, so `.ready` subscribers observe the
-    /// event before any ``waitForReady()`` caller unblocks (Story 2.2 ordering). `async`
+    /// FIRST non-terminal call: marks config present — fires `SystemEvent.ready` exactly once via
+    /// the owned ``EventBus`` and resumes every ``waitForReady()`` waiter. A `nil` argument is a
+    /// valid DEGRADED first load (F-019): it STILL signals ready (the guard passes), preventing a
+    /// forever-hang when both cache and network fail, just with a `nil` snapshot. `.ready` is fired
+    /// BEFORE resuming continuations, so `.ready` subscribers observe the event before any
+    /// ``waitForReady()`` caller unblocks (Story 2.2 ordering).
+    ///
+    /// POST-READY refresh (the gate already latched READY on a prior call): fires
+    /// `SystemEvent.configUpdated` exactly once — carrying the NEW snapshot — and returns WITHOUT
+    /// re-firing `.ready` or re-signalling waiters. This branch is gated on `isReady` specifically
+    /// (NOT `terminalError`): an errored gate is not a successful refresh and fires nothing here.
+    ///
+    /// The snapshot is stored BEFORE either branch, so a refresh still UPDATES the snapshot to the
+    /// latest config (single owner of `snapshot = arg`); neither branch re-touches it. `async`
     /// because firing on the bus actor is an `await`ed cross-actor call.
     public func setConfig(_ config: ProjectConfig?) async {
         snapshot = config
-        guard !isReady, terminalError == nil else { return }
+        // Post-ready refresh: the gate already latched READY on a prior call, so this is a
+        // config REFRESH, not a first load. Fire `.configUpdated` (carrying the new snapshot)
+        // exactly once and return WITHOUT re-firing `.ready` or re-signalling waiters. The
+        // snapshot was already updated above (single owner of "snapshot = arg"), so this branch
+        // does not touch it. Gated on `isReady` specifically (not `terminalError`): an errored
+        // gate is not a successful refresh and fires nothing here.
+        if isReady {
+            await eventBus.fire(.configUpdated, payload: .configUpdated(ConfigUpdatedPayload(snapshot: config)))
+            return
+        }
+        // First non-terminal load: latch READY, fire `.ready` once, resume waiters.
+        guard terminalError == nil else { return }
         isReady = true
         await eventBus.fire(.ready, payload: .ready(ReadyPayload()))
         for continuation in continuations.values {
