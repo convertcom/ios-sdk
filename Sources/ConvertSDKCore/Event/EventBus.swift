@@ -41,7 +41,15 @@ public actor EventBus {
     /// (fire-and-forget), so callers on any actor/thread may call `fire` and it returns
     /// immediately without awaiting the callbacks. Subscriber invocation order is
     /// unspecified. When no callbacks are registered for `event`, this is a no-op.
-    internal func fire(_ event: SystemEvent, payload: EventPayloadValue) {
+    ///
+    /// `package` (NOT `public`): the in-package firers — ``ConfigStore`` / ``ExperienceManager``
+    /// inside this module, AND ``ConvertContext`` in the sibling `ConvertSDK` target (the conversion
+    /// seam fires `.conversion` here) — must reach it, but external SDK consumers must NOT be able to
+    /// spoof system events onto the bus. `package` grants exactly the in-package visibility the
+    /// conversion path needs while keeping `fire` off the SDK's public surface (the public bus API
+    /// stays `on`/`off` only). Mirrors ``VisitorContextManager``'s `package` access, already consumed
+    /// cross-target by `ConvertSDK.createContext`.
+    package func fire(_ event: SystemEvent, payload: EventPayloadValue) {
         guard let callbacks = subscribers[event] else { return }
         for callback in callbacks.values {
             Task { @MainActor in
