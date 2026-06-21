@@ -438,35 +438,6 @@ components:
       enum:
         - permanent
         - transient
-    PlanStatus:
-      type: string
-      description: Account billing status
-      enum:
-        - paid
-        - trial
-        - trialExpired
-        - canceled
-        - paused
-    Products:
-      description: >
-        The Convert product line this billing plan pertains to.
-
-        - `experiences`: Relates to A/B testing, MVT, Split URL, and
-        personalization features.
-
-        - `deploy`: Relates to the "Deploy" feature for rolling out changes to
-        specific audiences without A/B testing reports. Knowledge Base:
-        "Deployments have the potential to contain small segments...and this
-        could be interpreted by Privacy Authorities in Europe as identification
-        of data subjects."
-
-        - `addons`: Relates to add-on products that extend the core platform
-        capabilities.
-      type: string
-      enum:
-        - experiences
-        - deploy
-        - addons
     PageNumber:
       type: object
       properties:
@@ -1842,7 +1813,7 @@ components:
             issues.
         obfuscate_text:
           type: boolean
-          default: true
+          default: false
           description: >
             True when all text elements (apart from placeholders) should be
             obfuscated inside a recording.
@@ -1862,6 +1833,19 @@ components:
 
             Higher values collect data from a larger share of traffic and
             consume allocation faster.
+        heatmap_visits_limit:
+          type: integer
+          default: 2500
+          enum:
+            - 2500
+            - 5000
+            - 10000
+            - 15000
+          description: >
+            Maximum number of visits per variation used when generating a
+            heatmap for this project.
+
+            Applies to newly created heatmaps when an experience is activated.
     NumericOutlierTypes:
       description: >
         The method used for detecting and handling order outliers in revenue or
@@ -3256,6 +3240,8 @@ components:
         - split_url
         - multipage
         - deploy
+        - a/b_fullstack
+        - feature_rollout
     VariationStatuses:
       type: string
       description: Variation status
@@ -3555,6 +3541,7 @@ components:
           manual: '#/components/schemas/LocationTriggerManual'
           upon_run: '#/components/schemas/LocationTriggerUponRun'
     LocationTriggerTypes:
+      type: string
       default: upon_run
       description: >
         Specifies the mechanism that activates an experience when its location
@@ -3582,19 +3569,11 @@ components:
 
         Note: For Full Stack projects, `upon_run` is effectively the only mode,
         as activation is handled by the SDK.
-      anyOf:
-        - type: string
-          enum:
-            - upon_run
-        - type: string
-          enum:
-            - manual
-        - type: string
-          enum:
-            - dom_element
-        - type: string
-          enum:
-            - callback
+      enum:
+        - upon_run
+        - manual
+        - dom_element
+        - callback
     LocationTriggerBase:
       type: object
       properties:
@@ -3994,6 +3973,14 @@ components:
               description: >-
                 Attempt to pull revenue data from Google Analytics Revenue
                 Tracking code.
+            track_first_exposure_only:
+              type: boolean
+              default: false
+              description: >-
+                When enabled, the experience_impression event is sent only the
+                first time a visitor is exposed to an experience, instead of on
+                every subsequent qualifying page view. Opt-in and disabled by
+                default.
     ProjectIntegrationGA3:
       allOf:
         - $ref: '#/components/schemas/ProjectGASettingsBase'

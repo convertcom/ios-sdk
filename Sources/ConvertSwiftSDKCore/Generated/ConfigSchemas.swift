@@ -3781,25 +3781,46 @@ public enum Components {
             ///
             /// - Remark: Generated from `#/components/schemas/VisitorInsightsBase/sampling_rate`.
             public var sampling_rate: Components.Schemas.VisitorInsightsBase.sampling_ratePayload?
+            /// Maximum number of visits per variation used when generating a heatmap for this project.
+            /// Applies to newly created heatmaps when an experience is activated.
+            ///
+            ///
+            /// - Remark: Generated from `#/components/schemas/VisitorInsightsBase/heatmap_visits_limit`.
+            @frozen public enum heatmap_visits_limitPayload: Int, Codable, Hashable, Sendable, CaseIterable {
+                case _2500 = 2500
+                case _5000 = 5000
+                case _10000 = 10000
+                case _15000 = 15000
+            }
+            /// Maximum number of visits per variation used when generating a heatmap for this project.
+            /// Applies to newly created heatmaps when an experience is activated.
+            ///
+            ///
+            /// - Remark: Generated from `#/components/schemas/VisitorInsightsBase/heatmap_visits_limit`.
+            public var heatmap_visits_limit: Components.Schemas.VisitorInsightsBase.heatmap_visits_limitPayload?
             /// Creates a new `VisitorInsightsBase`.
             ///
             /// - Parameters:
             ///   - enabled: If true, Convert Signals™ is enabled for the project, allowing the system to capture sessions exhibiting user frustration or usability issues.
             ///   - obfuscate_text: True when all text elements (apart from placeholders) should be obfuscated inside a recording.
             ///   - sampling_rate: The percentage of visitors included in sampling for Convert Signals session recordings and Heatmaps for this project.
+            ///   - heatmap_visits_limit: Maximum number of visits per variation used when generating a heatmap for this project.
             public init(
                 enabled: Swift.Bool? = nil,
                 obfuscate_text: Swift.Bool? = nil,
-                sampling_rate: Components.Schemas.VisitorInsightsBase.sampling_ratePayload? = nil
+                sampling_rate: Components.Schemas.VisitorInsightsBase.sampling_ratePayload? = nil,
+                heatmap_visits_limit: Components.Schemas.VisitorInsightsBase.heatmap_visits_limitPayload? = nil
             ) {
                 self.enabled = enabled
                 self.obfuscate_text = obfuscate_text
                 self.sampling_rate = sampling_rate
+                self.heatmap_visits_limit = heatmap_visits_limit
             }
             public enum CodingKeys: String, CodingKey {
                 case enabled
                 case obfuscate_text
                 case sampling_rate
+                case heatmap_visits_limit
             }
         }
         /// The method used for detecting and handling order outliers in revenue or product count tracking:
@@ -6631,6 +6652,8 @@ public enum Components {
             case split_url = "split_url"
             case multipage = "multipage"
             case deploy = "deploy"
+            case a_sol_b_fullstack = "a/b_fullstack"
+            case feature_rollout = "feature_rollout"
         }
         /// Variation status
         ///
@@ -7558,91 +7581,11 @@ public enum Components {
         ///
         ///
         /// - Remark: Generated from `#/components/schemas/LocationTriggerTypes`.
-        public struct LocationTriggerTypes: Codable, Hashable, Sendable {
-            /// - Remark: Generated from `#/components/schemas/LocationTriggerTypes/value1`.
-            @frozen public enum Value1Payload: String, Codable, Hashable, Sendable, CaseIterable {
-                case upon_run = "upon_run"
-            }
-            /// - Remark: Generated from `#/components/schemas/LocationTriggerTypes/value1`.
-            public var value1: Components.Schemas.LocationTriggerTypes.Value1Payload?
-            /// - Remark: Generated from `#/components/schemas/LocationTriggerTypes/value2`.
-            @frozen public enum Value2Payload: String, Codable, Hashable, Sendable, CaseIterable {
-                case manual = "manual"
-            }
-            /// - Remark: Generated from `#/components/schemas/LocationTriggerTypes/value2`.
-            public var value2: Components.Schemas.LocationTriggerTypes.Value2Payload?
-            /// - Remark: Generated from `#/components/schemas/LocationTriggerTypes/value3`.
-            @frozen public enum Value3Payload: String, Codable, Hashable, Sendable, CaseIterable {
-                case dom_element = "dom_element"
-            }
-            /// - Remark: Generated from `#/components/schemas/LocationTriggerTypes/value3`.
-            public var value3: Components.Schemas.LocationTriggerTypes.Value3Payload?
-            /// - Remark: Generated from `#/components/schemas/LocationTriggerTypes/value4`.
-            @frozen public enum Value4Payload: String, Codable, Hashable, Sendable, CaseIterable {
-                case callback = "callback"
-            }
-            /// - Remark: Generated from `#/components/schemas/LocationTriggerTypes/value4`.
-            public var value4: Components.Schemas.LocationTriggerTypes.Value4Payload?
-            /// Creates a new `LocationTriggerTypes`.
-            ///
-            /// - Parameters:
-            ///   - value1:
-            ///   - value2:
-            ///   - value3:
-            ///   - value4:
-            public init(
-                value1: Components.Schemas.LocationTriggerTypes.Value1Payload? = nil,
-                value2: Components.Schemas.LocationTriggerTypes.Value2Payload? = nil,
-                value3: Components.Schemas.LocationTriggerTypes.Value3Payload? = nil,
-                value4: Components.Schemas.LocationTriggerTypes.Value4Payload? = nil
-            ) {
-                self.value1 = value1
-                self.value2 = value2
-                self.value3 = value3
-                self.value4 = value4
-            }
-            public init(from decoder: any Swift.Decoder) throws {
-                var errors: [any Swift.Error] = []
-                do {
-                    self.value1 = try decoder.decodeFromSingleValueContainer()
-                } catch {
-                    errors.append(error)
-                }
-                do {
-                    self.value2 = try decoder.decodeFromSingleValueContainer()
-                } catch {
-                    errors.append(error)
-                }
-                do {
-                    self.value3 = try decoder.decodeFromSingleValueContainer()
-                } catch {
-                    errors.append(error)
-                }
-                do {
-                    self.value4 = try decoder.decodeFromSingleValueContainer()
-                } catch {
-                    errors.append(error)
-                }
-                try Swift.DecodingError.verifyAtLeastOneSchemaIsNotNil(
-                    [
-                        self.value1,
-                        self.value2,
-                        self.value3,
-                        self.value4
-                    ],
-                    type: Self.self,
-                    codingPath: decoder.codingPath,
-                    errors: errors
-                )
-            }
-            public func encode(to encoder: any Swift.Encoder) throws {
-                try encoder.encodeFirstNonNilValueToSingleValueContainer([
-                    self.value1,
-                    self.value2,
-                    self.value3,
-                    self.value4
-                ])
-            }
+        @frozen public enum LocationTriggerTypes: String, Codable, Hashable, Sendable, CaseIterable {
+            case upon_run = "upon_run"
+            case manual = "manual"
+            case dom_element = "dom_element"
+            case callback = "callback"
         }
         /// - Remark: Generated from `#/components/schemas/LocationTriggerBase`.
         public struct LocationTriggerBase: Codable, Hashable, Sendable {
@@ -8612,15 +8555,25 @@ public enum Components {
                 ///
                 /// - Remark: Generated from `#/components/schemas/ProjectGASettingsBase/value2/auto_revenue_tracking`.
                 public var auto_revenue_tracking: Swift.Bool?
+                /// When enabled, the experience_impression event is sent only the first time a visitor is exposed to an experience, instead of on every subsequent qualifying page view. Opt-in and disabled by default.
+                ///
+                /// - Remark: Generated from `#/components/schemas/ProjectGASettingsBase/value2/track_first_exposure_only`.
+                public var track_first_exposure_only: Swift.Bool?
                 /// Creates a new `Value2Payload`.
                 ///
                 /// - Parameters:
                 ///   - auto_revenue_tracking: Attempt to pull revenue data from Google Analytics Revenue Tracking code.
-                public init(auto_revenue_tracking: Swift.Bool? = nil) {
+                ///   - track_first_exposure_only: When enabled, the experience_impression event is sent only the first time a visitor is exposed to an experience, instead of on every subsequent qualifying page view. Opt-in and disabled by default.
+                public init(
+                    auto_revenue_tracking: Swift.Bool? = nil,
+                    track_first_exposure_only: Swift.Bool? = nil
+                ) {
                     self.auto_revenue_tracking = auto_revenue_tracking
+                    self.track_first_exposure_only = track_first_exposure_only
                 }
                 public enum CodingKeys: String, CodingKey {
                     case auto_revenue_tracking
+                    case track_first_exposure_only
                 }
             }
             /// - Remark: Generated from `#/components/schemas/ProjectGASettingsBase/value2`.
