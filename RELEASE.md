@@ -43,10 +43,10 @@ tokens**. Register once from a maintainer machine:
 
 ```bash
 gem install cocoapods --no-document
-pod trunk register support@convert.com 'Convert.com' --description='convert release machine'
+pod trunk register <trunk-owner-email> 'Convert.com' --description='convert release machine'
 ```
 
-Trunk emails a verification link to `support@convert.com`. **Click it** — the
+Trunk emails a verification link to `<trunk-owner-email>`. **Click it** — the
 session is inert until you do. After verification the session token is written
 to `~/.netrc` under `machine trunk.cocoapods.org`.
 
@@ -60,8 +60,8 @@ push automatically. No separate claim step is required, but be aware the
 Trunk. Add co-maintainers afterwards with:
 
 ```bash
-pod trunk add-owner ConvertSDK    second-maintainer@convert.com
-pod trunk add-owner ConvertSDKCore second-maintainer@convert.com
+pod trunk add-owner ConvertSDK    <co-maintainer-email>
+pod trunk add-owner ConvertSDKCore <co-maintainer-email>
 ```
 
 ### 3. Extract the token and add it as a repository secret
@@ -72,7 +72,7 @@ variable (read by the `cocoapods-trunk` plugin). Pull it out of `~/.netrc`:
 ```bash
 grep -A2 'trunk.cocoapods.org' ~/.netrc
 # machine trunk.cocoapods.org
-#   login support@convert.com
+#   login <trunk-owner-email>
 #   password <THIS-IS-THE-TOKEN>
 ```
 
@@ -287,7 +287,7 @@ If a release is catastrophically broken (e.g. it shipped a security issue),
 additionally mark the old pod as deprecated so consumers are nudged forward:
 
 ```bash
-pod trunk deprecate ConvertSDK --in-favor-of=ConvertSDK   # or point elsewhere
+pod trunk deprecate ConvertSDK   # optionally add --in-favor-of=<replacement-pod>
 ```
 
 (SPM has no deprecation mechanism — the roll-forward patch is the remedy there.)
