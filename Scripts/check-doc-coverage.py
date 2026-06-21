@@ -2,7 +2,7 @@
 """Documentation-coverage gate for the Convert iOS SDK (Story 6.1 / AC2).
 
 Reads the Swift symbol-graph JSON emitted by
-`swift build --target ConvertSDK -Xswiftc -emit-symbol-graph ...` and enforces:
+`swift build --target ConvertSwiftSDK -Xswiftc -emit-symbol-graph ...` and enforces:
 
   * EVERY in-scope `public` symbol carries a source `///` doc comment.
 
@@ -51,14 +51,14 @@ A symbol is IN SCOPE iff ALL of:
   3. `location.uri` does NOT contain `/Generated/`
                                             — excludes the generated OpenAPI
                                               codegen under
-                                              Sources/ConvertSDKCore/Generated/,
+                                              Sources/ConvertSwiftSDKCore/Generated/,
                                               which is not hand-authored API and
                                               is out of the documented surface.
 
 DEDUPLICATION
 -------------
-The same public symbol appears in BOTH the `ConvertSDK` and `ConvertSDKCore`
-symbol graphs because `@_exported import ConvertSDKCore` re-homes core types into
+The same public symbol appears in BOTH the `ConvertSwiftSDK` and `ConvertSwiftSDKCore`
+symbol graphs because `@_exported import ConvertSwiftSDKCore` re-homes core types into
 the product module. We deduplicate by `identifier.precise` (the USR) so each
 symbol is judged once. (The gate reads ALL `*.symbols.json` files in the dir.)
 
@@ -132,7 +132,7 @@ def _collect_symbols(symbol_graph_dir):
     """Load every *.symbols.json in the dir; return deduped in-scope symbols.
 
     Deduplicated by identifier.precise (USR) so @_exported re-homed symbols that
-    appear in both the ConvertSDK and ConvertSDKCore graphs are judged once.
+    appear in both the ConvertSwiftSDK and ConvertSwiftSDKCore graphs are judged once.
     Returns a list of symbol dicts in stable (sorted-by-path) order.
     """
     pattern = os.path.join(symbol_graph_dir, "*.symbols.json")
@@ -179,7 +179,7 @@ def main():
         required=True,
         help=(
             "directory of *.symbols.json files from "
-            "`swift build --target ConvertSDK -Xswiftc -emit-symbol-graph ...`"
+            "`swift build --target ConvertSwiftSDK -Xswiftc -emit-symbol-graph ...`"
         ),
     )
     args = parser.parse_args()

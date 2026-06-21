@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regenerate the config Codable types from the committed serving spec (types-only)
-# and produce the FINAL, committed Sources/ConvertSDKCore/Generated/ConfigSchemas.swift
+# and produce the FINAL, committed Sources/ConvertSwiftSDKCore/Generated/ConfigSchemas.swift
 # via the ratified Option-D rewrite.
 #
 # CROSS-REPO CONSUMER (keep this interface stable): besides local + in-repo CI use,
@@ -8,7 +8,7 @@
 # in .github/workflows/update-ts-api-serving.yml) invokes this script on macos-26 to
 # regenerate these types from the CANONICAL serving spec. That job depends on (1) the
 # `PYTHON` env-var seam below and (2) the output paths
-# Sources/ConvertSDKCore/Generated/{ConfigSchemas.swift,discriminator-manifest.json}.
+# Sources/ConvertSwiftSDKCore/Generated/{ConfigSchemas.swift,discriminator-manifest.json}.
 # Changing either requires updating that backend job in lockstep.
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -24,8 +24,8 @@
 #        `accessModifier: public` in openapi-generator-config.yaml; and
 #     2. deterministically rewrites the generated Types.swift so every
 #        OpenAPIRuntime symbol resolves to the in-repo, Foundation-only vendored
-#        shim Sources/ConvertSDKCore/Generated/OpenAPIRuntimeShim.swift, which
-#        declares those symbols at MODULE scope (same module: ConvertSDKCore).
+#        shim Sources/ConvertSwiftSDKCore/Generated/OpenAPIRuntimeShim.swift, which
+#        declares those symbols at MODULE scope (same module: ConvertSwiftSDKCore).
 #        The rewrite deletes the `@_spi(Generated) import OpenAPIRuntime` line
 #        and strips every `OpenAPIRuntime.` qualifier; the now-unqualified
 #        symbols bind to the same-module shim. The result is written to
@@ -56,7 +56,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SPEC="${SCRIPT_DIR}/openapi.yaml"
 CONFIG="${SCRIPT_DIR}/openapi-generator-config.yaml"
 RAW_OUT="${SCRIPT_DIR}/_genout"          # scratch — git-ignored, NOT committed
-FINAL_DIR="${REPO_ROOT}/Sources/ConvertSDKCore/Generated"
+FINAL_DIR="${REPO_ROOT}/Sources/ConvertSwiftSDKCore/Generated"
 FINAL_SWIFT="${FINAL_DIR}/ConfigSchemas.swift"
 MANIFEST="${FINAL_DIR}/discriminator-manifest.json"
 

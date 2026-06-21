@@ -2,15 +2,15 @@
 
 [![CI](https://github.com/convertcom/ios-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/convertcom/ios-sdk/actions/workflows/ci.yml)
 [![Swift Package Manager](https://img.shields.io/badge/Swift_Package_Manager-compatible-brightgreen.svg)](https://swift.org/package-manager/)
-[![CocoaPods](https://img.shields.io/cocoapods/v/ConvertSDK.svg?label=CocoaPods)](https://cocoapods.org/pods/ConvertSDK)
+[![CocoaPods](https://img.shields.io/cocoapods/v/ConvertSwiftSDK.svg?label=CocoaPods)](https://cocoapods.org/pods/ConvertSwiftSDK)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
 A/B testing, feature flags, segmentation, and conversion tracking for iOS, iPadOS, tvOS, and macOS.
 
 ```swift
-import ConvertSDK
+import ConvertSwiftSDK
 
-let sdk = ConvertSDK(configuration: ConvertConfiguration(sdkKey: "your-sdk-key"))
+let sdk = ConvertSwiftSDK(configuration: ConvertConfiguration(sdkKey: "your-sdk-key"))
 try await sdk.ready()                                   // gates decisioning
 
 let context = sdk.createContext()                       // visitorId optional → persistent auto-UUID
@@ -24,7 +24,7 @@ await context.trackConversion("purchase-goal", goalData: [.amount: .double(49.99
 
 ### Swift Package Manager (primary)
 
-In Xcode, choose **File ▸ Add Package Dependencies…**, enter the package URL, and add the `ConvertSDK` product to your target.
+In Xcode, choose **File ▸ Add Package Dependencies…**, enter the package URL, and add the `ConvertSwiftSDK` product to your target.
 
 Or add it to `Package.swift`:
 
@@ -34,17 +34,17 @@ dependencies: [
 ]
 ```
 
-Then list `ConvertSDK` in your target's dependencies.
+Then list `ConvertSwiftSDK` in your target's dependencies.
 
 ### CocoaPods
 
 Add the pod to your `Podfile`:
 
 ```ruby
-pod 'ConvertSDK', '~> 1.0'
+pod 'ConvertSwiftSDK', '~> 1.0'
 ```
 
-Then run `pod install`. `ConvertSDK` pulls `ConvertSDKCore` transitively — you only name `ConvertSDK`.
+Then run `pod install`. `ConvertSwiftSDK` pulls `ConvertSwiftSDKCore` transitively — you only name `ConvertSwiftSDK`.
 
 ### Platforms
 
@@ -95,4 +95,4 @@ sdk.isTrackingEnabled { isOn in
 - **<doc:FailureDetection>** — detecting a failed or slow start.
 - **<doc:Privacy>** — the privacy manifest, visitor-identity guidance, and all delivery controls.
 
-The full guide and the symbol-level API reference are the DocC articles in `Sources/ConvertSDK/ConvertSDK.docc/`.
+The full guide and the symbol-level API reference are the DocC articles in `Sources/ConvertSwiftSDK/ConvertSwiftSDK.docc/`.

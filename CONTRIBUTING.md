@@ -1,4 +1,4 @@
-# Contributing to ConvertSDK
+# Contributing to ConvertSwiftSDK
 
 Full contribution guidelines are forthcoming.
 

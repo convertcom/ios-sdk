@@ -1,4 +1,4 @@
-# ConvertSDK — SwiftLint configuration
+# ConvertSwiftSDK — SwiftLint configuration
 # Run: swiftlint (zero-warnings gate in CI)
 
 included:
@@ -10,7 +10,7 @@ included:
           # The demo is otherwise inert to the SDK build (Package.swift has 0 Demo refs).
 
 excluded:
-  - Sources/ConvertSDKCore/Generated  # auto-generated, do not lint
+  - Sources/ConvertSwiftSDKCore/Generated  # auto-generated, do not lint
 
 disabled_rules:
   # Add suppressions here only with explicit justification

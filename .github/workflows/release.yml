@@ -94,13 +94,13 @@ jobs:
         # release immediately if either podspec was forgotten, rather than publishing a
         # GitHub Release and then silently pushing a mismatched pod to trunk. (AC4.3)
         run: |
-          CORE_VER=$(grep -E "^\s*s\.version\s*=" ConvertSDKCore.podspec | head -1 | sed "s/.*=\s*['\"]//;s/['\"].*//")
-          SDK_VER=$(grep -E "^\s*s\.version\s*=" ConvertSDK.podspec | head -1 | sed "s/.*=\s*['\"]//;s/['\"].*//")
+          CORE_VER=$(grep -E "^[[:space:]]*s\.version[[:space:]]*=" ConvertSwiftSDKCore.podspec | head -1 | sed "s/.*=[[:space:]]*['\"]//;s/['\"].*//")
+          SDK_VER=$(grep -E "^[[:space:]]*s\.version[[:space:]]*=" ConvertSwiftSDK.podspec | head -1 | sed "s/.*=[[:space:]]*['\"]//;s/['\"].*//")
           if [ "$CORE_VER" != "$VERSION_NUMBER" ]; then
-            echo "ConvertSDKCore.podspec s.version ($CORE_VER) != tag ($VERSION_NUMBER)" >&2; exit 1
+            echo "ConvertSwiftSDKCore.podspec s.version ($CORE_VER) != tag ($VERSION_NUMBER)" >&2; exit 1
           fi
           if [ "$SDK_VER" != "$VERSION_NUMBER" ]; then
-            echo "ConvertSDK.podspec s.version ($SDK_VER) != tag ($VERSION_NUMBER)" >&2; exit 1
+            echo "ConvertSwiftSDK.podspec s.version ($SDK_VER) != tag ($VERSION_NUMBER)" >&2; exit 1
           fi
 
       - name: Dry-run gate A — swift build (SDK)
@@ -109,23 +109,23 @@ jobs:
         run: swift build
 
       - name: Dry-run gate B — demo smoke via temp consumer package
-        # Demo/ is EMPTY at Epic 1 (only .gitkeep); the real Demo/ConvertSDKDemo build
+        # Demo/ is EMPTY at Epic 1 (only .gitkeep); the real Demo/ConvertSwiftSDKDemo build
         # lands in Epic 7. Until then the smoke test is a minimal external CONSUMER:
         # a throwaway SPM package that depends on this SDK by absolute path and does
-        # `import ConvertSDK`, proving the tagged SDK resolves + compiles for a consumer.
+        # `import ConvertSwiftSDK`, proving the tagged SDK resolves + compiles for a consumer.
         # It lives under $RUNNER_TEMP (OUTSIDE the repo working tree) and references the
         # SDK via $GITHUB_WORKSPACE, so it can never dirty the repo or pollute the root
         # package graph (AC5/AC8). It is removed immediately after the build.
         #
         # Epic 7 replaces this temp-consumer smoke build with the real
-        # Demo/ConvertSDKDemo build (xcodebuild -scheme ConvertSDKDemo).
+        # Demo/ConvertSwiftSDKDemo build (xcodebuild -scheme ConvertSwiftSDKDemo).
         #
         # Package identity note (verified empirically 2026-06-11): SwiftPM identifies a
         # local .package(path:) dependency by the DIRECTORY NAME ("ios-sdk"), NOT by the
-        # manifest's name: field ("ConvertSDK"). A consumer that wrote package: "ConvertSDK"
-        # fails with: "unknown package 'ConvertSDK' … valid packages are: 'ios-sdk'". So the
-        # consumer references .product(name: "ConvertSDK", package: "ios-sdk") — the product
-        # NAME is the library product "ConvertSDK"; the package IDENTIFIER is the repo dir
+        # manifest's name: field ("ConvertSwiftSDK"). A consumer that wrote package: "ConvertSwiftSDK"
+        # fails with: "unknown package 'ConvertSwiftSDK' … valid packages are: 'ios-sdk'". So the
+        # consumer references .product(name: "ConvertSwiftSDK", package: "ios-sdk") — the product
+        # NAME is the library product "ConvertSwiftSDK"; the package IDENTIFIER is the repo dir
         # "ios-sdk". On the CI runner $GITHUB_WORKSPACE is the checkout dir (".../ios-sdk").
         run: |
           set -euo pipefail
@@ -142,12 +142,12 @@ jobs:
             targets: [
               .executableTarget(
                 name: "Smoke",
-                dependencies: [.product(name: "ConvertSDK", package: "ios-sdk")]
+                dependencies: [.product(name: "ConvertSwiftSDK", package: "ios-sdk")]
               )
             ]
           )
           EOF
-          echo 'import ConvertSDK' > "$SMOKE_DIR/Sources/Smoke/main.swift"
+          echo 'import ConvertSwiftSDK' > "$SMOKE_DIR/Sources/Smoke/main.swift"
           swift build --package-path "$SMOKE_DIR"
           rm -rf "$SMOKE_DIR"
 
@@ -174,22 +174,22 @@ jobs:
         # (AC4.2)
         #
         # Two podspecs (the SPM two-target split mirrored in CocoaPods, since one root
-        # podspec == one module): ConvertSDK.podspec depends on ConvertSDKCore.podspec,
-        # so ConvertSDKCore MUST be trunk-pushed FIRST. --allow-warnings is required so
+        # podspec == one module): ConvertSwiftSDK.podspec depends on ConvertSwiftSDKCore.podspec,
+        # so ConvertSwiftSDKCore MUST be trunk-pushed FIRST. --allow-warnings is required so
         # the push does not fail on documentation warnings. (AC4.3)
         #
-        # --synchronous on the SECOND (ConvertSDK) push: its dependency validation must
-        # resolve the ConvertSDKCore version published seconds earlier. Trunk's CDN has a
+        # --synchronous on the SECOND (ConvertSwiftSDK) push: its dependency validation must
+        # resolve the ConvertSwiftSDKCore version published seconds earlier. Trunk's CDN has a
         # ~5-min propagation TTL, so a back-to-back dependent push can fail with "Unable
-        # to find a specification for ConvertSDKCore" (CocoaPods/CocoaPods#9497). The flag
+        # to find a specification for ConvertSwiftSDKCore" (CocoaPods/CocoaPods#9497). The flag
         # makes the validator read the master Specs git repo instead of the CDN for that
         # lookup. Verbatim flag definition (cocoapods-trunk lib/pod/command/trunk/push.rb):
-        # "If validation depends on other recently pushed pods, synchronize". ConvertSDKCore
+        # "If validation depends on other recently pushed pods, synchronize". ConvertSwiftSDKCore
         # depends on nothing here, so it needs no flag.
         if: env.COCOAPODS_TRUNK_TOKEN != ''
         env:
           COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
         run: |
           gem install cocoapods --no-document
-          pod trunk push ConvertSDKCore.podspec --allow-warnings
-          pod trunk push ConvertSDK.podspec --allow-warnings --synchronous
+          pod trunk push ConvertSwiftSDKCore.podspec --allow-warnings
+          pod trunk push ConvertSwiftSDK.podspec --allow-warnings --synchronous

@@ -1,0 +1,41 @@
+name: ConvertSwiftSDKDemo
+
+options:
+  bundleIdPrefix: com.convert
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+packages:
+  ConvertSwiftSDK:
+    path: ../../
+
+targets:
+  ConvertSwiftSDKDemo:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: .
+        excludes:
+          - "project.yml"
+          - "*.xcodeproj"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.convert.ConvertSwiftSDKDemo
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "6.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        # Single accent source of truth: UIKit-bridged chrome resolves the global
+        # accent from the named BrandAccent colorset (the same asset SwiftUI's
+        # .tint(ConvertTheme.accent) uses), so there is no separate AccentColor
+        # asset to drift out of sync (AC2 — one mode-resolving accent).
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: BrandAccent
+    dependencies:
+      - package: ConvertSwiftSDK
+        product: ConvertSwiftSDK

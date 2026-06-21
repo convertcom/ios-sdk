@@ -56,7 +56,7 @@ jobs:
             `Scripts/generate-config-types/run.sh` — swift-openapi-generator 1.12.2
             (filtered, types-only) followed by the Option-D OpenAPIRuntime rewrite
             and the upstream-#715 deprecation strip. Affected files:
-            `Sources/ConvertSDKCore/Generated/ConfigSchemas.swift` and
-            `Sources/ConvertSDKCore/Generated/discriminator-manifest.json`.
+            `Sources/ConvertSwiftSDKCore/Generated/ConfigSchemas.swift` and
+            `Sources/ConvertSwiftSDKCore/Generated/discriminator-manifest.json`.
 
             Review the diff and merge if the regenerated output is correct.

@@ -1,0 +1,397 @@
+// MockPorts.swift
+// Test-double conformances for the five inward-facing ConvertSwiftSDKCore ports
+// (`HTTPClient`, `EventSink`, `FileStore`, `Logger`, `Clock`), consumed by the
+// Epic 2–5 test suites. This file is a COMPILATION STUB for Story 1.3 (AC8/AC9):
+// it carries no behavior tests of its own — the smoke test lives elsewhere — but
+// it MUST compile zero-warning under Swift 6 strict concurrency (language mode 6).
+//
+// ── Concurrency shape per mock (AC9) ──────────────────────────────────────────
+// All five ports refine `Sendable`, so every mock must be `Sendable`. Two
+// compiler-blessed shapes are used, chosen by whether the port's requirements are
+// `async`:
+//
+//   * `actor` — `MockHTTPClient`, `MockEventSink`, `MockFileStore`. Every
+//     requirement on these ports is `async`, so an actor satisfies them with the
+//     compiler fully reasoning about isolation: NO `@unchecked Sendable`, NO
+//     `nonisolated(unsafe)`, NO lock.
+//   * `final class` + `LockedBox` — `MockLogger` (here) and `MockClock` (extracted to the
+//     sibling `MockClock.swift` once its stepping API outgrew this file's 400-line lint limit).
+//     Their requirements are SYNCHRONOUS (`func log(...)`, `var now: Date { get }`), which an
+//     actor cannot satisfy (actor access is async). Their mutable state is held in a single
+//     `LockedBox` cell (see below).
+//
+// `Mutex<Value>` from `Synchronization` — the modern lock-cell that the compiler
+// accepts as `Sendable` with mutable contents and needs no annotation — is NOT
+// available here: it requires macOS 15 / iOS 18, but this package targets
+// macOS 12 / iOS 15 (see Package.swift `platforms`). At that deployment floor the
+// only way a `final class` with lock-guarded mutable state can claim `Sendable`
+// is to assert it to the compiler. `@unchecked Sendable` is forbidden by project
+// policy; the sanctioned last-resort form is `nonisolated(unsafe)` on the guarded
+// storage. That single annotation is confined to the one `LockedBox` primitive
+// below — the synchronous mocks themselves contain zero suppressions, and the
+// shared cell also removes the copy-paste lock/accessor block that would
+// otherwise repeat across them.
+
+import Foundation
+import ConvertSwiftSDK
+
+// MARK: - LockedBox
+
+/// A `Sendable` lock-protected storage cell — the single concurrency primitive
+/// behind the synchronous mocks (`MockLogger` here, `MockClock` in `MockClock.swift`).
+///
+/// `value` is the only `nonisolated(unsafe)` declaration in this file. It is sound
+/// because every read and write goes through `lock.withLock`, so accesses are
+/// mutually exclusive at runtime; the annotation merely tells the Swift 6 compiler
+/// "this storage is hand-audited" on a deployment floor (macOS 12 / iOS 15) where
+/// `Synchronization.Mutex` — the annotation-free alternative — is unavailable. The
+/// audit surface is exactly these few lines, not each mock that stores state.
+final class LockedBox<Value>: Sendable {
+    private let lock = NSLock()
+    private nonisolated(unsafe) var value: Value
+
+    init(_ value: Value) {
+        self.value = value
+    }
+
+    /// The current value, read under the lock.
+    var get: Value {
+        lock.withLock { value }
+    }
+
+    /// Replaces the value under the lock.
+    func set(_ newValue: Value) {
+        lock.withLock { value = newValue }
+    }
+
+    /// Mutates the value in place under the lock and returns the closure's result.
+    @discardableResult
+    func withLock<R>(_ body: (inout Value) throws -> R) rethrows -> R {
+        try lock.withLock { try body(&value) }
+    }
+}
+
+// MARK: - MockHTTPClient
+
+/// Test double for ``HTTPClient``.
+///
+/// Shape: `actor` — both `get` and `post` are `async throws`, so actor isolation
+/// satisfies the port with no `Sendable` suppression. A canned success response
+/// and/or a canned `URLError` are injected up front; `get`/`post` then either
+/// throw the error (error takes precedence) or return the response.
+///
+/// Default behavior when neither is configured: throw `URLError(.badServerResponse)`,
+/// so a test that forgets to stub the transport fails loudly rather than silently
+/// observing an empty body.
+actor MockHTTPClient: HTTPClient {
+    /// One recorded outbound request. `body` is `nil` for `get`. A named struct
+    /// (rather than a tuple) keeps the `large_tuple` lint rule satisfied and lets
+    /// tests read fields by name.
+    struct Request: Sendable {
+        let url: URL
+        let headers: [String: String]
+        let body: Data?
+    }
+
+    private var cannedResponse: (Data, HTTPURLResponse)?
+    private var cannedError: URLError?
+
+    /// Records every request the client was asked to send, in order. Lets tests
+    /// assert what was requested.
+    private(set) var requests: [Request] = []
+
+    init(
+        response: (Data, HTTPURLResponse)? = nil,
+        error: URLError? = nil
+    ) {
+        self.cannedResponse = response
+        self.cannedError = error
+    }
+
+    /// Sets (or clears) the canned success response returned by `get`/`post`.
+    func setResponse(_ response: (Data, HTTPURLResponse)?) {
+        cannedResponse = response
+    }
+
+    /// Sets (or clears) the canned error thrown by `get`/`post`. When set, the
+    /// error is thrown in preference to returning any configured response.
+    func setError(_ error: URLError?) {
+        cannedError = error
+    }
+
+    func get(url: URL, headers: [String: String]) async throws -> (Data, HTTPURLResponse) {
+        requests.append(Request(url: url, headers: headers, body: nil))
+        return try result()
+    }
+
+    func post(url: URL, headers: [String: String], body: Data) async throws -> (Data, HTTPURLResponse) {
+        requests.append(Request(url: url, headers: headers, body: body))
+        return try result()
+    }
+
+    /// Shared resolution: throw the canned error, else return the canned response,
+    /// else throw the documented default.
+    private func result() throws -> (Data, HTTPURLResponse) {
+        if let cannedError {
+            throw cannedError
+        }
+        if let cannedResponse {
+            return cannedResponse
+        }
+        throw URLError(.badServerResponse)
+    }
+}
+
+// MARK: - MockEventSink
+
+/// Test double for ``EventSink``.
+///
+/// Shape: `actor` — `enqueue(_:for:segments:)` is `async`, so actor isolation satisfies the
+/// port with no `Sendable` suppression. Records enqueued entries; tests read them
+/// non-destructively via ``recordedEvents()`` or destructively via ``drain()``. The widened
+/// seam's `visitorId` / `segments` are ACCEPTED-AND-IGNORED: the mock records only the bare
+/// entry, so existing assertions over `recordedEvents()` / `drain()` keep working unchanged.
+actor MockEventSink: EventSink {
+    private var recorded: [TrackingEventEntry] = []
+
+    func enqueue(_ event: TrackingEventEntry, for visitorId: String, segments: [String: String]?) async {
+        recorded.append(event)
+    }
+
+    /// Returns the recorded entries without clearing them.
+    func recordedEvents() -> [TrackingEventEntry] {
+        recorded
+    }
+
+    /// Returns the recorded entries and clears the buffer.
+    func drain() -> [TrackingEventEntry] {
+        defer { recorded.removeAll() }
+        return recorded
+    }
+}
+
+// MARK: - MockFileStore
+
+/// Test double for ``FileStore``.
+///
+/// Shape: `actor` — `read`/`write` are `async throws`, so actor isolation
+/// satisfies the port with no `Sendable` suppression. Backed by an in-memory map
+/// keyed on the URL's `absoluteString`. `read(from:)` throws
+/// `CocoaError(.fileReadNoSuchFile)` for an absent path. Tests can pre-seed and
+/// inspect the contents.
+actor MockFileStore: FileStore {
+    private var files: [String: Data]
+
+    init(files: [URL: Data] = [:]) {
+        self.files = Dictionary(
+            uniqueKeysWithValues: files.map { ($0.key.absoluteString, $0.value) }
+        )
+    }
+
+    func read(from url: URL) async throws -> Data {
+        guard let data = files[url.absoluteString] else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
+        return data
+    }
+
+    func write(_ data: Data, to url: URL) async throws {
+        files[url.absoluteString] = data
+    }
+
+    /// Pre-seeds (or overwrites) the data stored at `url`.
+    func seed(_ data: Data, at url: URL) {
+        files[url.absoluteString] = data
+    }
+
+    /// Returns the data currently stored at `url`, or `nil` if absent.
+    func contents(at url: URL) -> Data? {
+        files[url.absoluteString]
+    }
+}
+
+// MARK: - MockLogger
+
+/// Test double for ``Logger``.
+///
+/// Shape: `final class` + ``LockedBox`` — `log(...)` is a synchronous requirement,
+/// which an actor cannot satisfy. Records each call. Per NFR21, ``entries(type:method:)``
+/// filters so a test can retrieve only the lines its own subject emitted.
+final class MockLogger: Logger {
+    /// One captured `log(...)` call.
+    struct LogEntry: Sendable {
+        let level: LogLevel
+        let type: String
+        let method: String
+        let message: String
+    }
+
+    /// One awaiter parked by ``waitForEntry(level:type:method:messageContains:)``: the predicate it
+    /// is waiting on plus the continuation to resume once a matching entry is logged. A named struct
+    /// keeps the `large_tuple` lint rule satisfied. `match` is `@Sendable` because it is stored in
+    /// the `Sendable` `LockedBox` state and invoked from whatever thread calls `log`.
+    private struct EntryAwaiter {
+        let match: @Sendable (LogEntry) -> Bool
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    /// All mutable state in ONE `LockedBox` cell (the logged entries + parked awaiters), mirroring
+    /// ``MockClock``'s single-`State` discipline: every continuation is captured UNDER the lock and
+    /// resumed AFTER the lock is released, so a continuation is never resumed while the lock is held
+    /// and each parked continuation is resumed exactly once.
+    private struct State {
+        var entries: [LogEntry] = []
+        var awaiters: [EntryAwaiter] = []
+    }
+    private let state = LockedBox<State>(State())
+
+    func log(level: LogLevel, type: String, method: String, message: String) {
+        let entry = LogEntry(level: level, type: type, method: method, message: message)
+        // Append the entry, then collect (and remove) every awaiter this entry satisfies, all under
+        // the lock; resume them OUTSIDE the lock (LockedBox discipline — never resume while held).
+        let toResume: [CheckedContinuation<Void, Never>] = state.withLock { state in
+            state.entries.append(entry)
+            let ready = state.awaiters.filter { $0.match(entry) }
+            state.awaiters.removeAll { $0.match(entry) }
+            return ready.map(\.continuation)
+        }
+        for continuation in toResume {
+            continuation.resume()
+        }
+    }
+
+    /// Returns captured entries, optionally filtered by `type` and/or `method`.
+    /// A `nil` filter matches any value for that field.
+    func entries(type: String? = nil, method: String? = nil) -> [LogEntry] {
+        state.withLock { $0.entries }.filter { entry in
+            (type == nil || entry.type == type) && (method == nil || entry.method == method)
+        }
+    }
+
+    /// Suspends until a `log(...)` call matching ALL the supplied filters has landed, then resumes —
+    /// a genuine happens-before on "the scheduler emitted that line", replacing a bounded
+    /// `drainUntil` poll for log-driven waits (the within-TTL `.debug` skip line and the failed-
+    /// refresh `.warn` line). A `nil` filter matches any value for that field; `messageContains`
+    /// matches when the entry's `message` contains the substring. Returns immediately if a matching
+    /// entry is already present; otherwise parks a continuation that ``log(...)`` resumes the moment
+    /// a matching entry is logged. A pure continuation handoff — no wall-clock wait (NFR21).
+    func waitForEntry(
+        level: LogLevel? = nil,
+        type: String? = nil,
+        method: String? = nil,
+        messageContains: String? = nil
+    ) async {
+        let predicate: @Sendable (LogEntry) -> Bool = { entry in
+            (level == nil || entry.level == level)
+                && (type == nil || entry.type == type)
+                && (method == nil || entry.method == method)
+                && (messageContains.map(entry.message.contains) ?? true)
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // Park-or-resume decided under the lock so an entry logged concurrently with this call
+            // cannot be missed: if one already matches, resume at once; else enqueue the awaiter.
+            let alreadyMatched: Bool = state.withLock { state in
+                if state.entries.contains(where: predicate) { return true }
+                state.awaiters.append(EntryAwaiter(match: predicate, continuation: continuation))
+                return false
+            }
+            if alreadyMatched {
+                continuation.resume()
+            }
+        }
+    }
+}
+
+// MARK: - MockConfigProvider
+
+/// Test double for ``ConfigProviding`` — the config-fetch seam ``ConvertSwiftSDK.init`` injects
+/// (the GREEN step adds `: ConfigProviding` to the real `ConfigFetchService`, which already
+/// has these two methods). This REPLACES the role the old `ConfigLoader` mocks
+/// (`MockConfigLoader` / `FailingMockConfigLoader` / `GateConfigLoader`) played for the
+/// previous seam: a unit test injects one of these so `ConvertSwiftSDK.init` never builds the real
+/// `ConfigFetchService` and never touches the network.
+///
+/// Shape: `actor` — ``ConfigProviding`` refines `Sendable` and BOTH requirements are `async`,
+/// so actor isolation satisfies the protocol with NO `Sendable` suppression (mirrors
+/// ``MockHTTPClient`` / ``MockEventSink`` / ``MockFileStore``).
+///
+/// ── Canned cache + live results ───────────────────────────────────────────────────────────
+/// Constructed with a `cached` and a `live` value, each `ProjectConfig?`. ``loadCachedConfig()``
+/// returns `cached`; ``fetchLiveConfig()`` returns `live`. The four combinations model the AC3
+/// matrix the entry-point suites assert:
+///   * `(cached: nil,   live: someConfig)` — cache miss, live succeeds → ready (non-degraded).
+///   * `(cached: nil,   live: nil)`        — cache miss + network failed → ready DEGRADED.
+///   * `(cached: someConfig, live: nil)`   — cache HIT, network failed   → ready from cache.
+///   * `(cached: someConfig, live: someConfig)` — both present.
+/// Because the SDK calls `store.setConfig(cached)` then unconditionally `store.setConfig(live)`,
+/// and ``ConfigStore/setConfig(_:)`` latches the ready signal on the first non-terminal call,
+/// every combination resolves `ready()` exactly once — even all-`nil` (degraded). The mock holds
+/// no process-global state, so suites using it are parallel-safe (no `URLProtocolStub` nesting).
+///
+/// ── Optional fetch gate (ordering tests) ──────────────────────────────────────────────────
+/// A gated instance (``makeGated(cached:live:)``) parks ``fetchLiveConfig()`` on a continuation
+/// until ``release()`` is called, mirroring the previous `GateConfigLoader` pattern. This lets a
+/// test register a `.ready` subscriber via `sut.on(.ready)` BEFORE the init task fires `.ready`
+/// (which happens only after the config provider resolves and `setConfig` runs), making
+/// `.ready` delivery deterministic under parallel execution. It is a pure continuation handoff —
+/// no sleep, no wall-clock wait (NFR21/22). ``loadCachedConfig()`` is NEVER gated; only the live
+/// fetch is, because in the all-`nil`-cache ordering tests the ready signal is driven by the live
+/// `setConfig` call, so gating the live fetch is what controls when `.ready` fires.
+actor MockConfigProvider: ConfigProviding {
+    private let cached: ProjectConfig?
+    private let live: ProjectConfig?
+
+    /// Whether ``fetchLiveConfig()`` should park until ``release()`` (the ordering-test gate).
+    private let gated: Bool
+    /// The parked `fetchLiveConfig` continuation, present only while a gated fetch is suspended.
+    private var continuation: CheckedContinuation<Void, Never>?
+    /// Whether ``release()`` has already fired, so a fetch arriving after the release does not
+    /// park (mirrors `GateConfigLoader`'s `released` latch).
+    private var released = false
+
+    /// Designated initializer. `gated` is internal; production-shaped construction goes through
+    /// the two named factories below so call sites read intent (`ungated` vs `makeGated`).
+    private init(cached: ProjectConfig?, live: ProjectConfig?, gated: Bool) {
+        self.cached = cached
+        self.live = live
+        self.gated = gated
+    }
+
+    /// An UNGATED provider: ``fetchLiveConfig()`` returns `live` immediately. The common case —
+    /// the happy-path, degraded, and cache-hit suites all use this.
+    static func ungated(cached: ProjectConfig?, live: ProjectConfig?) -> MockConfigProvider {
+        MockConfigProvider(cached: cached, live: live, gated: false)
+    }
+
+    /// A GATED provider: ``fetchLiveConfig()`` parks until ``release()``, so the `.ready` fire
+    /// (driven by the live `setConfig`) happens strictly after a `.ready` subscriber is
+    /// registered. Used by the deterministic-ordering suites.
+    static func makeGated(cached: ProjectConfig?, live: ProjectConfig?) -> MockConfigProvider {
+        MockConfigProvider(cached: cached, live: live, gated: true)
+    }
+
+    /// Returns the configured cached value. NEVER parks — only the live fetch is gated.
+    func loadCachedConfig() async -> ProjectConfig? {
+        cached
+    }
+
+    /// Returns the configured live value, after the optional gate. When `gated` and not yet
+    /// released, parks on a continuation until ``release()`` resumes it; returns immediately
+    /// once released (or when ungated).
+    func fetchLiveConfig() async -> ProjectConfig? {
+        if gated, !released {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                self.continuation = cont
+            }
+        }
+        return live
+    }
+
+    /// Unblocks a parked (or future) ``fetchLiveConfig()``, letting the init task proceed to
+    /// `setConfig(live)` and thus fire `.ready`. Idempotent.
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}

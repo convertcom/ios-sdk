@@ -1,0 +1,96 @@
+# ``ConvertSwiftSDK``
+
+A/B testing, feature flags, segmentation, and conversion tracking for iOS, iPadOS, tvOS, and macOS.
+
+## Overview
+
+Initialize the SDK, await its first configuration, create a visitor context, decide, and track:
+
+```swift
+import ConvertSwiftSDK
+
+let sdk = ConvertSwiftSDK(configuration: ConvertConfiguration(sdkKey: "your-sdk-key"))
+try await sdk.ready()                                   // suspends until config is available
+
+let context = sdk.createContext()                       // visitorId optional → persistent auto-UUID
+
+if let variation = await context.runExperience("pricing-test") {
+    // switch your UI on the variation key, e.g. "variant-a"
+    print("Variation \(variation.key)")
+}
+
+await context.trackConversion("purchase-goal", goalData: [.amount: .double(49.99)])
+```
+
+The one ordering rule is ``ConvertSwiftSDK/ready()`` before deciding; everything else is order-independent. Decisioning never throws — ``ConvertContext/runExperience(_:enableTracking:)`` returns `nil` when the visitor is ineligible, the experience is unknown, or the SDK is not yet ready. Only ``ConvertSwiftSDK/ready()`` throws, and only on an unrecoverable configuration error.
+
+### Working offline and in the background
+
+Bucketing is deterministic and offline-capable: once a config is cached, decisions resolve with no network. Tracking events queue on disk and flush — including after the app is suspended or terminated — over a background `URLSession`. See <doc:OfflineAndBackgroundDelivery>.
+
+### Detecting a failed or slow start
+
+There is no typed error event to observe. A failed or slow initialization is detected through the log stream and a readiness timeout. See <doc:FailureDetection>.
+
+### Differences from the JavaScript and Android SDKs
+
+These are deliberate, Swift-idiomatic choices, named so they are never a silent surprise:
+
+- The SDK is constructed with ``ConvertSwiftSDK/init(configuration:)``, not a `builder(...)` chain (the Android pattern). The public method names — ``ConvertSwiftSDK/ready()``, ``ConvertSwiftSDK/createContext(visitorId:attributes:)``, ``ConvertContext/runExperience(_:enableTracking:)``, ``ConvertContext/runFeature(_:)``, ``ConvertContext/trackConversion(_:goalData:forceMultipleTransactions:)``, ``ConvertSwiftSDK/on(_:callback:)`` / ``ConvertSwiftSDK/off(_:)`` — match the JavaScript SDK exactly.
+- Constants use `lowerCamelCase` (Swift convention) rather than the upper-cased forms used elsewhere.
+- There is no Objective-C interop surface; the API is Swift-only.
+
+## Topics
+
+### Essentials
+
+- ``ConvertSwiftSDK``
+- ``ConvertSwiftSDK/init(configuration:)``
+- ``ConvertSwiftSDK/ready()``
+- ``ConvertSwiftSDK/createContext(visitorId:attributes:)``
+- <doc:GettingStarted>
+
+### Quickstarts
+
+- <doc:SwiftUIQuickstart>
+- <doc:UIKitQuickstart>
+
+### Deciding
+
+- ``ConvertContext``
+- ``ConvertContext/runExperience(_:enableTracking:)``
+- ``ConvertContext/runExperiences(enableTracking:)``
+- ``ConvertContext/runFeature(_:)``
+- ``ConvertContext/runFeatures()``
+- ``Variation``
+- ``Feature``
+
+### Tracking
+
+- ``ConvertContext/trackConversion(_:goalData:forceMultipleTransactions:)``
+- ``GoalData``
+
+### Observing
+
+- ``ConvertSwiftSDK/on(_:callback:)``
+- ``ConvertSwiftSDK/off(_:)``
+- ``SystemEvent``
+
+### Configuration
+
+- ``ConvertConfiguration``
+- ``Segments``
+- ``ConvertContext/setDefaultSegments(_:)``
+- ``ConvertContext/setCustomSegments(_:)``
+- ``LogLevel``
+- ``ConvertError``
+
+### Guides
+
+- <doc:GettingStarted>
+- <doc:SwiftUIQuickstart>
+- <doc:UIKitQuickstart>
+- <doc:OfflineAndBackgroundDelivery>
+- <doc:FailureDetection>
+- <doc:Troubleshooting>
+- <doc:Privacy>

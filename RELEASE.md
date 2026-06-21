@@ -53,15 +53,15 @@ to `~/.netrc` under `machine trunk.cocoapods.org`.
 ### 2. Claim the pod names
 
 Pod-name ownership is claimed by the **first push** of each podspec — the
-account that first pushes `ConvertSDK` / `ConvertSDKCore` becomes its owner.
+account that first pushes `ConvertSwiftSDK` / `ConvertSwiftSDKCore` becomes its owner.
 The first real release (step "Triggering a Release" below) performs that first
 push automatically. No separate claim step is required, but be aware the
 **first** `v1.0.0` release is also what locks in ownership of both pod names on
 Trunk. Add co-maintainers afterwards with:
 
 ```bash
-pod trunk add-owner ConvertSDK    <co-maintainer-email>
-pod trunk add-owner ConvertSDKCore <co-maintainer-email>
+pod trunk add-owner ConvertSwiftSDK    <co-maintainer-email>
+pod trunk add-owner ConvertSwiftSDKCore <co-maintainer-email>
 ```
 
 ### 3. Extract the token and add it as a repository secret
@@ -107,11 +107,11 @@ publisher login to configure — none of those apply to SPM or CocoaPods Trunk.
 
 A release is a **tag push**. The steps:
 
-1. **Bump `s.version` in BOTH podspecs on `main`.** Edit `ConvertSDK.podspec`
-   and `ConvertSDKCore.podspec` so each `s.version` equals the version you are
+1. **Bump `s.version` in BOTH podspecs on `main`.** Edit `ConvertSwiftSDK.podspec`
+   and `ConvertSwiftSDKCore.podspec` so each `s.version` equals the version you are
    about to release (e.g. `1.2.0`). Open this as a normal PR and merge it to
-   `main`. Both files must carry the *same* version — `ConvertSDK` depends on
-   `ConvertSDKCore` at an exact version (`s.dependency 'ConvertSDKCore', s.version.to_s`).
+   `main`. Both files must carry the *same* version — `ConvertSwiftSDK` depends on
+   `ConvertSwiftSDKCore` at an exact version (`s.dependency 'ConvertSwiftSDKCore', s.version.to_s`).
 
    > For the very first release the podspecs already ship `1.0.0`, so v1.0.0
    > needs no bump — just tag.
@@ -138,7 +138,7 @@ A release is a **tag push**. The steps:
       build.
    4. **Dry-run gate B — consumer smoke build.** A throwaway SPM package is
       generated under `$RUNNER_TEMP` (outside the repo tree), depends on this
-      SDK by path, and does `import ConvertSDK` + `swift build` — proving the
+      SDK by path, and does `import ConvertSwiftSDK` + `swift build` — proving the
       tagged SDK resolves and compiles for an external consumer.
    5. **Create the GitHub Release** — `gh release create "$VERSION" --title
       "$VERSION" --generate-notes`. Notes are GitHub-native, grouped from the
@@ -146,21 +146,21 @@ A release is a **tag push**. The steps:
       push to any branch, **no** `CHANGELOG.md` — the only mutation is the
       Release object.
    6. **Publish to CocoaPods Trunk** *(only if `COCOAPODS_TRUNK_TOKEN` is set)* —
-      installs CocoaPods, then pushes **core first**. The `ConvertSDK` push adds
-      `--synchronous` so its dependency validation finds the `ConvertSDKCore`
+      installs CocoaPods, then pushes **core first**. The `ConvertSwiftSDK` push adds
+      `--synchronous` so its dependency validation finds the `ConvertSwiftSDKCore`
       version published seconds earlier, before Trunk's ~5-min CDN propagation:
 
       ```bash
-      pod trunk push ConvertSDKCore.podspec --allow-warnings
-      pod trunk push ConvertSDK.podspec     --allow-warnings --synchronous
+      pod trunk push ConvertSwiftSDKCore.podspec --allow-warnings
+      pod trunk push ConvertSwiftSDK.podspec     --allow-warnings --synchronous
       ```
 
 4. **Verify.** SPM consumers can resolve `v1.2.0` as soon as the tag is on
    `origin`. For CocoaPods, the new version appears on the CDN within minutes:
 
    ```bash
-   pod trunk info ConvertSDK        # lists published versions
-   pod repo update && pod search ConvertSDK
+   pod trunk info ConvertSwiftSDK        # lists published versions
+   pod repo update && pod search ConvertSwiftSDK
    ```
 
 ### Version Numbering
@@ -189,7 +189,7 @@ swiftlint lint --strict                      # CI runs this with --strict
 
 # Gate B — the external-consumer smoke (what release.yml does under $RUNNER_TEMP):
 #   create a throwaway SPM package that depends on this repo by path and
-#   `import ConvertSDK`, then `swift build` it. See release.yml "Dry-run gate B"
+#   `import ConvertSwiftSDK`, then `swift build` it. See release.yml "Dry-run gate B"
 #   for the exact snippet.
 ```
 
@@ -199,12 +199,12 @@ pre-checking), lint both podspecs — core first, and lint the umbrella pod
 against the *unpublished* local core with `--include-podspecs`:
 
 ```bash
-pod lib lint ConvertSDKCore.podspec --allow-warnings
-pod lib lint ConvertSDK.podspec     --allow-warnings --include-podspecs='ConvertSDKCore.podspec'
+pod lib lint ConvertSwiftSDKCore.podspec --allow-warnings
+pod lib lint ConvertSwiftSDK.podspec     --allow-warnings --include-podspecs='ConvertSwiftSDKCore.podspec'
 ```
 
 `--allow-warnings` matches the flag the workflow's `pod trunk push` uses;
-`--include-podspecs` lets `ConvertSDK` resolve `ConvertSDKCore` from the working
+`--include-podspecs` lets `ConvertSwiftSDK` resolve `ConvertSwiftSDKCore` from the working
 tree instead of from Trunk (where it does not exist until the release pushes it).
 
 ---
@@ -251,11 +251,11 @@ removing one re-opens that hole.
    missing-credential error. This keeps fork CI green and keeps the secret out
    of fork-triggered runs. Keep the guard.
 
-4. **Core-pushed-first ordering + `--synchronous`.** `ConvertSDK.podspec` declares
-   `s.dependency 'ConvertSDKCore', s.version.to_s`. Trunk validates dependencies
-   at push time, so `ConvertSDKCore` **must** be pushed before `ConvertSDK` —
+4. **Core-pushed-first ordering + `--synchronous`.** `ConvertSwiftSDK.podspec` declares
+   `s.dependency 'ConvertSwiftSDKCore', s.version.to_s`. Trunk validates dependencies
+   at push time, so `ConvertSwiftSDKCore` **must** be pushed before `ConvertSwiftSDK` —
    otherwise the umbrella push fails because Trunk can't resolve the core pod. The
-   `ConvertSDK` push also carries `--synchronous` so its validation reads the master
+   `ConvertSwiftSDK` push also carries `--synchronous` so its validation reads the master
    Specs repo instead of the ~5-min-lagged CDN and finds the just-pushed core. Do
    not reorder the two pushes or drop `--synchronous`.
 
@@ -266,7 +266,7 @@ removing one re-opens that hole.
 **Published versions are effectively immutable on both channels** — plan to roll
 *forward*, not back.
 
-**CocoaPods.** `pod trunk delete ConvertSDK X.Y.Z` exists, but the CocoaPods
+**CocoaPods.** `pod trunk delete ConvertSwiftSDK X.Y.Z` exists, but the CocoaPods
 guidance is explicit: *"It is generally considered bad behavior to remove
 versions others depend on,"* and **once a version is deleted it can never be
 pushed again** (the name+version is burned). Do not delete a released version.
@@ -287,7 +287,7 @@ If a release is catastrophically broken (e.g. it shipped a security issue),
 additionally mark the old pod as deprecated so consumers are nudged forward:
 
 ```bash
-pod trunk deprecate ConvertSDK   # optionally add --in-favor-of=<replacement-pod>
+pod trunk deprecate ConvertSwiftSDK   # optionally add --in-favor-of=<replacement-pod>
 ```
 
 (SPM has no deprecation mechanism — the roll-forward patch is the remedy there.)
@@ -299,10 +299,10 @@ pod trunk deprecate ConvertSDK   # optionally add --in-favor-of=<replacement-pod
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Release workflow didn't run after pushing a tag | Tag didn't match `v[0-9]+.[0-9]+.[0-9]+` (e.g. `v1.2`, `1.2.0` with no `v`, or a `-beta` suffix). | Delete the bad local/remote tag and push a strictly-`vX.Y.Z` tag. |
-| Workflow fails at "Assert podspec versions match tag" | One or both podspecs' `s.version` ≠ the tag — the manual bump was skipped or only applied to one file. | Bump **both** `ConvertSDK.podspec` and `ConvertSDKCore.podspec` to match, merge to `main`, delete the tag, re-tag the new commit. |
-| Workflow fails at "Dry-run gate A/B" | The tagged commit doesn't build, or a consumer can't `import ConvertSDK`. | Reproduce locally with `swift build` and the gate-B smoke (see [Dry Run](#previewing-a-release-dry-run)); fix on `main`, re-tag. |
+| Workflow fails at "Assert podspec versions match tag" | One or both podspecs' `s.version` ≠ the tag — the manual bump was skipped or only applied to one file. | Bump **both** `ConvertSwiftSDK.podspec` and `ConvertSwiftSDKCore.podspec` to match, merge to `main`, delete the tag, re-tag the new commit. |
+| Workflow fails at "Dry-run gate A/B" | The tagged commit doesn't build, or a consumer can't `import ConvertSwiftSDK`. | Reproduce locally with `swift build` and the gate-B smoke (see [Dry Run](#previewing-a-release-dry-run)); fix on `main`, re-tag. |
 | GitHub Release created but CocoaPods push **skipped** | `COCOAPODS_TRUNK_TOKEN` is not set on the repo. | Expected if CocoaPods isn't configured. To enable, complete [One-Time Setup](#one-time-setup-repo-admin). The SPM release is already live. |
 | `pod trunk push` fails with an authentication error | Trunk session token expired, invalid, or the secret is stale. | Re-register (`pod trunk register …`), re-extract from `~/.netrc`, update the `COCOAPODS_TRUNK_TOKEN` secret. The GitHub/SPM release is unaffected — re-run only the release job, or push the pods manually. |
-| `pod trunk push ConvertSDK.podspec` fails to resolve `ConvertSDKCore` | `ConvertSDKCore` wasn't pushed first, or it was pushed seconds earlier and Trunk's CDN hasn't propagated it yet. | Push `ConvertSDKCore` first, and use `--synchronous` on the `ConvertSDK` push (validates against the master Specs repo, not the lagged CDN). The workflow already does both. |
-| `pod lib lint ConvertSDK.podspec` fails locally on a missing `ConvertSDKCore` | You linted the umbrella pod before core is on Trunk. | Add `--include-podspecs='ConvertSDKCore.podspec'` so the local core podspec resolves the dependency. |
-| New version not installable via `pod install` yet | CocoaPods CDN sync lag after the trunk push. | Wait a few minutes, then `pod repo update`. Confirm with `pod trunk info ConvertSDK`. |
+| `pod trunk push ConvertSwiftSDK.podspec` fails to resolve `ConvertSwiftSDKCore` | `ConvertSwiftSDKCore` wasn't pushed first, or it was pushed seconds earlier and Trunk's CDN hasn't propagated it yet. | Push `ConvertSwiftSDKCore` first, and use `--synchronous` on the `ConvertSwiftSDK` push (validates against the master Specs repo, not the lagged CDN). The workflow already does both. |
+| `pod lib lint ConvertSwiftSDK.podspec` fails locally on a missing `ConvertSwiftSDKCore` | You linted the umbrella pod before core is on Trunk. | Add `--include-podspecs='ConvertSwiftSDKCore.podspec'` so the local core podspec resolves the dependency. |
+| New version not installable via `pod install` yet | CocoaPods CDN sync lag after the trunk push. | Wait a few minutes, then `pod repo update`. Confirm with `pod trunk info ConvertSwiftSDK`. |

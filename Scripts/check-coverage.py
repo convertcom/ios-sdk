@@ -4,24 +4,24 @@
 Reads an .xcresult bundle via `xcrun xccov view --report --json` and enforces
 two per-source-library line-coverage gates:
 
-  * ConvertSDKCore source  >= --core-min      (default 85%)
-  * ConvertSDK (platform)  >= --platform-min  (default 70%)
+  * ConvertSwiftSDKCore source  >= --core-min      (default 85%)
+  * ConvertSwiftSDK (platform)  >= --platform-min  (default 70%)
 
 THE SUBSTRING TRAP (why this script exists)
 -------------------------------------------
-The story's reference impl matched targets with `"ConvertSDK" in target_name`.
-That is WRONG: `"ConvertSDK" in "ConvertSDKCoreTests"` is True and
-`"ConvertSDK" in "ConvertSDKTests"` is True, so a substring matcher returns a
+The story's reference impl matched targets with `"ConvertSwiftSDK" in target_name`.
+That is WRONG: `"ConvertSwiftSDK" in "ConvertSwiftSDKCoreTests"` is True and
+`"ConvertSwiftSDK" in "ConvertSwiftSDKTests"` is True, so a substring matcher returns a
 *test-bundle* number (and the result depends on target iteration order).
 This script matches target names with `==` ONLY, never `in`.
 
 THE SPM TARGET-ATTRIBUTION QUIRK
 --------------------------------
-SPM does NOT emit a bare `ConvertSDKCore` source-target entry in xccov output.
-The ConvertSDKCore *source* files (Segments.swift, TrackingEvent.swift, ...)
-are attributed to the `ConvertSDKCoreTests` *test-bundle* target's files[] list,
+SPM does NOT emit a bare `ConvertSwiftSDKCore` source-target entry in xccov output.
+The ConvertSwiftSDKCore *source* files (Segments.swift, TrackingEvent.swift, ...)
+are attributed to the `ConvertSwiftSDKCoreTests` *test-bundle* target's files[] list,
 intermixed with the actual test files (FooTests.swift, CodableTestHelpers.swift).
-So the ConvertSDKCore source number is computed by aggregating that bundle's
+So the ConvertSwiftSDKCore source number is computed by aggregating that bundle's
 files[] while EXCLUDING test files (any name ending in `Tests.swift`, plus the
 `CodableTestHelpers.swift` helper). The remaining files are the real sources.
 
@@ -41,7 +41,7 @@ import json
 import subprocess
 import sys
 
-# Files inside the ConvertSDKCoreTests bundle that are NOT ConvertSDKCore source.
+# Files inside the ConvertSwiftSDKCoreTests bundle that are NOT ConvertSwiftSDKCore source.
 # Rule: anything ending in "Tests.swift" is a test file; CodableTestHelpers.swift
 # is a shared test helper. Everything else in that bundle is real source.
 _TEST_HELPER_NAMES = {"CodableTestHelpers.swift"}
@@ -59,8 +59,8 @@ def _is_source_file(file_name):
 def _find_target(report, target_name):
     """Return the target dict whose name EXACTLY equals target_name, else None.
 
-    EXACT match only. Using `==` (never `in`) is what stops "ConvertSDK" from
-    matching "ConvertSDKCoreTests" / "ConvertSDKTests" (the substring trap).
+    EXACT match only. Using `==` (never `in`) is what stops "ConvertSwiftSDK" from
+    matching "ConvertSwiftSDKCoreTests" / "ConvertSwiftSDKTests" (the substring trap).
     """
     for target in report.get("targets", []):
         if target.get("name") == target_name:
@@ -132,10 +132,10 @@ def main():
     parser.add_argument("--result", required=True, help="path to the .xcresult bundle")
     parser.add_argument(
         "--core-label",
-        default="ConvertSDKCore",
+        default="ConvertSwiftSDKCore",
         help=(
             "display label for the core gate line. Display-only: the xccov lookup is "
-            "always the ConvertSDKCoreTests bundle (SPM attributes ConvertSDKCore source "
+            "always the ConvertSwiftSDKCoreTests bundle (SPM attributes ConvertSwiftSDKCore source "
             "files there). Unlike --platform-target, this does NOT select the looked-up target."
         ),
     )
@@ -144,7 +144,7 @@ def main():
     )
     parser.add_argument(
         "--platform-target",
-        default="ConvertSDK",
+        default="ConvertSwiftSDK",
         help="EXACT xccov target name for the platform library",
     )
     parser.add_argument(
@@ -154,11 +154,11 @@ def main():
 
     report = _load_report(args.result)
 
-    # --- ConvertSDKCore source coverage -----------------------------------
-    # SPM attributes ConvertSDKCore source files to the ConvertSDKCoreTests
+    # --- ConvertSwiftSDKCore source coverage -----------------------------------
+    # SPM attributes ConvertSwiftSDKCore source files to the ConvertSwiftSDKCoreTests
     # test-bundle target. Aggregate that bundle's source files (excluding
     # *Tests.swift + helpers). EXACT-name match on the bundle target.
-    core_bundle = _find_target(report, "ConvertSDKCoreTests")
+    core_bundle = _find_target(report, "ConvertSwiftSDKCoreTests")
     if core_bundle is None:
         core_covered, core_executable = 0, 0
     else:
@@ -166,9 +166,9 @@ def main():
     core_pct = _pct(core_covered, core_executable)
     core_met = core_pct >= args.core_min
 
-    # --- ConvertSDK (platform) source coverage ----------------------------
-    # EXACT-name target "ConvertSDK". Must NEVER match "ConvertSDKCoreTests"
-    # or "ConvertSDKTests" -> _find_target uses == not in.
+    # --- ConvertSwiftSDK (platform) source coverage ----------------------------
+    # EXACT-name target "ConvertSwiftSDK". Must NEVER match "ConvertSwiftSDKCoreTests"
+    # or "ConvertSwiftSDKTests" -> _find_target uses == not in.
     platform_target = _find_target(report, args.platform_target)
     if platform_target is None:
         plat_covered, plat_executable = 0, 0

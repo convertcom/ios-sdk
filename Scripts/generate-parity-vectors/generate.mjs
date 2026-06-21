@@ -1,7 +1,7 @@
 /*!
  * generate-parity-vectors / generate.mjs
  *
- * Generates Tests/ConvertSDKCoreTests/Fixtures/hash-parity-vectors.json for the
+ * Generates Tests/ConvertSwiftSDKCoreTests/Fixtures/hash-parity-vectors.json for the
  * iOS SDK's cross-SDK MurmurHash3 bucketing parity suite (Epic 3 / Story 2, AC9).
  *
  * HARD PROVENANCE RULE (NFR18):
@@ -50,7 +50,7 @@ const ANDROID_VECTORS_PATH = resolve(
 // Committed fixture consumed by the iOS parity tests.
 const OUTPUT_PATH = resolve(
   __dirname,
-  '../../Tests/ConvertSDKCoreTests/Fixtures/hash-parity-vectors.json',
+  '../../Tests/ConvertSwiftSDKCoreTests/Fixtures/hash-parity-vectors.json',
 );
 
 // --- Published-package driver ----------------------------------------------
