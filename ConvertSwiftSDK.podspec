@@ -13,6 +13,9 @@ Pod::Spec.new do |s|
   s.swift_versions   = ['6.0']
   s.source_files     = 'Sources/ConvertSwiftSDK/**/*.swift'
   s.dependency 'ConvertSwiftSDKCore', s.version.to_s
+  # Must match ConvertSwiftSDKCore's -package-name so this module can access Core's
+  # `package`-level symbols (SPM does this implicitly via the shared package).
+  s.pod_target_xcconfig = { 'OTHER_SWIFT_FLAGS' => '-package-name ConvertSwiftSDK' }
   s.resource_bundles = {
     'ConvertSwiftSDKPrivacy' => ['Sources/ConvertSwiftSDK/Resources/PrivacyInfo.xcprivacy']
   }

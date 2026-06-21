@@ -12,4 +12,8 @@ Pod::Spec.new do |s|
   s.tvos.deployment_target = '15.0'
   s.swift_versions   = ['6.0']
   s.source_files     = 'Sources/ConvertSwiftSDKCore/**/*.swift'
+  # SPM passes -package-name implicitly so the two targets can share `package`-level
+  # symbols; CocoaPods builds each pod as a separate module without it. Inject the same
+  # package name on BOTH pods so `package` declarations compile and resolve across them.
+  s.pod_target_xcconfig = { 'OTHER_SWIFT_FLAGS' => '-package-name ConvertSwiftSDK' }
 end

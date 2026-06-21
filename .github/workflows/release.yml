@@ -159,9 +159,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$VERSION" \
-            --title "$VERSION" \
-            --generate-notes
+          # Idempotent: a re-run on an existing tag (e.g. after fixing a later
+          # step like the CocoaPods push) must not fail just because the Release
+          # was already created on a prior run.
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists — skipping creation."
+          else
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --generate-notes
+          fi
 
       - name: Publish to CocoaPods trunk
         # Conditional courtesy channel — skipped in forks / environments without the
