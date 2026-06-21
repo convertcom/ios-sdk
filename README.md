@@ -1,5 +1,10 @@
 # Convert iOS SDK
 
+[![CI](https://github.com/convertcom/ios-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/convertcom/ios-sdk/actions/workflows/ci.yml)
+[![Swift Package Manager](https://img.shields.io/badge/Swift_Package_Manager-compatible-brightgreen.svg)](https://swift.org/package-manager/)
+[![CocoaPods](https://img.shields.io/cocoapods/v/ConvertSDK.svg?label=CocoaPods)](https://cocoapods.org/pods/ConvertSDK)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
+
 A/B testing, feature flags, segmentation, and conversion tracking for iOS, iPadOS, tvOS, and macOS.
 
 ```swift
