@@ -6,7 +6,7 @@ Pod::Spec.new do |s|
   s.homepage         = 'https://github.com/convertcom/ios-sdk'
   s.license          = { :type => 'Apache-2.0', :file => 'LICENSE' }
   s.author           = { 'Convert.com' => 'support@convert.com' }
-  s.source           = { :git => 'https://github.com/convertcom/ios-sdk.git', :tag => s.version.to_s }
+  s.source           = { :git => 'https://github.com/convertcom/ios-sdk.git', :tag => "v#{s.version}" }
   s.ios.deployment_target  = '15.0'
   s.osx.deployment_target  = '12.0'
   s.tvos.deployment_target = '15.0'
