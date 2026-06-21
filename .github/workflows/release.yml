@@ -177,10 +177,19 @@ jobs:
         # podspec == one module): ConvertSDK.podspec depends on ConvertSDKCore.podspec,
         # so ConvertSDKCore MUST be trunk-pushed FIRST. --allow-warnings is required so
         # the push does not fail on documentation warnings. (AC4.3)
+        #
+        # --synchronous on the SECOND (ConvertSDK) push: its dependency validation must
+        # resolve the ConvertSDKCore version published seconds earlier. Trunk's CDN has a
+        # ~5-min propagation TTL, so a back-to-back dependent push can fail with "Unable
+        # to find a specification for ConvertSDKCore" (CocoaPods/CocoaPods#9497). The flag
+        # makes the validator read the master Specs git repo instead of the CDN for that
+        # lookup. Verbatim flag definition (cocoapods-trunk lib/pod/command/trunk/push.rb):
+        # "If validation depends on other recently pushed pods, synchronize". ConvertSDKCore
+        # depends on nothing here, so it needs no flag.
         if: env.COCOAPODS_TRUNK_TOKEN != ''
         env:
           COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
         run: |
           gem install cocoapods --no-document
           pod trunk push ConvertSDKCore.podspec --allow-warnings
-          pod trunk push ConvertSDK.podspec --allow-warnings
+          pod trunk push ConvertSDK.podspec --allow-warnings --synchronous

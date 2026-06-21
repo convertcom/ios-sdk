@@ -1,0 +1,7 @@
+# Podspecs are Ruby-syntax manifests, not analyzable Ruby source. Linguist counts
+# them as Ruby (~1.8KB), which makes CodeQL default setup's automatic language
+# detection add an `Analyze (ruby)` job. That job then fails on the scheduled main
+# scan with "CodeQL detected code written in Swift, ... but not any written in
+# Ruby ... Exit code was 32" (no analyzable Ruby source). Exclude them from
+# language detection so Ruby drops out and CodeQL no longer tries to analyze it.
+*.podspec linguist-detectable=false
