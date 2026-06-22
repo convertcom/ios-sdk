@@ -27,13 +27,15 @@
 //      `ConvertContext.runExperience` short-circuits to `nil` on the `nil` snapshot — for EVERY key,
 //      regardless of attributes. (Empirically confirmed: every experience → nil, every feature →
 //      disabled, `runExperiences()` → [].)
-//   2. Even decoding `ProjectConfig` directly (bypassing the SDK), all four real experiences DEGRADE
-//      OUT of `ProjectConfig.rawExperiences` — the array `fullExperience(forKey:)` and the bucketing
-//      engine read — because their wire `type: "a/b_fullstack"` is not a case in the generated
-//      `ExperienceTypes` enum, so the per-element decode throws `DecodingError.dataCorrupted` at path
-//      `type` and the tolerant `DegradingExperience` wrapper drops each one. `rawExperiences` is
-//      therefore `nil`, so `selectVariation` finds no experience for any key and returns `nil`.
-//      (Empirically confirmed by decoding each element through `Components.Schemas.ConfigExperience`.)
+//   2. Even decoding `ProjectConfig` directly (bypassing the SDK), the four real experiences degrade
+//      out of `ProjectConfig.rawExperiences` — the array `fullExperience(forKey:)` and the bucketing
+//      engine read — whenever the generated `ExperienceTypes` enum does not carry their wire
+//      `type` (`"a/b_fullstack"`): the per-element decode throws `DecodingError.dataCorrupted` at
+//      path `type` and the tolerant `DegradingExperience` wrapper drops each one, so `rawExperiences`
+//      is `nil` and `selectVariation` finds no experience for any key. Once the serving-spec regen
+//      graduates `"a/b_fullstack"` those experiences are retained instead — but the static assertion
+//      below depends on neither outcome (it checks readiness, crash-safety, and the decoded
+//      experience COUNT, all of which hold regardless; the nil Variation is reason 1 above).
 //
 // So this is the story's documented honest fallback: assert the SDK READIES on the real staging bytes
 // (the FR7 ingestion path works end-to-end on genuine staging data) AND that `runExperience` is

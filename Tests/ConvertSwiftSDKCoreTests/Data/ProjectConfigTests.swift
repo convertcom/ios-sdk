@@ -27,10 +27,15 @@ import Testing
 ///     `ConfigGoalBase.type` is `[GoalTypes]` (array) → the nested base decode throws
 ///     `typeMismatch` on the String. Degrading disposition: `ConfigGoalOrSentinel` `.sentinel`
 ///     (never throws), all goals retained by count.
-///   - D4 `experiences[].type` is the wire String `"a/b_fullstack"`, which is NOT a case of
-///     the generated `ExperienceTypes` enum (it lacks the fullstack values) → a raw
-///     `ConfigExperience` decode throws `DecodingError.dataCorrupted`. Degrading disposition:
-///     the experience survives and its `type` is degraded/absent (`type == nil`).
+///   - D4 `experiences[].type` is the wire String `"a/b_fullstack"`. While the generated
+///     `ExperienceTypes` enum does not carry that case, a raw `ConfigExperience` decode throws
+///     `DecodingError.dataCorrupted`; degrading disposition: the experience survives and its
+///     `type` degrades to nil. The serving spec has since GRADUATED `a/b_fullstack` to a
+///     first-class `ExperienceTypes` case, so once the automated config-types regen syncs it the
+///     baseline's experiences decode their `type` cleanly and the degrade applies only to
+///     genuinely-unknown/future values. This suite therefore asserts the experience `type`
+///     against the LIVE enum (nil iff the enum lacks the case) rather than a fixed `nil`, and
+///     proves the degrade path itself with a synthetic never-valid type.
 ///
 /// `ProjectConfig.init(from:)` therefore decodes the `ConfigResponseData` root field-by-field
 /// and degrades each non-decodable sub-tree to nil / `.sentinel` instead of throwing, reusing
@@ -132,15 +137,22 @@ struct ProjectConfigTests {
         let goals = try #require(config.goals, "D3: goals array must be present")
         #expect(goals.count == 3, "D3: all baseline goals must be retained (3)")
 
-        // (3) D4 — experiences retained by count; experiences[0] survived with its `type`
-        // degraded/absent for the "a/b_fullstack" value. Fixture `experiences` has 4 entries.
+        // (3) D4 — experiences retained by count; experiences[0]'s `type` reflects whatever the
+        // GENERATED `ExperienceTypes` enum knows about the baseline's wire value "a/b_fullstack":
+        // nil while the enum lacks the case (degraded, not thrown), `.a_sol_b_fullstack` once the
+        // automated config-types regen graduates it. Asserting against the live enum — rather than
+        // a fixed `== nil` — pins the REAL contract (`Experience.type` degrades ONLY for values the
+        // enum genuinely lacks) and stays green across that spec graduation. The degrade-to-nil
+        // path itself is proven by `fullExperiencePerElementDegradeKeepsValidSibling` with a
+        // synthetic never-valid type. Fixture `experiences` has 4 entries.
         let experiences = try #require(config.experiences, "D4: experiences array must be present")
         #expect(experiences.count == 4, "D4: all baseline experiences must be retained (4)")
         let firstExperience = try #require(experiences.first, "D4: experiences[0] must be present")
         #expect(firstExperience.id == "100334665", "D4: experiences[0] identity must survive")
+        let baselineExperienceType = Components.Schemas.ExperienceTypes(rawValue: "a/b_fullstack")
         #expect(
-            firstExperience.type == nil,
-            "D4: the unknown 'a/b_fullstack' experience type must degrade to nil, not throw"
+            firstExperience.type == baselineExperienceType,
+            "D4: experiences[0].type must match the generated enum — nil while 'a/b_fullstack' is absent, .a_sol_b_fullstack once graduated, never a throw"
         )
     }
 
@@ -223,13 +235,19 @@ struct ProjectConfigTests {
     }
 
     /// THE critical PC-1 test: per-element-degrade, NOT whole-array-throw. The array holds one
-    /// valid experience and one drifted `a/b_fullstack` element (unknown `ExperienceTypes` →
-    /// `dataCorrupted`). A naive whole-array `[ConfigExperience]` decode throws on the drifted
-    /// element and loses BOTH; the contract requires each element to decode under its own `try?`,
-    /// so the valid sibling SURVIVES (with variations) and only the drifted element degrades out.
+    /// valid experience and one drifted element whose `type` is a string no `ExperienceTypes` case
+    /// will ever carry (unknown enum value → `dataCorrupted`). A naive whole-array
+    /// `[ConfigExperience]` decode throws on the drifted element and loses BOTH; the contract
+    /// requires each element to decode under its own `try?`, so the valid sibling SURVIVES (with
+    /// variations) and only the drifted element degrades out.
+    ///
+    /// The drifted `type` is a SYNTHETIC sentinel, not a real wire value (it was once
+    /// `"a/b_fullstack"`, which the serving spec has since graduated to a first-class
+    /// `ExperienceTypes` case): pinning the degrade on a value that can never be a valid enum raw
+    /// value keeps this contract green no matter which experience types the spec adds next.
     @Test("fullExperience per-element degrade keeps the valid sibling, drops the drifted one")
     func fullExperiencePerElementDegradeKeepsValidSibling() throws {
-        let drifted = #"{"id":"exp-bad","key":"bad","type":"a/b_fullstack"}"#
+        let drifted = #"{"id":"exp-bad","key":"bad","type":"__never_a_real_experience_type__"}"#
         let data = Self.makeConfigData(
             experiencesJSON: "[\(Self.validExperienceJSON(id: "exp-good", key: "good")),\(drifted)]"
         )

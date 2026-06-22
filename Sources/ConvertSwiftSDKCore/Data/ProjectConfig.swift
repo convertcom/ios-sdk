@@ -22,9 +22,11 @@ import Foundation
 ///   - **D3** `goals[].type` is the wire String `"advanced"` but the composed `ConfigGoalBase.type`
 ///     is an array → a raw element decode throws `typeMismatch`. Disposition: each goal decodes
 ///     through ``ConfigGoalOrSentinel`` (sentinel on the collision), so all goals are retained.
-///   - **D4** `experiences[].type` is the wire String `"a/b_fullstack"`, which is NOT a case of the
-///     generated `ExperienceTypes` enum → a raw decode throws `dataCorrupted`. Disposition: the
-///     experience survives and its ``Experience/type`` is `nil`.
+///   - **D4** `experiences[].type` is the wire String `"a/b_fullstack"`. While the generated
+///     `ExperienceTypes` enum does not carry that case a raw decode throws `dataCorrupted`;
+///     disposition: the experience survives and its ``Experience/type`` degrades to `nil`. Once
+///     the serving-spec regen graduates `"a/b_fullstack"` to a first-class case it decodes
+///     cleanly — the degrade then applies only to type values the enum still lacks.
 ///
 /// ── How the degrade is localized (NOT a boundary catch) ──────────────────────────────────
 /// Every degrade is a per-field `try?` inside a typed `init(from:)`, mirroring the sanctioned
@@ -53,9 +55,9 @@ public struct ProjectConfig: Decodable, Sendable {
     /// The FULL generated experiences (wire `experiences`), retained alongside the stripped
     /// ``experiences`` so sticky-assignment lookups can reach `key` and the `variations` array that
     /// the stripped ``Experience`` drops. Decoded PER-ELEMENT (each element under its own `try?` via
-    /// ``DegradingExperience``) so a single drifted element — e.g. the `"a/b_fullstack"` value absent
-    /// from the generated `ExperienceTypes` enum — degrades out alone WITHOUT a whole-array
-    /// `dataCorrupted` throw nulling its valid siblings. `nil` when the field is absent or every
+    /// ``DegradingExperience``) so a single drifted element — e.g. an experience whose `type` is a
+    /// value the generated `ExperienceTypes` enum does not carry — degrades out alone WITHOUT a
+    /// whole-array `dataCorrupted` throw nulling its valid siblings. `nil` when the field is absent or every
     /// element degraded. Queried via ``fullExperience(forKey:)``.
     public var rawExperiences: [Components.Schemas.ConfigExperience]?
     /// Audiences (wire `audiences`) — the generated element type decodes cleanly in the baseline.
@@ -126,8 +128,8 @@ public struct ProjectConfig: Decodable, Sendable {
             forKey: .experiences
         )
         // PC-1: retain the FULL generated experiences too, decoded PER-ELEMENT. A whole-array
-        // `try? decode([ConfigExperience])` would throw on the first drifted element (e.g. the
-        // unknown `"a/b_fullstack"` type → `dataCorrupted`) and the `try?` would null the ENTIRE
+        // `try? decode([ConfigExperience])` would throw on the first drifted element (an
+        // experience whose `type` the generated enum lacks → `dataCorrupted`) and the `try?` would null the ENTIRE
         // array, losing valid siblings. Decoding each element through `DegradingExperience` (whose
         // `init` never throws — it `try?`s the real type) keeps the unkeyed-container index always
         // advancing by exactly one, so the loop terminates and a bad element degrades out alone.
@@ -313,8 +315,9 @@ public struct ProjectConfig: Decodable, Sendable {
         /// Experience ID (wire `id`). Survives the degrade so the experience is identifiable.
         public var id: String?
         /// Experience type (wire `type`, D4). `nil` when the wire value is not a known
-        /// `ExperienceTypes` case — the baseline's `"a/b_fullstack"` is absent from the generated
-        /// enum, so the decode throws `dataCorrupted` and the `try?` converts that to `nil`.
+        /// `ExperienceTypes` case — e.g. `"a/b_fullstack"` while the generated enum lacks it (the
+        /// decode throws `dataCorrupted` and the `try?` converts that to `nil`); once the spec
+        /// regen graduates such a value it decodes to the matching case.
         public var type: Components.Schemas.ExperienceTypes?
 
         /// Decodes the experience field-by-field. `id` decodes straight; `type` degrades to `nil`

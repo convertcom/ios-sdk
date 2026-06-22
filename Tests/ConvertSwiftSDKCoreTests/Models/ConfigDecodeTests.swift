@@ -130,9 +130,9 @@ struct ConfigDecodeTests {
     ///      inherited base reads `type` as `[GoalTypes]` (array) — GENERATOR SCHEMA COLLISION
     ///      (the discriminator name collides with an inherited array property of the same
     ///      wire name).
-    ///   4. `experiences[].type` is `"a/b_fullstack"`, not a case in the generated
-    ///      `ExperienceTypes` enum (the spec enum lacks the fullstack values) — SPEC ENUM
-    ///      INCOMPLETE.
+    ///   4. `experiences[].type` is `"a/b_fullstack"`, a case the generated `ExperienceTypes`
+    ///      enum carries only once the serving-spec regen syncs the fullstack values; while it is
+    ///      absent a raw element decode throws `dataCorrupted` — SPEC ENUM SYNC LAG.
     /// Structural gap: `ConfigResponseData.goals` is `[Components.Schemas.ConfigGoal]?` — the
     /// RAW generated element type, NOT `[ConfigGoalOrSentinel]`. The sentinel wrappers are not
     /// wired into the generated config tree, so even setting drifts 1/3/4 aside, decoding the
