@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'ConvertSwiftSDKCore'
-  s.version          = '1.0.0'
+  s.version          = '1.0.1'
   s.summary          = 'Convert Experiences iOS SDK core engine (bucketing, rules, config).'
   s.description      = 'Core engine for the Convert Experiences iOS SDK: bucketing, rules, config decoding and segmentation.'
   s.homepage         = 'https://github.com/convertcom/ios-sdk'

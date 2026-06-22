@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'ConvertSwiftSDK'
-  s.version          = '1.0.0'
+  s.version          = '1.0.1'
   s.summary          = 'Convert Experiences iOS SDK — A/B testing, feature flags, conversion tracking.'
   s.description      = 'Swift SDK for Convert Experiences: A/B testing, feature flags, segmentation and conversion tracking on iOS, iPadOS, tvOS and macOS.'
   s.homepage         = 'https://github.com/convertcom/ios-sdk'
