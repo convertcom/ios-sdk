@@ -15,35 +15,28 @@
 // This file touches NO Sources/ production code. The only non-test additions are the committed real
 // staging fixture and a Package.swift `.copy("Fixtures")` resource declaration (build-config/test-data).
 //
-// ── Why the STATIC assertion is "ingests + decodes", NOT "returns a non-nil Variation" (EVIDENCED) ──
-// A non-nil `Variation` is UNOBTAINABLE from this real staging config offline, for TWO INDEPENDENT
-// current-state reasons in Sources/ (both deferred to later stories; neither fixable without editing
-// production code, which this story forbids):
+// ── Why the STATIC assertion on the RAW staging snapshot is `variation == nil` (EVIDENCED) ──────────
+// `ConvertSwiftSDK(configData:)` now DECODES the bytes into a `ProjectConfig`
+// (`ConfigStore.validateAndSetConfig`), so `getSnapshot()` is non-nil after `ready()` and the four real
+// experiences are retained (the generated `ExperienceTypes` enum carries `"a/b_fullstack"` since the
+// serving-spec regen). Yet `runExperience("test-experience-ab-fullstack-4")` still returns `nil` on the
+// RAW snapshot for ONE remaining reason: that experience is LOCATION-GATED (`locations: ["1003352"]`,
+// the "pricing-location" whose rule needs a `location == "pricing"` property), and
+// `ConvertContext.runExperience` passes an EMPTY `locationProperties` map on native (native location
+// targeting is out of scope — see the `runExperience` doc). The location gate therefore fails and the
+// variation degrades to `nil` — crash-safe (AC9), never a throw. All four real staging experiences are
+// location-gated, so the raw snapshot buckets none of them offline.
 //
-//   1. The PUBLIC `ConvertSwiftSDK(configData:)` path validates the bytes but does NOT decode them into a
-//      `ProjectConfig` — `ConfigStore.validateAndSetConfig` calls `setConfig(nil)` (the structural
-//      decode is deferred; see `ConfigValidation.validate(_:Data)` "Story 2.3 adds the real structural
-//      decode here"). So `configStore.getSnapshot()` stays `nil` after `ready()`, and
-//      `ConvertContext.runExperience` short-circuits to `nil` on the `nil` snapshot — for EVERY key,
-//      regardless of attributes. (Empirically confirmed: every experience → nil, every feature →
-//      disabled, `runExperiences()` → [].)
-//   2. Even decoding `ProjectConfig` directly (bypassing the SDK), the four real experiences degrade
-//      out of `ProjectConfig.rawExperiences` — the array `fullExperience(forKey:)` and the bucketing
-//      engine read — whenever the generated `ExperienceTypes` enum does not carry their wire
-//      `type` (`"a/b_fullstack"`): the per-element decode throws `DecodingError.dataCorrupted` at
-//      path `type` and the tolerant `DegradingExperience` wrapper drops each one, so `rawExperiences`
-//      is `nil` and `selectVariation` finds no experience for any key. Once the serving-spec regen
-//      graduates `"a/b_fullstack"` those experiences are retained instead — but the static assertion
-//      below depends on neither outcome (it checks readiness, crash-safety, and the decoded
-//      experience COUNT, all of which hold regardless; the nil Variation is reason 1 above).
+// The companion test `directDataUngatedExperienceBuckets()` proves the OTHER side: the SAME staging
+// bytes with each experience's audience + location gates cleared DO bucket a non-nil Variation through
+// the public configData path — i.e. the decode + bucketing pipeline is whole, and the only thing the
+// raw snapshot lacks is satisfied location properties. That is exactly what the demo app's bundled
+// `demo-config.json` does (real staging config, gates cleared) so its "Run Experience" buckets.
 //
-// So this is the story's documented honest fallback: assert the SDK READIES on the real staging bytes
-// (the FR7 ingestion path works end-to-end on genuine staging data) AND that `runExperience` is
-// crash-safe on real data (AC9 — degrades to `nil`, never throws/crashes), AND — independently — that
-// the committed fixture is the GENUINE staging config (its `ProjectConfig` decode recovers the AC5
-// account/project coordinates and all four named staging experiences), not a stub. When the deferred
-// direct-data structural decode lands, the `runExperience` assertion here flips from `== nil` to a
-// non-nil expectation with no other change.
+// So this suite asserts: the SDK READIES on real staging bytes (FR7 ingestion works end-to-end); the
+// committed fixture is the GENUINE staging config (its `ProjectConfig` decode recovers the AC5
+// account/project coordinates and all four named experiences, not a stub); `runExperience` on the
+// location-gated raw key is crash-safe (`== nil`, never a throw); AND an ungated experience buckets.
 //
 // ── No wall-clock waits (NFR21/NFR22) ─────────────────────────────────────────────────────────────
 // Static mode awaits `ready()` and each `runExperience` — all happens-before, no sleep/poll. Live mode
@@ -123,13 +116,13 @@ struct StagingIntegrationTests {
         // UNIQUE visitorId (bd-ilx isolation) — sticky keys never collide across runs.
         let context = sdk.createContext(visitorId: "staging-static-\(UUID().uuidString)")
 
-        // The public call is crash-safe on real staging data. It degrades to `nil` because the
-        // direct-data path does not yet decode the snapshot into a usable config (file header, reason 1)
-        // — NOT because of a thrown error. When that deferred decode lands, this flips to a non-nil
-        // expectation with no other change to the test.
+        // The public call is crash-safe on real staging data. The config IS decoded now, but this key
+        // (`test-experience-ab-fullstack-4`) is LOCATION-GATED and native passes empty location
+        // properties, so the location gate fails and the variation degrades to `nil` (file header) —
+        // NOT a thrown error. `directDataUngatedExperienceBuckets` below covers the non-nil side.
         let variation = await context.runExperience(Self.stagingExperienceKey)
-        // Crash-safe: degrades to nil on the not-yet-decoded direct-data snapshot (file header), not by throwing.
-        #expect(variation == nil, "runExperience on the real staging key degrades to nil, not by throwing")
+        // Crash-safe: the location-gated key degrades to nil on the decoded snapshot, not by throwing.
+        #expect(variation == nil, "location-gated staging key degrades to nil, never throws")
 
         // Independently prove the committed fixture is the GENUINE staging config (not a stub): decoding
         // its `ProjectConfig` recovers the AC5 account/project coordinates and all four named staging
@@ -142,6 +135,76 @@ struct StagingIntegrationTests {
             experiences.count == Self.stagingExperienceCount,
             "all four real staging experiences are retained in the decoded config"
         )
+    }
+
+    // MARK: - FR7 direct-data: an UNGATED experience buckets (decode + bucketing pipeline whole)
+
+    /// The committed staging snapshot with every experience's `audiences` and `locations` cleared to
+    /// `[]` — the in-test twin of the demo app's `demo-config.json` transform — so an experience buckets
+    /// without native audience/location context. Decodes the snapshot to a mutable JSON object, clears
+    /// the two gate arrays on each experience, and re-encodes. `#require`s rather than force-unwraps
+    /// (swiftlint `force_unwrapping`).
+    private static func ungatedStagingData() throws -> Data {
+        let object = try JSONSerialization.jsonObject(with: try loadStagingData())
+        var root = try #require(object as? [String: Any], "the staging snapshot must decode to a JSON object")
+        let experiences = try #require(
+            root["experiences"] as? [[String: Any]],
+            "the staging snapshot must carry an experiences array"
+        )
+        root["experiences"] = experiences.map { experience in
+            var ungated = experience
+            ungated["audiences"] = []
+            ungated["locations"] = []
+            return ungated
+        }
+        return try JSONSerialization.data(withJSONObject: root)
+    }
+
+    /// Proves the OTHER side of the static contract: the SAME staging bytes with each experience's
+    /// audience + location gates cleared bucket a NON-nil `Variation` through the PUBLIC configData path
+    /// (`ConvertSwiftSDK(configData:)` → `ready()` → `runExperience`). Together with `stagingStaticMode`
+    /// (location-gated key → nil) this shows the decode + bucketing pipeline is whole and the raw
+    /// snapshot only lacks satisfied location properties — exactly what the demo app's bundled
+    /// `demo-config.json` relies on. A UNIQUE `visitorId` keeps sticky keys from colliding across runs.
+    @Test("direct-data: an ungated experience buckets a non-nil variation via configData")
+    func directDataUngatedExperienceBuckets() async throws {
+        let sdk = ConvertSwiftSDK(configData: try Self.ungatedStagingData())
+        try await sdk.ready()
+
+        let context = sdk.createContext(visitorId: "staging-ungated-\(UUID().uuidString)")
+        let variation = await context.runExperience(Self.stagingExperienceKey)
+
+        let resolved = try #require(
+            variation,
+            "an ungated experience must bucket a variation through the direct-data configData path"
+        )
+        #expect(
+            resolved.experienceKey == Self.stagingExperienceKey,
+            "the bucketed variation carries its source experience key"
+        )
+    }
+
+    /// Proves the run-time location activation: the RAW staging snapshot keeps `test-experience-ab-fullstack-4`
+    /// LOCATION-GATED (location `1003352` "pricing-location", rule `location == "pricing"`). Supplying that
+    /// property at `createContext(locationProperties:)` satisfies the gate, so the experience buckets a non-nil
+    /// `Variation` — without de-gating the config. Parity with Android `setLocationProperties` / JS+PHP
+    /// `locationProperties`. The mirror case (no property → nil) is `stagingStaticMode`.
+    @Test("direct-data: a supplied location property activates a location-gated experience")
+    func locationPropertyActivatesGatedExperience() async throws {
+        let sdk = ConvertSwiftSDK(configData: try Self.loadStagingData())
+        try await sdk.ready()
+
+        let context = sdk.createContext(
+            visitorId: "staging-loc-\(UUID().uuidString)",
+            locationProperties: ["location": "pricing"]
+        )
+        let variation = await context.runExperience(Self.stagingExperienceKey)
+
+        let resolved = try #require(
+            variation,
+            "the matching location property must satisfy the location gate and bucket the experience"
+        )
+        #expect(resolved.experienceKey == Self.stagingExperienceKey, "the bucketed variation carries its key")
     }
 
     // MARK: - FR69 live mode (network — env-gated SKIP)

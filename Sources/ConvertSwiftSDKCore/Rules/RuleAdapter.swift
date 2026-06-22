@@ -87,6 +87,8 @@ internal enum RuleAdapter {
             return condition(fromText: rule)
         case let .country(rule):
             return condition(fromCountry: rule)
+        case let .generic_text_key_value(rule):
+            return condition(fromTextKeyValue: rule)
         default:
             // INTENTIONAL fail-closed degrade (bd-d4p deferred-coverage boundary): every leaf family
             // NOT enumerated above (numeric / bool / cookie / segment / js_condition / weather / os /
@@ -122,6 +124,8 @@ internal enum RuleAdapter {
             return condition(fromText: rule)
         case let .country(rule):
             return condition(fromCountry: rule)
+        case let .generic_text_key_value(rule):
+            return condition(fromTextKeyValue: rule)
         default:
             // INTENTIONAL fail-closed degrade (bd-d4p) — the `RuleElement` parallel of the audience
             // `default:` above (`weather_condition` is one such unhandled family here). Same contract:
@@ -153,6 +157,23 @@ internal enum RuleAdapter {
     ) -> RuleCondition {
         make(
             key: rule.value1.value1.rule_type,
+            value: rule.value1.value2.value,
+            negated: rule.value2.matching?.value1.negated,
+            matchType: rule.value2.matching?.value2.match_type?.rawValue
+        )
+    }
+
+    /// Extracts a ``RuleCondition`` from a generic text KEY-VALUE leaf (`GenericTextKeyValueMatchRule`),
+    /// shared by the audience and location switches. Unlike the named text family (`city`/`url`/…), the
+    /// match key is the rule's EXPLICIT `key` field (`value3`, ``GenericKey``) — e.g. a rule with
+    /// `key: "location"` matches the caller's `locationProperties["location"]`. Mirrors the JS
+    /// (`rule['key']`) and Android (`lookupAttribute(_, ruleKey)`) engines, which key EVERY rule off its
+    /// explicit `key`; iOS routes the named families off `rule_type` and this family off `value3.key`.
+    private static func condition(
+        fromTextKeyValue rule: Components.Schemas.GenericTextKeyValueMatchRule
+    ) -> RuleCondition {
+        make(
+            key: rule.value3.key ?? "",
             value: rule.value1.value2.value,
             negated: rule.value2.matching?.value1.negated,
             matchType: rule.value2.matching?.value2.match_type?.rawValue

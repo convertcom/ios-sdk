@@ -189,8 +189,10 @@ public actor ConfigStore {
     /// Validates pre-fetched config `data`, then resolves the gate: on non-empty data, marks
     /// config present via ``setConfig(_:)``; on empty/invalid data, fails the gate via
     /// ``signalError(_:)`` so `ready()` throws. The direct-data path has no loader step, so
-    /// validation and readiness are a single store operation here (Story 2.3 adds the real
-    /// structural decode in the validator).
+    /// validation, structural decode, and readiness are a single store operation here: the
+    /// validated bytes are decoded into a typed ``ProjectConfig`` (so a direct-data SDK is fully
+    /// usable for bucketing, not just "ready"), and a structurally-undecodable payload degrades to
+    /// a `nil` snapshot rather than throwing.
     public func validateAndSetConfig(data: Data) async {
         do {
             try ConfigValidation.validate(data)
@@ -202,10 +204,14 @@ public actor ConfigStore {
             signalError(error)
             return
         }
-        // This path has validated raw bytes but has no typed `ProjectConfig` to hand over (it
-        // does NOT decode the data into `ProjectConfig` — that is out of scope here), so it
-        // resolves DEGRADED ready with a `nil` snapshot, preserving the original intent that
-        // valid data still resolves `ready()`.
-        await setConfig(nil)
+        // Decode the validated bytes into a typed `ProjectConfig` so the direct-data SDK is usable
+        // for bucketing — the SAME decoder the network path uses (a plain `JSONDecoder`, NO
+        // keyDecodingStrategy per AR13; `ProjectConfig` carries literal snake_case CodingKeys and
+        // degrades each non-decodable sub-tree rather than throwing). A structurally-undecodable
+        // payload (e.g. a non-object root) decodes to `nil`, which still resolves DEGRADED ready
+        // with a `nil` snapshot — preserving the "valid data resolves ready()" intent while
+        // upgrading the happy path from a nil snapshot to the real, bucketable config.
+        let config = try? JSONDecoder().decode(ProjectConfig.self, from: data)
+        await setConfig(config)
     }
 }
