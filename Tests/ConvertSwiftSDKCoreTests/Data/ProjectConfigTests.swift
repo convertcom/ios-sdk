@@ -152,7 +152,7 @@ struct ProjectConfigTests {
         let baselineExperienceType = Components.Schemas.ExperienceTypes(rawValue: "a/b_fullstack")
         #expect(
             firstExperience.type == baselineExperienceType,
-            "D4: experiences[0].type must match the generated enum — nil while 'a/b_fullstack' is absent, .a_sol_b_fullstack once graduated, never a throw"
+            "D4: experiences[0].type tracks the generated enum (nil only when the case is absent), never a throw"
         )
     }
 
