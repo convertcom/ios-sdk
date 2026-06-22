@@ -223,11 +223,13 @@ final class DemoViewModel: ObservableObject {
     let pathMonitorQueue = DispatchQueue(label: "com.convert.demo.path-monitor")
 
     init() {
-        // FS-Test-Proj staging: account 10035569 / project 10034190. The "account/project"
-        // sdkKey form resolves to {apiConfigEndpoint}/config/10035569/10034190 on the default
-        // CDN (cdn-4.convertexperiments.com/api/v1); no secret needed to compile + launch-init.
+        // FS-Test-Proj staging (acct 10035569 / proj 10034190), kept for the Config panel display.
         configuration = ConvertConfiguration(sdkKey: "10035569/10034190")
-        sdk = ConvertSwiftSDK(configuration: configuration)
+        // Offline demo (FR7 direct-data): feed the bundled `demo-config.json` (real staging config,
+        // audience + location gates cleared so `runExperience` buckets with no network); else live CDN.
+        let url = Bundle.main.url(forResource: "demo-config", withExtension: "json")
+        let data = url.flatMap { try? Data(contentsOf: $0) }
+        sdk = data.map { ConvertSwiftSDK(configData: $0) } ?? ConvertSwiftSDK(configuration: configuration)
         // Eager sticky context (was a `lazy var`; `@Published` needs a non-lazy stored property).
         context = sdk.createContext()
         // Seed the runtime toggle from the static init flag (networkTracking defaults true).
