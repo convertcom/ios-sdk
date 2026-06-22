@@ -71,7 +71,7 @@ internal enum RuleAdapter {
 
     /// Maps one generated AUDIENCE leaf to a flat ``RuleCondition`` by routing the text and country
     /// families to the shared struct-keyed extractors; every other family degrades fail-closed.
-    private static func condition(
+    private static func condition( // swiftlint:disable:this cyclomatic_complexity
         fromAudienceLeaf leaf: Components.Schemas.RuleElementAudience
     ) -> RuleCondition {
         switch leaf {
@@ -87,6 +87,25 @@ internal enum RuleAdapter {
             return condition(fromText: rule)
         case let .country(rule):
             return condition(fromCountry: rule)
+        case let .generic_text_key_value(rule):
+            return condition(fromTextKeyValue: rule)
+        case let .avg_time_page(rule), let .days_since_last_visit(rule), let .page_tag_product_price(rule),
+             let .pages_visited_count(rule), let .visit_duration(rule), let .visits_count(rule):
+            return condition(fromNumeric: rule)
+        case let .is_desktop(rule), let .is_mobile(rule), let .is_tablet(rule):
+            return condition(fromBool: rule)
+        case let .generic_numeric_key_value(rule):
+            return condition(fromNumericKeyValue: rule)
+        case let .generic_bool_key_value(rule):
+            return condition(fromBoolKeyValue: rule)
+        case let .cookie(rule):
+            return condition(fromCookie: rule)
+        case let .language(rule):
+            return condition(fromLanguage: rule)
+        case let .browser_name(rule):
+            return condition(fromBrowserName: rule)
+        case let .os(rule):
+            return condition(fromOs: rule)
         default:
             // INTENTIONAL fail-closed degrade (bd-d4p deferred-coverage boundary): every leaf family
             // NOT enumerated above (numeric / bool / cookie / segment / js_condition / weather / os /
@@ -106,7 +125,7 @@ internal enum RuleAdapter {
     /// ``condition(fromAudienceLeaf:)``, routing the same families to the same shared extractors.
     /// (`RuleElement` lacks `visitor_id` and adds `weather_condition`; the case list reflects that,
     /// while every unhandled family — `weather_condition` included — degrades fail-closed.)
-    private static func condition(
+    private static func condition( // swiftlint:disable:this cyclomatic_complexity
         fromLocationLeaf leaf: Components.Schemas.RuleElement
     ) -> RuleCondition {
         switch leaf {
@@ -122,6 +141,25 @@ internal enum RuleAdapter {
             return condition(fromText: rule)
         case let .country(rule):
             return condition(fromCountry: rule)
+        case let .generic_text_key_value(rule):
+            return condition(fromTextKeyValue: rule)
+        case let .avg_time_page(rule), let .days_since_last_visit(rule), let .page_tag_product_price(rule),
+             let .pages_visited_count(rule), let .visit_duration(rule), let .visits_count(rule):
+            return condition(fromNumeric: rule)
+        case let .is_desktop(rule), let .is_mobile(rule), let .is_tablet(rule):
+            return condition(fromBool: rule)
+        case let .generic_numeric_key_value(rule):
+            return condition(fromNumericKeyValue: rule)
+        case let .generic_bool_key_value(rule):
+            return condition(fromBoolKeyValue: rule)
+        case let .cookie(rule):
+            return condition(fromCookie: rule)
+        case let .language(rule):
+            return condition(fromLanguage: rule)
+        case let .browser_name(rule):
+            return condition(fromBrowserName: rule)
+        case let .os(rule):
+            return condition(fromOs: rule)
         default:
             // INTENTIONAL fail-closed degrade (bd-d4p) — the `RuleElement` parallel of the audience
             // `default:` above (`weather_condition` is one such unhandled family here). Same contract:
@@ -154,6 +192,125 @@ internal enum RuleAdapter {
         make(
             key: rule.value1.value1.rule_type,
             value: rule.value1.value2.value,
+            negated: rule.value2.matching?.value1.negated,
+            matchType: rule.value2.matching?.value2.match_type?.rawValue
+        )
+    }
+
+    /// Extracts a ``RuleCondition`` from a generic text KEY-VALUE leaf (`GenericTextKeyValueMatchRule`),
+    /// shared by the audience and location switches. Unlike the named text family (`city`/`url`/…), the
+    /// match key is the rule's EXPLICIT `key` field (`value3`, ``GenericKey``) — e.g. a rule with
+    /// `key: "location"` matches the caller's `locationProperties["location"]`. Mirrors the JS
+    /// (`rule['key']`) and Android (`lookupAttribute(_, ruleKey)`) engines, which key EVERY rule off its
+    /// explicit `key`; iOS routes the named families off `rule_type` and this family off `value3.key`.
+    private static func condition(
+        fromTextKeyValue rule: Components.Schemas.GenericTextKeyValueMatchRule
+    ) -> RuleCondition {
+        make(
+            key: rule.value3.key ?? "",
+            value: rule.value1.value2.value,
+            negated: rule.value2.matching?.value1.negated,
+            matchType: rule.value2.matching?.value2.match_type?.rawValue
+        )
+    }
+
+    /// NUMERIC named leaf (`GenericNumericMatchRule`: `avg_time_page`, `visits_count`, `visit_duration`,
+    /// `pages_visited_count`, `days_since_last_visit`, `page_tag_product_price`). Keyed off `rule_type`
+    /// like the text family; the `Double` value is stringified for the comparator (numeric `match_type`s
+    /// parse it back). Matches Android/JS, which evaluate these against the supplied data.
+    private static func condition(
+        fromNumeric rule: Components.Schemas.GenericNumericMatchRule
+    ) -> RuleCondition {
+        make(
+            key: rule.value1.value1.rule_type,
+            value: rule.value1.value2.value.map { String($0) },
+            negated: rule.value2.matching?.value1.negated,
+            matchType: rule.value2.matching?.value2.match_type?.rawValue
+        )
+    }
+
+    /// BOOL named leaf (`GenericBoolMatchRule`: `is_desktop`/`is_mobile`/`is_tablet`). NOTE: the stateful
+    /// `bucketed_into_experience` is ALSO `GenericBoolMatchRule` but is deliberately NOT routed here — it
+    /// needs injected decision state (deferred), so it stays in the fail-closed `default`.
+    private static func condition(
+        fromBool rule: Components.Schemas.GenericBoolMatchRule
+    ) -> RuleCondition {
+        make(
+            key: rule.value1.value1.rule_type,
+            value: rule.value1.value2.value.map { String($0) },
+            negated: rule.value2.matching?.value1.negated,
+            matchType: rule.value2.matching?.value2.match_type?.rawValue
+        )
+    }
+
+    /// NUMERIC key-value leaf — explicit `key` (`value3`), like ``condition(fromTextKeyValue:)``.
+    private static func condition(
+        fromNumericKeyValue rule: Components.Schemas.GenericNumericKeyValueMatchRule
+    ) -> RuleCondition {
+        make(
+            key: rule.value3.key ?? "",
+            value: rule.value1.value2.value.map { String($0) },
+            negated: rule.value2.matching?.value1.negated,
+            matchType: rule.value2.matching?.value2.match_type?.rawValue
+        )
+    }
+
+    /// BOOL key-value leaf — explicit `key` (`value3`).
+    private static func condition(
+        fromBoolKeyValue rule: Components.Schemas.GenericBoolKeyValueMatchRule
+    ) -> RuleCondition {
+        make(
+            key: rule.value3.key ?? "",
+            value: rule.value1.value2.value.map { String($0) },
+            negated: rule.value2.matching?.value1.negated,
+            matchType: rule.value2.matching?.value2.match_type?.rawValue
+        )
+    }
+
+    /// `cookie` leaf (`CookieMatchRule`, String value): keyed off `rule_type`; the caller supplies the
+    /// cookie value via attributes/locationProperties under that key.
+    private static func condition(
+        fromCookie rule: Components.Schemas.CookieMatchRule
+    ) -> RuleCondition {
+        make(
+            key: rule.value1.value1.rule_type,
+            value: rule.value1.value2.value,
+            negated: rule.value2.matching?.value1.negated,
+            matchType: rule.value2.matching?.value2.match_type?.rawValue
+        )
+    }
+
+    /// `language` leaf (`LanguageMatchRule`, String language-code value).
+    private static func condition(
+        fromLanguage rule: Components.Schemas.LanguageMatchRule
+    ) -> RuleCondition {
+        make(
+            key: rule.value1.value1.rule_type,
+            value: rule.value1.value2.value,
+            negated: rule.value2.matching?.value1.negated,
+            matchType: rule.value2.matching?.value2.match_type?.rawValue
+        )
+    }
+
+    /// `browser_name` leaf (`BrowserNameMatchRule`, String-backed enum value → `rawValue`).
+    private static func condition(
+        fromBrowserName rule: Components.Schemas.BrowserNameMatchRule
+    ) -> RuleCondition {
+        make(
+            key: rule.value1.value1.rule_type,
+            value: rule.value1.value2.value?.rawValue,
+            negated: rule.value2.matching?.value1.negated,
+            matchType: rule.value2.matching?.value2.match_type?.rawValue
+        )
+    }
+
+    /// `os` leaf (`OsMatchRule`, String-backed enum value → `rawValue`).
+    private static func condition(
+        fromOs rule: Components.Schemas.OsMatchRule
+    ) -> RuleCondition {
+        make(
+            key: rule.value1.value1.rule_type,
+            value: rule.value1.value2.value?.rawValue,
             negated: rule.value2.matching?.value1.negated,
             matchType: rule.value2.matching?.value2.match_type?.rawValue
         )

@@ -144,4 +144,51 @@ struct RuleAdapterTests {
         )
         #expect(manager.evaluate(rules: RuleAdapter.flatten(unmappable), against: ["city": "NYC"]) == false)
     }
+
+    // MARK: - Newly-covered attribute-lookup families (iOS rule-family parity with Android/JS)
+
+    /// The attribute-lookup families that previously degraded fail-closed now flatten to REAL
+    /// conditions. Named families (`visits_count`, `is_desktop`, `cookie`, `language`) key off
+    /// `rule_type`; the key-value families key off their EXPLICIT `key` (mirroring JS `rule['key']` /
+    /// Android `lookupAttribute`). Each `match_type` is a valid rawValue for that family's matching
+    /// enum (cookie uses `CookieMatchingOptions`, which has `matches` not `equals`) so the leaf decodes.
+    @Test("flatten: numeric / bool / cookie / language + key-value families are no longer degraded")
+    func flattenNewlyCoveredFamilies() throws {
+        let audience = try makeAudienceRules(orWhenLeaves: """
+        { "rule_type": "visits_count", "value": 5, "matching": { "match_type": "less" } },
+        { "rule_type": "is_desktop", "value": true, "matching": { "match_type": "equals" } },
+        { "rule_type": "cookie", "value": "abc", "matching": { "match_type": "matches" } },
+        { "rule_type": "language", "value": "en", "matching": { "match_type": "equals" } },
+        { "rule_type": "generic_numeric_key_value", "key": "age", "value": 30,
+          "matching": { "match_type": "lessEqual" } },
+        { "rule_type": "generic_bool_key_value", "key": "vip", "value": true,
+          "matching": { "match_type": "equals" } }
+        """)
+        let byKey = Dictionary(
+            RuleAdapter.flatten(audience).flatMap(\.conditions).map { ($0.key, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        // Named families: keyed off rule_type, operator preserved (a degrade would be an empty matchType).
+        for key in ["visits_count", "is_desktop", "cookie", "language"] {
+            let condition = try #require(byKey[key], "\(key) must flatten to a real condition, not degrade")
+            #expect(!condition.matchType.isEmpty, "\(key) keeps its match operator")
+            #expect(condition.value != nil, "\(key) keeps its value")
+        }
+        // Key-value families resolve their EXPLICIT `key` (not the rule_type).
+        #expect(byKey["age"]?.matchType == "lessEqual", "generic_numeric_key_value keys off 'age'")
+        #expect(byKey["vip"]?.value == "true", "generic_bool_key_value keys off 'vip', bool stringified")
+    }
+
+    /// END-TO-END: a newly-covered family is consumable through the REAL `RuleManager` — an
+    /// `is_desktop equals "true"` leaf matches `["is_desktop": "true"]` and not `["is_desktop": "false"]`.
+    @Test("flatten: a newly-covered (bool) family evaluates through RuleManager")
+    func newlyCoveredFamilyEvaluatesThroughRuleManager() throws {
+        let audience = try makeAudienceRules(
+            orWhenLeaves: #"{ "rule_type": "is_desktop", "value": true, "matching": { "match_type": "equals" } }"#
+        )
+        let manager = RuleManager(logger: MockLogger())
+        let flattened = RuleAdapter.flatten(audience)
+        #expect(manager.evaluate(rules: flattened, against: ["is_desktop": "true"]) == true)
+        #expect(manager.evaluate(rules: flattened, against: ["is_desktop": "false"]) == false)
+    }
 }

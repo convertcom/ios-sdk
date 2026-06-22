@@ -52,6 +52,14 @@ public final class ConvertContext: Sendable {
     /// with no suppression.
     private let attributesStorage: [String: ConvertValue]
 
+    /// Location properties the LOCATION gate evaluates against (an experience's attached `locations`,
+    /// each carrying a rule group). Supplied at `createContext(...:locationProperties:)` and coerced like
+    /// ``attributesStorage``. A SEPARATE map from ``attributesStorage`` (the audience gate) — matching the
+    /// cross-SDK split (JS/PHP `locationProperties` vs `visitorProperties`; Android's `setLocationProperties`).
+    /// Empty by default → an experience WITH `locations` fails the gate (parity with Android's empty-location
+    /// behavior); one with no `locations` is unrestricted.
+    private let locationPropertiesStorage: [String: ConvertValue]
+
     /// The SDK's ONE canonical ``DecisionStore``, injected so every context from the same SDK shares
     /// a single store (sticky variations / goal-dedup / segments converge on one instance). `internal`
     /// — the decisioning engines (Stories 3.4 / 4.2) reach it from within the module; it is not part of
@@ -113,6 +121,12 @@ public final class ConvertContext: Sendable {
         attributesStorage.mapValues { $0.anyValue }
     }
 
+    /// The location properties this context evaluates the location gate against, as a `[String: Any]`
+    /// view (mirrors ``attributes``). Empty unless supplied at `createContext(...:locationProperties:)`.
+    public var locationProperties: [String: Any] {
+        locationPropertiesStorage.mapValues { $0.anyValue }
+    }
+
     /// Binds the context to its creating SDK and its resolved visitor identity. Created only via
     /// ``ConvertSwiftSDK/createContext(visitorId:attributes:)``, which resolves `visitorId` through
     /// ``VisitorContextManager`` and passes the SDK's canonical `decisionStore`.
@@ -144,6 +158,7 @@ public final class ConvertContext: Sendable {
         sdk: ConvertSwiftSDK,
         visitorId: String,
         attributes: [String: ConvertValue],
+        locationProperties: [String: ConvertValue] = [:],
         decisionStore: DecisionStore,
         experienceManager: ExperienceManager,
         featureManager: FeatureManager,
@@ -155,6 +170,7 @@ public final class ConvertContext: Sendable {
         self.visitorId = visitorId
         self.decisionStore = decisionStore
         self.attributesStorage = attributes
+        self.locationPropertiesStorage = locationProperties
         self.experienceManager = experienceManager
         self.featureManager = featureManager
         self.eventSink = eventSink
@@ -182,11 +198,12 @@ public final class ConvertContext: Sendable {
     ///
     /// `accountId` / `projectId` come from the snapshot (`account_id` / `project.id`), defaulting to
     /// `""` when absent — they form the sticky store key `"<accountId>-<projectId>-<visitorId>"`, so an
-    /// absent id yields a stable (if empty-segmented) key rather than a crash. `locationProperties` is
-    /// empty on native: the JS SDK's location model is caller-supplied browser context with no native
-    /// equivalent (the Foundation-only core has no CoreLocation dependency), so the location gate is
-    /// driven only by an explicitly-empty map here (an experience with no `locations` is unrestricted
-    /// and passes); native location targeting is out of scope for this story.
+    /// absent id yields a stable (if empty-segmented) key rather than a crash. The LOCATION gate is fed
+    /// this context's ``locationProperties`` (supplied at `createContext(...:locationProperties:)`, the
+    /// cross-SDK `locationProperties` map — separate from the audience-gate ``attributes``): an
+    /// experience with no `locations` is unrestricted and passes regardless; one WITH `locations` matches
+    /// only when the supplied properties satisfy a location's rules (empty properties → it fails the gate,
+    /// parity with Android's `setLocationProperties`).
     /// - Parameters:
     ///   - key: The experience `key` to look up and bucket.
     ///   - enableTracking: When `false`, the manager suppresses the bucketing enqueue (the variation is
@@ -216,7 +233,7 @@ public final class ConvertContext: Sendable {
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
             attributes: attributes,
-            locationProperties: [:],
+            locationProperties: stringLocationProperties(),
             enableTracking: await sdk.isTrackingEnabled() && enableTracking
         )
     }
@@ -230,7 +247,22 @@ public final class ConvertContext: Sendable {
     /// the immutable ``attributesStorage`` — it allocates a fresh dictionary per call but is invoked
     /// once per `runExperience`, so there is no retained mutable state and the class stays `Sendable`.
     private func stringAttributes() -> [String: String] {
-        attributesStorage.mapValues { value in
+        Self.stringified(attributesStorage)
+    }
+
+    /// The location properties as the `[String: String]` map the LOCATION gate compares against — the
+    /// same stringify rule as ``stringAttributes()`` (shared via ``stringified(_:)`` so the two
+    /// gate-input builders never diverge). Empty when no location properties were supplied to the context.
+    private func stringLocationProperties() -> [String: String] {
+        Self.stringified(locationPropertiesStorage)
+    }
+
+    /// Stringifies a coerced ``ConvertValue`` map to the `[String: String]` form the rule/segment engine
+    /// compares against (a string stays itself; int/double/bool render via their `String(_:)` initialisers).
+    /// Shared by ``stringAttributes()`` (audience gate) and ``stringLocationProperties()`` (location gate)
+    /// so neither re-derives the switch (DRY — keeps the diff under the SonarQube CPD gate).
+    private static func stringified(_ values: [String: ConvertValue]) -> [String: String] {
+        values.mapValues { value in
             switch value {
             case .string(let string): return string
             case .int(let int): return String(int)
@@ -288,8 +320,8 @@ public final class ConvertContext: Sendable {
     /// to the bulk path, exactly as ``runExperience(_:enableTracking:)`` threads it (run-all mirrors
     /// run-single, not diverge): the per-experience bucketing enqueue is suppressed when EITHER flag is
     /// false (Story 5.4 / FR6), while each variation is still selected, persisted, and fired. `accountId` /
-    /// `projectId` come from the snapshot (defaulting to `""` when absent), and `locationProperties` is
-    /// empty on native — identical to the single-experience path. Never throws.
+    /// `projectId` come from the snapshot (defaulting to `""` when absent), and `locationProperties` come
+    /// from this context — identical to the single-experience path. Never throws.
     /// - Parameter enableTracking: When `false`, variations are still computed but the per-experience
     ///   bucketing enqueue is suppressed (passed through to the bulk path); defaults to `true`.
     /// - Returns: The bucketed ``Variation`` for each eligible experience in config order, or `[]`
@@ -313,7 +345,7 @@ public final class ConvertContext: Sendable {
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
             attributes: attributes,
-            locationProperties: [:],
+            locationProperties: stringLocationProperties(),
             enableTracking: await sdk.isTrackingEnabled() && enableTracking
         )
     }
@@ -336,7 +368,7 @@ public final class ConvertContext: Sendable {
     /// Never throws.
     ///
     /// `accountId` / `projectId` come from the snapshot (defaulting to `""` when absent) and
-    /// `locationProperties` is empty on native — identical to ``runExperience(_:enableTracking:)``.
+    /// `locationProperties` come from this context — as on ``runExperience(_:enableTracking:)``.
     /// Unlike the experience API, this method takes NO `enableTracking` parameter (Android parity, F-171):
     /// the feature path is not per-call tracking-gated; feature evaluation delegates to ``FeatureManager``,
     /// which lets the underlying experience bucketing track per its own contract.
@@ -371,7 +403,7 @@ public final class ConvertContext: Sendable {
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
             attributes: attributes,
-            locationProperties: [:]
+            locationProperties: stringLocationProperties()
         )
     }
 
@@ -389,8 +421,8 @@ public final class ConvertContext: Sendable {
     /// the feature twin of ``runExperiences(enableTracking:)``. Otherwise delegates to the injected
     /// ``FeatureManager/evaluateAllFeatures(in:visitorId:accountId:projectId:attributes:locationProperties:)``,
     /// which enumerates `config.features` and resolves each through the single-feature path. `accountId` /
-    /// `projectId` come from the snapshot (defaulting to `""` when absent) and `locationProperties` is
-    /// empty on native — identical to the single-feature path. Never throws.
+    /// `projectId` come from the snapshot (defaulting to `""` when absent) and `locationProperties` come
+    /// from this context — identical to the single-feature path. Never throws.
     ///
     /// As with ``runFeature(_:)``, this method takes NO `enableTracking` parameter (Android parity, F-171):
     /// the feature path is not per-call tracking-gated.
@@ -411,7 +443,7 @@ public final class ConvertContext: Sendable {
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
             attributes: attributes,
-            locationProperties: [:]
+            locationProperties: stringLocationProperties()
         )
     }
 

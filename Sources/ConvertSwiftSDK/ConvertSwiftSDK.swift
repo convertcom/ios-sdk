@@ -607,6 +607,8 @@ public final class ConvertSwiftSDK: Sendable {
     /// // given a constructed `sdk`
     /// let context = sdk.createContext()                       // anonymous, auto-UUID
     /// let known = sdk.createContext(visitorId: "user-42", attributes: ["plan": "pro"])
+    /// // Activate a location-targeted experience by supplying the location's expected property:
+    /// let onPricing = sdk.createContext(locationProperties: ["location": "pricing"])
     /// ```
     ///
     /// The effective visitor ID is resolved NOW through `VisitorContextManager`: an explicit
@@ -618,8 +620,16 @@ public final class ConvertSwiftSDK: Sendable {
     /// The downstream bucketing/segmentation engines that CONSUME this identity arrive in Epics 3–4.
     /// - Parameters:
     ///   - visitorId: Optional caller-supplied visitor identifier; when non-empty it is used verbatim.
-    ///   - attributes: Optional visitor attributes for segmentation; non-scalar values are dropped.
-    public func createContext(visitorId: String? = nil, attributes: [String: Any]? = nil) -> ConvertContext {
+    ///   - attributes: Optional visitor attributes for the AUDIENCE gate; non-scalar values are dropped.
+    ///   - locationProperties: Optional properties for the LOCATION gate — a key→value map matched against
+    ///     each targeted location's rules (e.g. `["location": "pricing"]`). A separate map from `attributes`
+    ///     (parity with JS/PHP `locationProperties` and Android `setLocationProperties`); non-scalar values
+    ///     are dropped. Omit (or pass `nil`) to leave it empty — location-targeted experiences then don't bucket.
+    public func createContext(
+        visitorId: String? = nil,
+        attributes: [String: Any]? = nil,
+        locationProperties: [String: Any]? = nil
+    ) -> ConvertContext {
         // The SDK's injected `logger` (default ``NoopLogger`` — the production logging path until a real
         // OSLog sink ships; the conversion-tracking suite injects a `MockLogger`). Shared by the
         // visitor-ID resolver, the attribute coercion below, AND handed to the `ConvertContext` so its
@@ -633,30 +643,36 @@ public final class ConvertSwiftSDK: Sendable {
             keyValueStore: keyValueStore,
             logger: logger
         )
-        // Coerce the loosely-typed attributes into the closed `ConvertValue` set HERE (where the logger
-        // is in scope) rather than inside `ConvertContext`, so a dropped key can be logged at DEBUG —
-        // matching the SDK's "log, never crash" pattern. Per key, any value that is not one of the four
-        // supported scalars (nested dict/array/object/NSNull) is dropped — it is not a segment-matchable
-        // scalar — while supported siblings in the same map survive (per-key filter, never whole-map
-        // rejection). The public parameter stays `[String: Any]?` and `ConvertContext.attributes` stays
-        // `[String: Any]`, so the consumer surface is unchanged.
-        var coercedAttributes: [String: ConvertValue] = [:]
-        for (key, value) in attributes ?? [:] {
-            if let convertValue = ConvertValue(any: value) {
-                coercedAttributes[key] = convertValue
-            } else {
-                logger.log(
-                    level: .debug,
-                    type: "ConvertContext",
-                    method: "createContext",
-                    message: "attribute '\(key)' has unsupported type — dropped"
-                )
+        // Coerce each loosely-typed map into the closed `ConvertValue` set HERE (where the logger is in
+        // scope) rather than inside `ConvertContext`, so a dropped key can be logged at DEBUG — matching
+        // the SDK's "log, never crash" pattern. Per key, any value that is not one of the four supported
+        // scalars (nested dict/array/object/NSNull) is dropped while supported siblings in the same map
+        // survive (per-key filter, never whole-map rejection). Shared by `attributes` (audience gate) and
+        // `locationProperties` (location gate) so neither re-derives the loop. The public parameters stay
+        // `[String: Any]?` and the context getters stay `[String: Any]`, so the consumer surface is unchanged.
+        func coerce(_ raw: [String: Any]?, label: String) -> [String: ConvertValue] {
+            var coerced: [String: ConvertValue] = [:]
+            for (key, value) in raw ?? [:] {
+                if let convertValue = ConvertValue(any: value) {
+                    coerced[key] = convertValue
+                } else {
+                    logger.log(
+                        level: .debug,
+                        type: "ConvertContext",
+                        method: "createContext",
+                        message: "\(label) '\(key)' has unsupported type — dropped"
+                    )
+                }
             }
+            return coerced
         }
+        let coercedAttributes = coerce(attributes, label: "attribute")
+        let coercedLocationProperties = coerce(locationProperties, label: "location property")
         return ConvertContext(
             sdk: self,
             visitorId: resolvedId,
             attributes: coercedAttributes,
+            locationProperties: coercedLocationProperties,
             decisionStore: decisionStore,
             experienceManager: experienceManager,
             featureManager: featureManager,
