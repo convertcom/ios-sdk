@@ -141,3 +141,52 @@ internal struct BucketingManager {
         return nil
     }
 }
+
+// MARK: - Version gate (qs-01, cross-SDK bucketing contract v12)
+
+extension BucketingManager {
+    /// Routes to the ANCHORED pass (contract `version > 11`) via ``AnchoredBucketing``, or
+    /// delegates VERBATIM to the existing packed ``bucket(visitorId:experience:enableTracking:)``
+    /// above for `version <= 11` / missing / non-numeric (a `Double?` can never decode a
+    /// non-numeric wire value as non-nil, so "non-numeric" collapses into "missing" at this
+    /// layer; a `NaN` version — not reachable via JSON but defensively handled — also falls
+    /// through here since every comparison against `NaN` is `false`). The packed `eligible` walk
+    /// and ``selectBucket(weights:value:)`` above are UNTOUCHED (AC6) — this is a pure ADDITIONAL
+    /// branch, never a modification of the packed one.
+    ///
+    /// PHASE 1 (RED): ``AnchoredBucketing/selectBucket(variations:value:)`` is a deliberate STUB
+    /// that always returns `nil`, so every `version > 11` call below currently resolves to
+    /// not-bucketed regardless of input. Mapping a future non-nil selection back onto a
+    /// ``Variation`` and performing the tracking enqueue (mirroring packed steps 6-9, AC9's
+    /// unchanged event shape) is intentionally NOT written yet — it is unreachable while the
+    /// stub returns `nil`, and Phase 2 (GREEN) adds it alongside the real algorithm. Only the
+    /// gate and the shared hash/scale computation (steps 2-4, byte-for-byte identical to
+    /// `bucket(...)` — AC9: hash/seed/scaling are unchanged by this feature) are final here.
+    func bucketVersionGated(
+        visitorId: String,
+        experience: Components.Schemas.ConfigExperience,
+        enableTracking: Bool = true
+    ) async -> Variation? {
+        guard let version = experience.version, version > 11 else {
+            return await bucket(visitorId: visitorId, experience: experience, enableTracking: enableTracking)
+        }
+
+        // An experience with no id cannot be hashed or attributed — degrade to nil (mirrors
+        // packed step 1).
+        guard let experienceId = experience.id else {
+            return nil
+        }
+
+        // Hash "<experienceId><visitorId>" with the shared seed, project onto 0..<10000 —
+        // byte-for-byte identical to `bucket(...)`'s steps 2-4.
+        let input = Array("\(experienceId)\(visitorId)".utf8)
+        let hashValue = MurmurHash3.hash(input, seed: Defaults.hashSeed)
+        let bucketValue = Int(
+            Double(hashValue) / Double(Defaults.maxHash) * Double(Defaults.maxTraffic)
+        )
+
+        // PHASE 1 (RED) STUB — always nil; see the doc comment above.
+        _ = AnchoredBucketing.selectBucket(variations: experience.variations ?? [], value: bucketValue)
+        return nil
+    }
+}
