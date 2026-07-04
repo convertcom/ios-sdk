@@ -82,13 +82,22 @@ internal struct BucketingManager {
             Double(hashValue) / Double(Defaults.maxHash) * Double(Defaults.maxTraffic)
         )
 
-        // 5. Keep only variations that carry BOTH an id and a traffic_allocation — a variation
-        //    missing either can't be bucketed into. `traffic_allocation` is a 0–100 PERCENTAGE
-        //    (see SCALE NOTE), so it is scaled `×100` into the 0..<10000 bucket-unit space the
-        //    selector accumulates in — matching the JS/Android SDKs. Order is preserved.
+        // 5. Keep only variations that carry an id — a variation missing one can't be bucketed
+        //    into. An omitted/NaN `traffic_allocation` defaults to 100.0 (qs-01 Phase 2 GREEN
+        //    resolution — matches the JS reference's packed builder,
+        //    `data-manager.ts:575`, `bucket[id] = traffic_allocation || 100.0`, whose include
+        //    filter at L568-572 treats `isNaN(ta)` as included). `traffic_allocation` is a 0–100
+        //    PERCENTAGE (see SCALE NOTE), so it is scaled `×100` into the 0..<10000 bucket-unit
+        //    space the selector accumulates in — matching the JS/Android SDKs. Order is preserved.
         let eligible: [WeightedVariation] = (experience.variations ?? []).compactMap { variation in
-            guard let key = variation.id, let allocation = variation.traffic_allocation else {
+            guard let key = variation.id else {
                 return nil
+            }
+            let allocation: Double
+            if let rawAllocation = variation.traffic_allocation, !rawAllocation.isNaN {
+                allocation = rawAllocation
+            } else {
+                allocation = 100.0
             }
             return WeightedVariation(key: key, weight: Int(allocation * 100), config: variation)
         }
@@ -154,14 +163,10 @@ extension BucketingManager {
     /// and ``selectBucket(weights:value:)`` above are UNTOUCHED (AC6) — this is a pure ADDITIONAL
     /// branch, never a modification of the packed one.
     ///
-    /// PHASE 1 (RED): ``AnchoredBucketing/selectBucket(variations:value:)`` is a deliberate STUB
-    /// that always returns `nil`, so every `version > 11` call below currently resolves to
-    /// not-bucketed regardless of input. Mapping a future non-nil selection back onto a
-    /// ``Variation`` and performing the tracking enqueue (mirroring packed steps 6-9, AC9's
-    /// unchanged event shape) is intentionally NOT written yet — it is unreachable while the
-    /// stub returns `nil`, and Phase 2 (GREEN) adds it alongside the real algorithm. Only the
-    /// gate and the shared hash/scale computation (steps 2-4, byte-for-byte identical to
-    /// `bucket(...)` — AC9: hash/seed/scaling are unchanged by this feature) are final here.
+    /// On a successful anchored selection, maps the id back onto its config and enqueues exactly
+    /// one `.bucketing` event when `enableTracking` — mirroring the packed pass's steps 6-9
+    /// (AC9: unchanged event shape). No selection (not-bucketed) degrades to `nil`, enqueuing
+    /// nothing, same as the packed pass.
     func bucketVersionGated(
         visitorId: String,
         experience: Components.Schemas.ConfigExperience,
@@ -185,8 +190,33 @@ extension BucketingManager {
             Double(hashValue) / Double(Defaults.maxHash) * Double(Defaults.maxTraffic)
         )
 
-        // PHASE 1 (RED) STUB — always nil; see the doc comment above.
-        _ = AnchoredBucketing.selectBucket(variations: experience.variations ?? [], value: bucketValue)
-        return nil
+        // Select under the ANCHORED layout — every variation passed through unfiltered (the
+        // anchored algorithm itself interprets active/inactive and NaN/absent allocation).
+        let allVariations = experience.variations ?? []
+        guard let selectedId = AnchoredBucketing.selectBucket(variations: allVariations, value: bucketValue) else {
+            return nil
+        }
+
+        // Map the selected id back onto its config and build the result variation (mirrors
+        // packed step 7).
+        guard let selected = allVariations.first(where: { $0.id == selectedId }) else {
+            return nil
+        }
+        let variation = Variation(
+            id: selected.id ?? "",
+            key: selected.key ?? "",
+            experienceId: experienceId,
+            experienceKey: experience.key ?? ""
+        )
+
+        // Emit exactly one bucketing event when tracking is enabled; otherwise stay silent
+        // (mirrors packed step 8, AC9's unchanged event shape).
+        if enableTracking {
+            let data = BucketingEventData(experienceId: experienceId, variationId: selected.id ?? "")
+            await eventSink.enqueue(.bucketing(data), for: visitorId, segments: nil)
+        }
+
+        // Return the resolved variation (mirrors packed step 9).
+        return variation
     }
 }
