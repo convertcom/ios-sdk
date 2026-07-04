@@ -1,5 +1,5 @@
 // Tests/ConvertSwiftSDKCoreTests/Bucketing/AnchoredBucketingParityTests.swift
-// RED-phase suite for qs-01 (anchored bucketing layout, cross-SDK bucketing contract v12).
+// Cross-SDK anchored/packed bucketing parity suite for qs-01 (cross-SDK bucketing contract v12).
 // Spec of record: `2026-06-09-convert-ios-sdk/qs-01-anchored-bucketing-layout.md`.
 //
 // ── Why a NEW file (not an extension of HashParityTests.swift) ───────────────────────────
@@ -7,7 +7,7 @@
 // selector) directly over `hash-parity-vectors.json` (hash+selectBucket only, no version gate, no
 // ConfigExperience). `cross-sdk-bucketing-vectors.json` is structurally different: it carries a
 // full `{experienceId, visitorId, version, variations:[{id, traffic_allocation, status?}]}` shape
-// and must be driven end-to-end through the NEW version-gated entry point
+// and must be driven end-to-end through the version-gated entry point
 // (`BucketingManager.bucketVersionGated`), asserting the resolved variation id/nil. Different
 // fixture shape, different subject under test → a separate file. The AC1/AC4/AC5/AC6/AC8/AC9
 // focused tests (not derivable from this fixture alone) live in the sibling
@@ -20,18 +20,12 @@
 // the suite struct as well would put `CodingKeys` two levels deep, tripping SwiftLint's `nesting`
 // rule (max 1 level).
 //
-// ── Expected RED state ─────────────────────────────────────────────────────────────────
-// `AnchoredBucketing.selectBucket(variations:value:)` is a deliberate Phase-1 STUB that always
-// returns `nil`. Every v12 (anchored, `version > 11`) golden vector whose `expected` is a REAL
-// variation id therefore FAILS. Every v11 (packed) vector already resolves correctly, because
-// `bucketVersionGated` delegates v11 verbatim to the EXISTING, untouched `bucket(...)` — EXCEPT
-// the one `[nan-default] v11 ... traffic_allocation OMITTED` vector, which fails for a DIFFERENT,
-// PRE-EXISTING reason: the current packed `eligible` walk (`BucketingManager.bucket`, step 5)
-// requires a non-nil `traffic_allocation` and drops any variation missing it, whereas this new
-// fixture asserts the packed pass ALSO defaults an omitted/NaN `traffic_allocation` to 100.0 —
-// see the decision log (`qs-01-decision-log.md`) for the full write-up; this is a genuine spec/
-// code conflict surfaced, not silently patched, since the spec explicitly forbids touching the
-// packed `eligible`/`selectBucket` walk in this pass.
+// ── Parity coverage ───────────────────────────────────────────────────────────────────────
+// All 59 golden vectors resolve through `bucketVersionGated`: v12 (anchored, `version > 11`)
+// vectors route to `AnchoredBucketing.selectBucket`; v11 (packed) vectors delegate verbatim to
+// the existing `bucket(...)` (AC6). The packed `eligible` walk (`BucketingManager.bucket`, step 5)
+// defaults an omitted/NaN `traffic_allocation` to 100.0, matching the anchored pass and the JS
+// reference's `data-manager.ts:575` builder — see `qs-01-decision-log.md` for the write-up.
 //
 // ── SonarQube `new_duplicated_lines_density` discipline ───────────────────────────────────
 // ONE parameterized `@Test(arguments:)` drives all 59 golden vectors — no per-vector duplication.

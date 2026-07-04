@@ -1,5 +1,5 @@
 // Tests/ConvertSwiftSDKCoreTests/Bucketing/AnchoredBucketingGateAndBoundaryTests.swift
-// RED-phase suite for qs-01 (anchored bucketing layout, cross-SDK bucketing contract v12).
+// Anchored bucketing layout test suite for qs-01 (cross-SDK bucketing contract v12).
 // Spec of record: `2026-06-09-convert-ios-sdk/qs-01-anchored-bucketing-layout.md`.
 //
 // Sibling of `AnchoredBucketingParityTests.swift` (the 59-vector golden-fixture sweep, AC7).
@@ -16,13 +16,6 @@
 // `BoundaryVariationSpec`/`BoundaryVector` and the boundary-vector arrays live at file scope so
 // the `@Suite` struct's body stays under SwiftLint's `type_body_length` gate, and so the whole
 // file stays under `file_length` — splitting data from behavior, not duplicating either.
-//
-// ── Expected RED state ─────────────────────────────────────────────────────────────────
-// `AnchoredBucketing.selectBucket(variations:value:)` is a deliberate Phase-1 STUB that always
-// returns `nil`. Every boundary/gate case whose expectation is a REAL variation id therefore
-// FAILS; every not-bucketed (`nil`-expected) case already passes (both under the stub and under
-// the eventual real algorithm) — that is correct test design, not a gap. AC6/AC8 are structural
-// locks and pass today.
 //
 // ── SonarQube `new_duplicated_lines_density` discipline ───────────────────────────────────
 // ONE parameterized `@Test(arguments:)` drives the AC1 gate sweep, a SECOND drives the full
@@ -220,9 +213,9 @@ struct AnchoredBucketingGateAndBoundaryTests {
     /// AC1: `version > 11` routes to ANCHORED; `version <= 11` or missing routes to PACKED. Every
     /// case uses the sole 100%-allocation arm (see `makeSingleFullAllocationExperience`), whose
     /// correct/final answer is `"only"` under EITHER layout — so a non-`"only"` result proves the
-    /// gate routed somewhere broken. RED: the v12 case fails (the anchored STUB returns `nil`)
-    /// until Phase 2 (GREEN) implements `AnchoredBucketing.selectBucket`; the packed cases already
-    /// pass (AC6 — they delegate, untouched, to the existing `bucket(...)`).
+    /// gate routed somewhere broken. The v12 case resolves through the real
+    /// `AnchoredBucketing.selectBucket`; the packed cases resolve through AC6's verbatim
+    /// delegation to the existing `bucket(...)`.
     @Test(
         "AC1 — version gate: >11 routes to ANCHORED, <=11/missing routes to PACKED",
         arguments: [
@@ -245,9 +238,8 @@ struct AnchoredBucketingGateAndBoundaryTests {
 
     /// AC4/AC5, driven directly against the pure `AnchoredBucketing.selectBucket` selector (no
     /// hash, no `BucketingManager`) at hand-picked `value`s the golden-vector fixture cannot
-    /// target precisely. RED: every case whose `expected` is a real id fails against the
-    /// always-`nil` Phase-1 stub; the not-bucketed cases already pass (both under the stub and
-    /// under the real algorithm).
+    /// target precisely. Every case — whether `expected` is a real variation id or `nil` —
+    /// resolves through the real anchored selector.
     @Test(
         "AC4/AC5 — anchored selector boundaries, defaults, and stops",
         arguments: anchoredBoundaryVectors
@@ -326,9 +318,8 @@ struct AnchoredBucketingGateAndBoundaryTests {
     // MARK: - AC9 — no event/API drift
 
     /// AC9: a successful ANCHORED bucket must enqueue exactly ONE `.bucketing`-tagged event —
-    /// same shape as the packed pass. RED: the anchored STUB returns `nil`, so nothing is
-    /// enqueued and both assertions fail until Phase 2 (GREEN) implements the real selector AND
-    /// the result-mapping/enqueue plumbing in `bucketVersionGated`.
+    /// same shape as the packed pass. The real selector resolves the variation, and
+    /// `bucketVersionGated`'s result-mapping/enqueue plumbing emits the event on that success.
     @Test("AC9 — a successful anchored bucket enqueues exactly one unchanged-shape bucketing event")
     func anchoredBucketPreservesEventShape() async {
         let sink = MockEventSink()
