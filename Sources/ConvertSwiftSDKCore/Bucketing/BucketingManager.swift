@@ -203,7 +203,7 @@ extension BucketingManager {
             return nil
         }
         let variation = Variation(
-            id: selected.id ?? "",
+            id: selectedId,
             key: selected.key ?? "",
             experienceId: experienceId,
             experienceKey: experience.key ?? ""
@@ -212,7 +212,7 @@ extension BucketingManager {
         // Emit exactly one bucketing event when tracking is enabled; otherwise stay silent
         // (mirrors packed step 8, AC9's unchanged event shape).
         if enableTracking {
-            let data = BucketingEventData(experienceId: experienceId, variationId: selected.id ?? "")
+            let data = BucketingEventData(experienceId: experienceId, variationId: selectedId)
             await eventSink.enqueue(.bucketing(data), for: visitorId, segments: nil)
         }
 

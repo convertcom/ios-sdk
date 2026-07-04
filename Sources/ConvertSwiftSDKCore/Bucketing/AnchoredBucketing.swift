@@ -85,11 +85,14 @@ internal enum AnchoredBucketing {
             guard let id = variation.id else {
                 return nil
             }
-            let rawAllocation = variation.traffic_allocation
-            let isDefaulted = rawAllocation == nil || rawAllocation?.isNaN == true
-            let allocation = isDefaulted ? 100.0 : (rawAllocation ?? 100.0)
+            let allocation: Double
+            if let rawAllocation = variation.traffic_allocation, !rawAllocation.isNaN {
+                allocation = rawAllocation
+            } else {
+                allocation = 100.0
+            }
             let statusActive = variation.status == nil || variation.status == .running
-            let active = statusActive && (allocation > 0 || isDefaulted)
+            let active = statusActive && allocation > 0
             return Allocation(id: id, allocation: allocation, active: active)
         }
     }
