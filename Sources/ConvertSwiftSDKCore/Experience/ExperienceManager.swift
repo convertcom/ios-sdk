@@ -12,8 +12,10 @@
 //      the bd-d4p empty-list rule); a non-empty set's rules are flattened and OR-combined across
 //      every attached audience, then evaluated against `attributes` (a fail returns nil).
 //   4. LOCATION gate: the same shape over `locations` against `locationProperties` (empty ⇒ pass).
-//   5. BUCKET via ``BucketingManager/bucket(visitorId:experience:enableTracking:)`` — that call
-//      owns the single bucketing enqueue (driven by `enableTracking`); this type NEVER enqueues.
+//   5. BUCKET via ``BucketingManager/bucketVersionGated(visitorId:experience:enableTracking:)``
+//      (qs-01: routes `version > 11` to the ANCHORED layout, `version <= 11`/missing delegates
+//      verbatim to the packed walk) — that call owns the single bucketing enqueue (driven by
+//      `enableTracking`); this type NEVER enqueues.
 //   6. PERSIST the new decision; FIRE `.bucketing` on the bus — only on a NEW decision.
 //
 // SCOPE (bd-d4p) — the audience/location combine is a FLAT OR across the attached objects'
@@ -169,8 +171,10 @@ public struct ExperienceManager: Sendable {
             return nil
         }
 
-        // 5. BUCKET — this performs the single enqueue when `enableTracking`; a miss returns nil.
-        guard let variation = await bucketingManager.bucket(
+        // 5. BUCKET — routed through the version gate (qs-01): `version > 11` runs the ANCHORED
+        //    layout, `version <= 11`/missing delegates verbatim to the packed walk (AC6). This
+        //    performs the single enqueue when `enableTracking`; a miss returns nil.
+        guard let variation = await bucketingManager.bucketVersionGated(
             visitorId: visitorId, experience: full, enableTracking: enableTracking
         ) else {
             return nil
