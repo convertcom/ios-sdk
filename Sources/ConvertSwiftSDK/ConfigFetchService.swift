@@ -95,11 +95,18 @@ public struct ConfigFetchService: ConfigProviding {
     }
 
     /// Assembles `{apiConfigEndpoint}/config/{sdkKey}` and appends `environment={value}`
-    /// (when set) and `_conv_low_cache=1` (when `networkCacheLevel == .low`).
+    /// (when set), `debug_token={value}` (qs-02 IOS-1, when set), and `_conv_low_cache=1`
+    /// (when `networkCacheLevel == .low` OR a `debugToken` is set).
     ///
     /// `apiConfigEndpoint` carries NO trailing slash (References F-029), so the route
     /// path supplies the leading "/". `URLComponents` joins the query items with "&"
     /// and percent-encodes them; when there are no items the URL has no "?" segment.
+    ///
+    /// A `debugToken` FORCES `_conv_low_cache=1` (a QA debug session must never serve a
+    /// stale CDN-cached config) regardless of the configured `networkCacheLevel`. The
+    /// force and the `.low` cache level are combined into ONE `||` condition guarding a
+    /// SINGLE append, so `_conv_low_cache=1` is emitted exactly once even when both a
+    /// `debugToken` is set AND `networkCacheLevel == .low` — never twice.
     /// - Returns: The fully-built config URL.
     /// - Throws: ``ConvertError/invalidConfiguration(_:)`` if the endpoint string is
     ///   malformed or the components cannot resolve to a URL.
@@ -113,7 +120,10 @@ public struct ConfigFetchService: ConfigProviding {
         if let env = configuration.environment {
             items.append(URLQueryItem(name: "environment", value: env))
         }
-        if configuration.networkCacheLevel == .low {
+        if let debugToken = configuration.debugToken {
+            items.append(URLQueryItem(name: "debug_token", value: debugToken))
+        }
+        if configuration.networkCacheLevel == .low || configuration.debugToken != nil {
             items.append(URLQueryItem(name: "_conv_low_cache", value: "1"))
         }
         if !items.isEmpty {
@@ -150,8 +160,15 @@ public struct ConfigFetchService: ConfigProviding {
     /// silently (nothing to log, nothing to delete). When the read SUCCEEDS but the
     /// bytes fail to decode (corrupt content), a WARN is logged, the corrupt file is
     /// deleted (so the next load re-fetches), and `nil` is returned (AC4).
-    /// - Returns: The decoded config, or `nil` on a miss / corrupt cache.
+    ///
+    /// With a `debugToken` configured (qs-02 IOS-1, AC2), the disk cache is skipped
+    /// entirely — this returns `nil` without touching `fileStore` at all, so a QA debug
+    /// session never resurrects a stale on-disk config from a prior ordinary session.
+    /// - Returns: The decoded config, or `nil` on a miss / corrupt cache / debug session.
     public func loadCachedConfig() async -> ProjectConfig? {
+        if configuration.debugToken != nil {
+            return nil
+        }
         let data: Data
         do {
             data = try await fileStore.read(from: cacheURL)
@@ -231,15 +248,19 @@ public struct ConfigFetchService: ConfigProviding {
 
         // Write-through the VERBATIM response bytes (inherited contract #4): the exact
         // `data` from get(), NOT a re-encode of `config`. A write failure is non-fatal —
-        // log a WARN and still return the decoded config.
-        do {
-            try await fileStore.write(data, to: cacheURL)
-        } catch {
-            warn(
-                method: "fetchLiveConfig",
-                reason: "cache write failed",
-                detail: String(describing: error)
-            )
+        // log a WARN and still return the decoded config. Skipped entirely when a
+        // `debugToken` is configured (qs-02 IOS-1, AC2): a QA debug fetch is never
+        // persisted to disk.
+        if configuration.debugToken == nil {
+            do {
+                try await fileStore.write(data, to: cacheURL)
+            } catch {
+                warn(
+                    method: "fetchLiveConfig",
+                    reason: "cache write failed",
+                    detail: String(describing: error)
+                )
+            }
         }
 
         return config

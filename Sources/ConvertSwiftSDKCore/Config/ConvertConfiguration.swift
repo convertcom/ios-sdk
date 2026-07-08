@@ -56,6 +56,11 @@ public struct ConvertConfiguration: Sendable {
     public let networkTracking: Bool
     /// CDN cache level applied to config fetches.
     public let networkCacheLevel: CacheLevel
+    /// Optional QA debug token (qs-02 IOS-1). When set, config fetches carry a
+    /// `debug_token=<value>` query param, force the CDN's low-cache bypass regardless of
+    /// ``networkCacheLevel``, and are never read from or written to the on-disk cache —
+    /// `nil` selects the ordinary (non-debug) transport and caching behavior.
+    public let debugToken: String?
 
     /// Creates a configuration, defaulting every field except ``sdkKey`` to its JS-parity value.
     /// - Parameters:
@@ -76,6 +81,7 @@ public struct ConvertConfiguration: Sendable {
     ///   - logLevel: Log severity threshold.
     ///   - networkTracking: Whether event/network tracking is enabled.
     ///   - networkCacheLevel: CDN cache level for config fetches.
+    ///   - debugToken: Optional QA debug token; defaults to `nil` (ordinary transport/caching).
     public init(
         sdkKey: String,
         sdkKeySecret: String? = nil,
@@ -91,7 +97,8 @@ public struct ConvertConfiguration: Sendable {
         ruleNegation: Bool = false,
         logLevel: LogLevel = .warn,
         networkTracking: Bool = true,
-        networkCacheLevel: CacheLevel = .normal
+        networkCacheLevel: CacheLevel = .normal,
+        debugToken: String? = nil
     ) {
         self.sdkKey = sdkKey
         self.sdkKeySecret = sdkKeySecret
@@ -108,5 +115,6 @@ public struct ConvertConfiguration: Sendable {
         self.logLevel = logLevel
         self.networkTracking = networkTracking
         self.networkCacheLevel = networkCacheLevel
+        self.debugToken = debugToken
     }
 }
