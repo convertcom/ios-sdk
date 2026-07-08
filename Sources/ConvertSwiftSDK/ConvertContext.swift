@@ -460,6 +460,13 @@ public final class ConvertContext: Sendable {
     /// `network.tracking` is off, the PRODUCTION ``EventQueue`` drops that entry at its own static gate
     /// (`trackingEnabled`), so no event reaches the network — the suppression happens one seam later than
     /// on the experience/conversion paths, not at this caller.
+    ///
+    /// qs-02 IOS-fix2 / contract §2 (zero-trace): a preview target on THIS context (any key, not just a
+    /// carrying experience's) still suppresses the bucketing enqueue and the sticky WRITE for whichever
+    /// experience carries this feature — gated on the PER-CONTEXT `previewState`, never the global
+    /// `network.tracking` flag (deliberately NOT combined with it, mirroring the scope asymmetry above:
+    /// the feature path stays uncoupled from `isTrackingEnabled()`). The feature itself still RESOLVES
+    /// normally (coherent rendering) — only tracking/persistence at the source is suppressed.
     /// - Parameter key: The feature `key` to look up and resolve.
     /// - Returns: The resolved ``Feature`` — `.enabled` with typed variables, or `.disabled` on a
     ///   missing snapshot / miss.
@@ -474,6 +481,9 @@ public final class ConvertContext: Sendable {
         // runExperience does — JS context.ts calls getVisitorProperties identically on the feature path.
         let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
         let attributes = mergedAttributes(stringAttributes(), with: segments)
+        // qs-02 IOS-fix2 (AC6 zero-trace): gated on the PER-CONTEXT `previewState`, never
+        // `isTrackingEnabled()` (global) — see the doc comment above for why this is NOT combined
+        // with the global flag on this path.
         return await featureManager.evaluateFeature(
             key: key,
             in: config,
@@ -481,7 +491,9 @@ public final class ConvertContext: Sendable {
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
             attributes: attributes,
-            locationProperties: stringLocationProperties()
+            locationProperties: stringLocationProperties(),
+            enableTracking: await !previewState.isPreviewActive,
+            persistDecision: await !previewState.isPreviewActive
         )
     }
 
@@ -504,6 +516,10 @@ public final class ConvertContext: Sendable {
     ///
     /// As with ``runFeature(_:)``, this method takes NO `enableTracking` parameter (Android parity, F-171):
     /// the feature path is not per-call tracking-gated.
+    ///
+    /// qs-02 IOS-fix2 / contract §2 (zero-trace): same per-context `previewState` gate as
+    /// ``runFeature(_:)`` applies to every feature evaluated here — see its doc comment for the scope
+    /// asymmetry rationale (deliberately NOT combined with `isTrackingEnabled()`).
     /// - Returns: One ``Feature`` per `config.features` entry, in config order; `[]` on a missing
     ///   snapshot.
     public func runFeatures() async -> [Feature] {
@@ -515,13 +531,17 @@ public final class ConvertContext: Sendable {
         // persisted segments.
         let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
         let attributes = mergedAttributes(stringAttributes(), with: segments)
+        // qs-02 IOS-fix2 (AC6 zero-trace): gated on the PER-CONTEXT `previewState`, never the global
+        // `isTrackingEnabled()` — mirrors `runFeature(_:)`.
         return await featureManager.evaluateAllFeatures(
             in: config,
             visitorId: visitorId,
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
             attributes: attributes,
-            locationProperties: stringLocationProperties()
+            locationProperties: stringLocationProperties(),
+            enableTracking: await !previewState.isPreviewActive,
+            persistDecision: await !previewState.isPreviewActive
         )
     }
 
