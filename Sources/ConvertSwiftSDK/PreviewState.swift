@@ -69,6 +69,17 @@ actor PreviewState {
         liveEntries(at: clock.now).count
     }
 
+    /// Whether a preview target is CURRENTLY set on the owning context (qs-02 IOS-6, AC6 zero-trace
+    /// gate): `true` once ``setForcedVariation(_:)`` has recorded a resolved target, `false` when no
+    /// ``ConvertContext/setPreview(experienceId:variationId:)`` call has yet succeeded. Mirrors
+    /// ``forcedVariation``'s own nil-ness rather than tracking a separate flag, so the two can never
+    /// drift out of sync. `ConvertContext` reads this to gate the bucketing enqueue, the sticky-decision
+    /// write, and conversion tracking to the SOURCE — independent of the SDK-shared
+    /// `ConvertSwiftSDK.isTrackingEnabled()` runtime flag, which is a different (global) axis.
+    var isPreviewActive: Bool {
+        forcedVariation != nil
+    }
+
     /// Resolves the preview config for `experienceId`, memoizing it in-memory for 60s.
     ///
     /// Sweeps expired entries (across ALL ids, not just `experienceId`) before consulting

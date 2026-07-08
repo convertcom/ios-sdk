@@ -282,17 +282,20 @@ public final class ConvertContext: Sendable {
         if let forced = await previewState.forcedVariation, forced.experienceKey == key {
             return forced
         }
+        // qs-02 IOS-6 / AC6 (zero-trace): a preview target on THIS context — the forced key above, or
+        // ANY OTHER key — suppresses tracking/persistence at the SOURCE for every sibling experience
+        // (contract §2). Gated on the PER-CONTEXT `previewState`, never `isTrackingEnabled()` (global).
+        let previewActive = await previewState.isPreviewActive
         // AC11: overlay the visitor's persisted segments onto the explicit attribute map so an audience
         // rule can match on a `setDefaultSegments` value (e.g. country). Read under the SAME store key the
         // manager rebuilds internally; explicit createContext attributes still win on collision.
         let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
         let attributes = mergedAttributes(stringAttributes(), with: segments)
-        // Thread the COMBINED gate (FR6 global tracking flag AND the per-call `enableTracking`) into
-        // the manager: the variation is still selected/persisted/fired, but `BucketingManager` skips the
-        // bucketing enqueue when EITHER flag is false — so a globally-disabled SDK enqueues nothing at the
-        // sink even though decisioning is unchanged (Story 5.4 / AC1, AC3; Story 5.6 extends to the
-        // runtime-mutable flag). The public `enableTracking` parameter and its default are unchanged;
-        // only the value threaded down is combined.
+        // Thread the COMBINED gate (FR6 global tracking, per-call `enableTracking`, and IOS-6's
+        // `!previewActive`) into the manager: the variation is still selected/persisted/fired, but
+        // `BucketingManager` skips the enqueue when ANY flag is false (Story 5.4/5.6; qs-02 IOS-6
+        // extends to preview). `persistDecision: !previewActive` also suppresses the sticky WRITE for
+        // a sibling under preview (AC6); the sticky READ above is unaffected.
         return await experienceManager.selectVariation(
             forKey: key,
             in: config,
@@ -301,7 +304,8 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: stringLocationProperties(),
-            enableTracking: await sdk.isTrackingEnabled() && enableTracking
+            enableTracking: await sdk.isTrackingEnabled() && enableTracking && !previewActive,
+            persistDecision: !previewActive
         )
     }
 
@@ -347,22 +351,6 @@ public final class ConvertContext: Sendable {
     /// key the manager buckets against.
     private func storeKey(for config: ProjectConfig) -> String {
         "\(config.accountId ?? "")-\(config.project?.id ?? "")-\(visitorId)"
-    }
-
-    /// Overlays the visitor's non-nil string segment fields onto the explicit attribute map so audience
-    /// rules can match on `country`/`visitorType`/etc. Explicit attributes WIN on key collision (the
-    /// caller's createContext attribute is more specific than a stored segment). `customSegments` is an
-    /// array, not a scalar attribute, so it is NOT overlaid. [Source: AC11]
-    private func mergedAttributes(_ attributes: [String: String], with segments: Segments) -> [String: String] {
-        var merged = attributes
-        let segmentPairs: [(String, String?)] = [
-            ("country", segments.country), ("browser", segments.browser), ("devices", segments.devices),
-            ("source", segments.source), ("campaign", segments.campaign), ("visitorType", segments.visitorType)
-        ]
-        for (key, value) in segmentPairs where merged[key] == nil {
-            if let value { merged[key] = value }
-        }
-        return merged
     }
 
     /// Runs every configured experience for this visitor and returns the bucketed ``Variation`` for
@@ -415,11 +403,15 @@ public final class ConvertContext: Sendable {
         if let forced {
             effectiveConfig.rawExperiences = config.rawExperiences?.filter { $0.key != forced.experienceKey }
         }
-        // Thread the COMBINED gate (global runtime tracking flag AND per-call `enableTracking`) into the
-        // bulk path, exactly as the single-experience path does (run-all mirrors run-single, not diverge):
-        // each per-experience bucketing enqueue is suppressed when EITHER flag is false, while every
-        // variation is still selected/persisted/fired (Story 5.4 / AC1, AC3; Story 5.6 extends to
-        // the runtime-mutable flag).
+        // qs-02 IOS-6 / AC6 (zero-trace): the same per-context gate `runExperience` applies (see its
+        // comment) — a preview target suppresses tracking/persistence for every SIBLING experience,
+        // not just the (already excluded-from-this-call) forced target. Gated on `previewState`,
+        // never the global `isTrackingEnabled()`.
+        let previewActive = forced != nil
+        // Thread the COMBINED gate (global tracking, per-call `enableTracking`, IOS-6's
+        // `!previewActive`) into the bulk path, mirroring the single-experience path (Story 5.4/5.6;
+        // qs-02 IOS-6 extends to preview). `persistDecision: !previewActive` suppresses the sticky
+        // WRITE for each sibling under preview (AC6).
         var results = await experienceManager.selectVariations(
             in: effectiveConfig,
             visitorId: visitorId,
@@ -427,7 +419,8 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: stringLocationProperties(),
-            enableTracking: await sdk.isTrackingEnabled() && enableTracking
+            enableTracking: await sdk.isTrackingEnabled() && enableTracking && !previewActive,
+            persistDecision: !previewActive
         )
         if let forced {
             results.append(forced)
@@ -606,6 +599,10 @@ public final class ConvertContext: Sendable {
             )
             return
         }
+        // qs-02 IOS-6 / AC6 (zero-trace): a preview target on THIS context suppresses conversion
+        // tracking ENTIRELY — the dedup persist below, both enqueues, and the `.conversion` bus fire.
+        // Gated on the PER-CONTEXT `previewState`, never the global `isTrackingEnabled()`.
+        guard !(await previewState.isPreviewActive) else { return }
         // Sticky store key "<accountId>-<projectId>-<visitorId>" (the runExperience key shape); goalId
         // resolved ONCE so the enqueued event and the `.conversion` bus payload share it.
         let storeKey = "\(config.accountId ?? "")-\(config.project?.id ?? "")-\(visitorId)"
@@ -723,6 +720,28 @@ public final class ConvertContext: Sendable {
         let updated = await segmentsManager.currentSegments(forVisitorKey: key)
         await eventBus.fire(.segments, payload: .segments(SegmentsPayload(visitorId: visitorId, segments: updated)))
     }
+}
+
+/// Overlays the visitor's non-nil string segment fields onto the explicit attribute map so audience
+/// rules can match on `country`/`visitorType`/etc. Explicit attributes WIN on key collision (the
+/// caller's createContext attribute is more specific than a stored segment). `customSegments` is an
+/// array, not a scalar attribute, so it is NOT overlaid. [Source: AC11]
+///
+/// A file-scope function (not a `ConvertContext` method — it touches no `self` state, only its two
+/// parameters) so it does not count against the class's `type_body_length` budget (qs-02 IOS-6;
+/// precedent: ``resolvePreviewForcedVariation(experienceId:variationId:localConfig:previewState:)``
+/// below). `file_length` is already disabled file-wide for this file (see the top-of-file
+/// rationale), so this move adds no NEW suppression.
+private func mergedAttributes(_ attributes: [String: String], with segments: Segments) -> [String: String] {
+    var merged = attributes
+    let segmentPairs: [(String, String?)] = [
+        ("country", segments.country), ("browser", segments.browser), ("devices", segments.devices),
+        ("source", segments.source), ("campaign", segments.campaign), ("visitorType", segments.visitorType)
+    ]
+    for (key, value) in segmentPairs where merged[key] == nil {
+        if let value { merged[key] = value }
+    }
+    return merged
 }
 
 /// Resolves the ``Variation`` forced by an experiment-preview target (qs-02 IOS-5,
