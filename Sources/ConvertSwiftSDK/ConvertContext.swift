@@ -318,29 +318,14 @@ public final class ConvertContext: Sendable {
     /// the immutable ``attributesStorage`` — it allocates a fresh dictionary per call but is invoked
     /// once per `runExperience`, so there is no retained mutable state and the class stays `Sendable`.
     private func stringAttributes() -> [String: String] {
-        Self.stringified(attributesStorage)
+        stringified(attributesStorage)
     }
 
     /// The location properties as the `[String: String]` map the LOCATION gate compares against — the
     /// same stringify rule as ``stringAttributes()`` (shared via ``stringified(_:)`` so the two
     /// gate-input builders never diverge). Empty when no location properties were supplied to the context.
     private func stringLocationProperties() -> [String: String] {
-        Self.stringified(locationPropertiesStorage)
-    }
-
-    /// Stringifies a coerced ``ConvertValue`` map to the `[String: String]` form the rule/segment engine
-    /// compares against (a string stays itself; int/double/bool render via their `String(_:)` initialisers).
-    /// Shared by ``stringAttributes()`` (audience gate) and ``stringLocationProperties()`` (location gate)
-    /// so neither re-derives the switch (DRY — keeps the diff under the SonarQube CPD gate).
-    private static func stringified(_ values: [String: ConvertValue]) -> [String: String] {
-        values.mapValues { value in
-            switch value {
-            case .string(let string): return string
-            case .int(let int): return String(int)
-            case .double(let double): return String(double)
-            case .bool(let bool): return String(bool)
-            }
-        }
+        stringified(locationPropertiesStorage)
     }
 
     /// The sticky store key `"<accountId>-<projectId>-<visitorId>"` for the given config snapshot.
@@ -476,6 +461,12 @@ public final class ConvertContext: Sendable {
             // manager (AOD-6, no throw).
             return Feature.disabled(key: key)
         }
+        // qs-02 IOS-fix3 (torn-read close): hoist ONE actor read into a local, mirroring
+        // `runExperience(_:enableTracking:)` — two independent `await previewState.isPreviewActive`
+        // reads are two separate suspension points, and a concurrent `setPreview` call landing between
+        // them could torn-gate `enableTracking`/`persistDecision` from two different preview states
+        // (a zero-trace leak risk). A single read closes the window.
+        let previewActive = await previewState.isPreviewActive
         // AC11 (JS parity, bd-0ca): overlay the visitor's persisted segments onto the explicit attribute map
         // so the carrying experience's audience gate can match on a `setDefaultSegments` value, exactly as
         // runExperience does — JS context.ts calls getVisitorProperties identically on the feature path.
@@ -492,8 +483,8 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: stringLocationProperties(),
-            enableTracking: await !previewState.isPreviewActive,
-            persistDecision: await !previewState.isPreviewActive
+            enableTracking: !previewActive,
+            persistDecision: !previewActive
         )
     }
 
@@ -526,6 +517,10 @@ public final class ConvertContext: Sendable {
         guard let config = await sdk.configStore.getSnapshot() else {
             return []
         }
+        // qs-02 IOS-fix3 (torn-read close): same single-read hoist as `runFeature(_:)` — see its
+        // comment for why two independent `await previewState.isPreviewActive` reads are a torn-gate
+        // risk under a concurrent `setPreview` call.
+        let previewActive = await previewState.isPreviewActive
         // AC11 (JS parity, bd-0ca): same segment overlay as the single-feature path (run-all mirrors
         // run-single, not diverge) — each feature's carrying-experience audience gate sees the visitor's
         // persisted segments.
@@ -540,8 +535,8 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: stringLocationProperties(),
-            enableTracking: await !previewState.isPreviewActive,
-            persistDecision: await !previewState.isPreviewActive
+            enableTracking: !previewActive,
+            persistDecision: !previewActive
         )
     }
 
@@ -748,6 +743,29 @@ public final class ConvertContext: Sendable {
         await segmentsManager.setCustomSegments(segmentIds, forVisitorKey: key)
         let updated = await segmentsManager.currentSegments(forVisitorKey: key)
         await eventBus.fire(.segments, payload: .segments(SegmentsPayload(visitorId: visitorId, segments: updated)))
+    }
+}
+
+/// Stringifies a coerced ``ConvertValue`` map to the `[String: String]` form the rule/segment engine
+/// compares against (a string stays itself; int/double/bool render via their `String(_:)` initialisers).
+/// Shared by ``ConvertContext/stringAttributes()`` (audience gate) and
+/// ``ConvertContext/stringLocationProperties()`` (location gate) so neither re-derives the switch (DRY —
+/// keeps the diff under the SonarQube CPD gate).
+///
+/// A file-scope function (not a `ConvertContext` method — it touches no `self` state, only its
+/// parameter) so it does not count against the class's `type_body_length` budget (qs-02 IOS-fix3;
+/// precedent: ``mergedAttributes(_:with:)`` /
+/// ``resolvePreviewForcedVariation(experienceId:variationId:localConfig:previewState:)`` below).
+/// `file_length` is already disabled file-wide for this file (see the top-of-file rationale), so
+/// this move adds no NEW suppression.
+private func stringified(_ values: [String: ConvertValue]) -> [String: String] {
+    values.mapValues { value in
+        switch value {
+        case .string(let string): return string
+        case .int(let int): return String(int)
+        case .double(let double): return String(double)
+        case .bool(let bool): return String(bool)
+        }
     }
 }
 
