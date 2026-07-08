@@ -676,6 +676,10 @@ public final class ConvertContext: Sendable {
     ///   `devices`, `source`, `campaign`, `visitorType`); unrecognised keys are ignored with a WARN.
     /// [Source: AC1, AC12]
     public func setDefaultSegments(_ segments: [String: String]) async {
+        // qs-02 IOS-6 / AC6 (zero-trace): a preview target on THIS context suppresses the segments
+        // update ENTIRELY — no delegation to the shared `SegmentsManager`, no persist, no `.segments`
+        // bus fire. Gated on the PER-CONTEXT `previewState`, never the global `isTrackingEnabled()`.
+        guard !(await previewState.isPreviewActive) else { return }
         guard let config = await sdk.configStore.getSnapshot() else {
             logger.log(
                 level: .warn,
@@ -706,6 +710,11 @@ public final class ConvertContext: Sendable {
     /// - Parameter segmentIds: The custom segment identifiers to append to the visitor's `customSegments`.
     /// [Source: AC2, AC12]
     public func setCustomSegments(_ segmentIds: [String]) async {
+        // qs-02 IOS-6 / AC6 (zero-trace): a preview target on THIS context suppresses the custom
+        // segments update ENTIRELY — no delegation to the shared `SegmentsManager`, no persist, no
+        // `.segments` bus fire. Gated on the PER-CONTEXT `previewState`, never the global
+        // `isTrackingEnabled()`.
+        guard !(await previewState.isPreviewActive) else { return }
         guard let config = await sdk.configStore.getSnapshot() else {
             logger.log(
                 level: .warn,
