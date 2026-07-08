@@ -81,15 +81,19 @@ struct ConvertContextSetPreviewTests {
 
     // MARK: - Fixture builders (SonarQube new-code-duplication discipline)
 
+    /// One variation row for a ``previewExpFragment`` case table — replaces a 3-member tuple
+    /// (SwiftLint `large_tuple`) with a named type; same three fields, same call-site shape.
+    private struct PreviewVariationFixture { let id: String; let key: String; let traffic: Int }
+
     /// One experience-wire JSON fragment: `type:"a/b"`, no audiences/locations, with the given
-    /// `status` (default `"active"`) and `variations` (each an `(id, key, traffic)` triple).
+    /// `status` (default `"active"`) and `variations` (each a ``PreviewVariationFixture`` row).
     /// Shared by every fixture this suite builds — CPD is token-based, so ONE fragment builder
     /// (not renamed locals per test) keeps the diff under the 3% gate.
     private static func previewExpFragment(
         id: String,
         key: String,
         status: String = "active",
-        variations: [(id: String, key: String, traffic: Int)]
+        variations: [PreviewVariationFixture]
     ) -> String {
         let variationsJSON = variations.map {
             #"{"id":"\#($0.id)","key":"\#($0.key)","traffic_allocation":\#($0.traffic)}"#
@@ -186,7 +190,10 @@ struct ConvertContextSetPreviewTests {
                     id: "9001",
                     key: "preview-key",
                     status: "draft",
-                    variations: [(id: "5001", key: "control", traffic: 50), (id: "5002", key: "variant", traffic: 50)]
+                    variations: [
+                        PreviewVariationFixture(id: "5001", key: "control", traffic: 50),
+                        PreviewVariationFixture(id: "5002", key: "variant", traffic: 50)
+                    ]
                 )
             ])
         )
@@ -214,7 +221,10 @@ struct ConvertContextSetPreviewTests {
             Self.previewExpFragment(
                 id: experienceId,
                 key: experienceKey,
-                variations: [(id: "6001", key: "control", traffic: 100), (id: "6002", key: "variant", traffic: 0)]
+                variations: [
+                    PreviewVariationFixture(id: "6001", key: "control", traffic: 100),
+                    PreviewVariationFixture(id: "6002", key: "variant", traffic: 0)
+                ]
             )
         ]))
         let context = sut.sdk.createContext(visitorId: "user-1")
@@ -239,7 +249,11 @@ struct ConvertContextSetPreviewTests {
         let normalVariationId = "7001"
         let sut = try await makeSUT(
             mainConfig: try Self.makeMainConfig(experiences: [
-                Self.previewExpFragment(id: "8001", key: normalKey, variations: [(id: normalVariationId, key: "control", traffic: 100)])
+                Self.previewExpFragment(
+                    id: "8001",
+                    key: normalKey,
+                    variations: [PreviewVariationFixture(id: normalVariationId, key: "control", traffic: 100)]
+                )
             ]),
             previewFetchResponse: Self.previewFetchBody(experiences: [])
         )
@@ -250,7 +264,10 @@ struct ConvertContextSetPreviewTests {
         #expect(sut.logger.entries().contains { $0.level == .warn }, "an unresolved preview target must log a warning")
 
         let variation = await context.runExperience(normalKey)
-        #expect(variation?.id == normalVariationId, "an inert preview must not disturb an unrelated experience's decision")
+        #expect(
+            variation?.id == normalVariationId,
+            "an inert preview must not disturb an unrelated experience's decision"
+        )
     }
 
     /// A KNOWN `experienceId` but an unknown `variationId` (not present in that experience's
@@ -262,7 +279,11 @@ struct ConvertContextSetPreviewTests {
         let experienceKey = "known-key"
         let knownVariationId = "6101"
         let sut = try await makeSUT(mainConfig: try Self.makeMainConfig(experiences: [
-            Self.previewExpFragment(id: experienceId, key: experienceKey, variations: [(id: knownVariationId, key: "control", traffic: 100)])
+            Self.previewExpFragment(
+                id: experienceId,
+                key: experienceKey,
+                variations: [PreviewVariationFixture(id: knownVariationId, key: "control", traffic: 100)]
+            )
         ]))
         let context = sut.sdk.createContext(visitorId: "user-1")
 
@@ -290,7 +311,10 @@ struct ConvertContextSetPreviewTests {
             Self.previewExpFragment(
                 id: experienceId,
                 key: experienceKey,
-                variations: [(id: normalVariationId, key: "control", traffic: 100), (id: forcedVariationId, key: "variant", traffic: 0)]
+                variations: [
+                    PreviewVariationFixture(id: normalVariationId, key: "control", traffic: 100),
+                    PreviewVariationFixture(id: forcedVariationId, key: "variant", traffic: 0)
+                ]
             )
         ]))
 
@@ -318,13 +342,17 @@ struct ConvertContextSetPreviewTests {
         let normalTargetVariationId = "6401"
         let forcedTargetVariationId = "6402"
         let sut = try await makeSUT(mainConfig: try Self.makeMainConfig(experiences: [
-            Self.previewExpFragment(id: "9099", key: siblingKey, variations: [(id: siblingVariationId, key: "control", traffic: 100)]),
+            Self.previewExpFragment(
+                id: "9099",
+                key: siblingKey,
+                variations: [PreviewVariationFixture(id: siblingVariationId, key: "control", traffic: 100)]
+            ),
             Self.previewExpFragment(
                 id: targetId,
                 key: targetKey,
                 variations: [
-                    (id: normalTargetVariationId, key: "control", traffic: 100),
-                    (id: forcedTargetVariationId, key: "variant", traffic: 0)
+                    PreviewVariationFixture(id: normalTargetVariationId, key: "control", traffic: 100),
+                    PreviewVariationFixture(id: forcedTargetVariationId, key: "variant", traffic: 0)
                 ]
             )
         ]))
@@ -352,7 +380,10 @@ struct ConvertContextSetPreviewTests {
                 Self.previewExpFragment(
                     id: "9006",
                     key: "link-key",
-                    variations: [(id: "6501", key: "control", traffic: 100), (id: "6502", key: "variant", traffic: 0)]
+                    variations: [
+                        PreviewVariationFixture(id: "6501", key: "control", traffic: 100),
+                        PreviewVariationFixture(id: "6502", key: "variant", traffic: 0)
+                    ]
                 )
             ])
         )

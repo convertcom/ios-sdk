@@ -10,6 +10,7 @@
 // named-rule suppression keeps every other rule — and the 400-line gate on every OTHER file — enforced.
 // swiftlint:disable file_length
 
+import ConvertSwiftSDKCore
 import Foundation
 
 /// A visitor-scoped handle for running experiences/features and tracking conversions.
@@ -111,6 +112,15 @@ public final class ConvertContext: Sendable {
     /// a `let` keeps this class an all-`let` `Sendable final class` with no suppression.
     private let segmentsManager: SegmentsManager
 
+    /// The per-context experience-preview state (qs-02 IOS-5): a FRESH ``PreviewState`` actor built
+    /// by ``ConvertSwiftSDK/createContext(visitorId:attributes:locationProperties:)`` for THIS
+    /// context alone (AC7 isolation — never shared across contexts). Holds the memoized `?exp=`
+    /// preview-fetch cache (IOS-4) and, once ``setPreview(experienceId:variationId:)`` resolves
+    /// successfully, the forced ``Variation`` that ``runExperience(_:enableTracking:)`` /
+    /// ``runExperiences(enableTracking:)`` short-circuit to. An `actor` is `Sendable`, so this `let`
+    /// keeps the class an all-`let` `Sendable final class` with no suppression.
+    private let previewState: PreviewState
+
     /// The visitor attributes as a loosely-typed `[String: Any]` map, reconstructed on each access
     /// from the internal ``ConvertValue`` storage via ``ConvertValue/anyValue`` — so a value supplied
     /// as `["age": 30]` reads back as `attributes["age"] as? Int == 30`. A COMPUTED property (no stored
@@ -154,6 +164,8 @@ public final class ConvertContext: Sendable {
     ///     ``SystemEvent/conversion`` on (Story 4.2 / AC9), so `sdk.on(.conversion)` subscribers fire.
     ///   - logger: The SDK's ``Logger`` ``trackConversion(_:goalData:)`` emits its drop-path WARNs to
     ///     (Story 4.2 / AOD-6); default ``NoopLogger`` in production.
+    ///   - previewState: This context's OWN, freshly-built ``PreviewState`` (qs-02 IOS-5), never
+    ///     shared with any other context (AC7 isolation).
     internal init(
         sdk: ConvertSwiftSDK,
         visitorId: String,
@@ -164,7 +176,8 @@ public final class ConvertContext: Sendable {
         featureManager: FeatureManager,
         eventSink: any EventSink,
         eventBus: EventBus,
-        logger: any Logger
+        logger: any Logger,
+        previewState: PreviewState
     ) {
         self.sdk = sdk
         self.visitorId = visitorId
@@ -176,9 +189,55 @@ public final class ConvertContext: Sendable {
         self.eventSink = eventSink
         self.eventBus = eventBus
         self.logger = logger
+        self.previewState = previewState
         // Built over the injected canonical store (not a separate parameter — callers do not pass it), so
         // every context from the same SDK records segments into the ONE store the decisioning path reads.
         self.segmentsManager = SegmentsManager(decisionStore: decisionStore, logger: logger)
+    }
+
+    /// Sets an experiment-preview target on this context: `runExperience(_:enableTracking:)` /
+    /// `runExperiences(enableTracking:)` will force the given `variationId` for the experience
+    /// identified by `experienceId`, bypassing bucketing, rule matching, and stored decisions
+    /// entirely (qs-02 Experiment Preview, contract §2 "Decision" / §3 "Precedence").
+    ///
+    /// ```swift
+    /// // given a ready `context` and a parsed deep-link pair
+    /// await context.setPreview(experienceId: "9001", variationId: "5002")
+    /// let variation = await context.runExperience("pricing-test")   // forced, if the key matches
+    /// ```
+    ///
+    /// Resolves `experienceId` EAGERLY (this call suspends until resolution completes, so a
+    /// subsequent `runExperience` sees the outcome immediately): first checks the CURRENT config
+    /// snapshot's ``ProjectConfig/rawExperiences`` for an entry whose numeric `id` equals
+    /// `experienceId` (the join key `setPreview` receives is the numeric experience id; the
+    /// experience is later matched to a `runExperience(_:)` CALL by its string `key`, carried on
+    /// the resolved ``Variation/experienceKey``). When absent from the current snapshot, falls back
+    /// to the per-context ``PreviewState/resolveConfig(experienceId:)`` `?exp=` fetch (memoized,
+    /// 60s TTL, IOS-4) and searches ITS `rawExperiences` the same way.
+    ///
+    /// **Inert on bad input:** when `experienceId` cannot be resolved (absent from both the local
+    /// snapshot AND the fetch) OR ``PreviewDecision/forcedVariation(for:variationId:)`` cannot match
+    /// `variationId` within the resolved experience's variations, this WARNs and returns WITHOUT
+    /// updating ``PreviewState`` — the context (and any experience it is later asked to run,
+    /// including one previously targeted by a successful `setPreview` call) behaves fully normally.
+    /// The WARN `message` is ONLY the descriptive tail — the adapter composes the
+    /// `[WARN] ConvertContext.setPreview: …` prefix from `type`/`method` (UX-DR19).
+    /// - Parameters:
+    ///   - experienceId: The numeric experience id to force (from `PreviewParam.parse`'s
+    ///     `experienceId`, or supplied directly).
+    ///   - variationId: The numeric variation id to force within that experience.
+    public func setPreview(experienceId: String, variationId: String) async {
+        let localConfig = await sdk.configStore.getSnapshot()
+        guard let forced = await resolvePreviewForcedVariation(
+            experienceId: experienceId,
+            variationId: variationId,
+            localConfig: localConfig,
+            previewState: previewState
+        ) else {
+            logPreviewResolutionFailure(logger: logger, experienceId: experienceId, variationId: variationId)
+            return
+        }
+        await previewState.setForcedVariation(forced)
     }
 
     /// Runs one experience and returns the bucketed ``Variation``, or `nil` when none applies.
@@ -214,6 +273,14 @@ public final class ConvertContext: Sendable {
             // Pre-ready / degraded: a nil snapshot resolves to a nil variation without reaching the
             // manager (AC10, no throw).
             return nil
+        }
+        // qs-02 IOS-5 / contract §3 (Precedence): a resolved preview target for THIS experience
+        // beats stored decisions and normal bucketing — return it BEFORE touching
+        // `experienceManager.selectVariation` at all, so sticky lookup / rule matching / the
+        // bucketing hash are never consulted for the target. A target set for a DIFFERENT
+        // experience key (or no target at all) falls through to the normal path unaffected.
+        if let forced = await previewState.forcedVariation, forced.experienceKey == key {
+            return forced
         }
         // AC11: overlay the visitor's persisted segments onto the explicit attribute map so an audience
         // rule can match on a `setDefaultSegments` value (e.g. country). Read under the SAME store key the
@@ -334,13 +401,27 @@ public final class ConvertContext: Sendable {
         // diverge) — each experience's audience gate sees the visitor's persisted segments.
         let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
         let attributes = mergedAttributes(stringAttributes(), with: segments)
+        // qs-02 IOS-5 / contract §2 ("other experiences still evaluate and decide normally") + §3
+        // (Precedence): a resolved preview target is EXCLUDED from the bulk config passed to
+        // `experienceManager.selectVariations` (a shallow copy with `rawExperiences` filtered by
+        // `key`, the ONLY field that method reads) so bucketing/rule-matching/sticky-lookup never
+        // runs for the target — mirroring the single-experience short-circuit above — while every
+        // sibling experience still decides through the completely normal bulk path. The forced
+        // `Variation` is appended afterward so the target's result is still present in the returned
+        // array (AC7 isolation test / "forces only the target" test read it back via
+        // `experienceKey`, order-independent).
+        let forced = await previewState.forcedVariation
+        var effectiveConfig = config
+        if let forced {
+            effectiveConfig.rawExperiences = config.rawExperiences?.filter { $0.key != forced.experienceKey }
+        }
         // Thread the COMBINED gate (global runtime tracking flag AND per-call `enableTracking`) into the
         // bulk path, exactly as the single-experience path does (run-all mirrors run-single, not diverge):
         // each per-experience bucketing enqueue is suppressed when EITHER flag is false, while every
         // variation is still selected/persisted/fired (Story 5.4 / AC1, AC3; Story 5.6 extends to
         // the runtime-mutable flag).
-        return await experienceManager.selectVariations(
-            in: config,
+        var results = await experienceManager.selectVariations(
+            in: effectiveConfig,
             visitorId: visitorId,
             accountId: config.accountId ?? "",
             projectId: config.project?.id ?? "",
@@ -348,6 +429,10 @@ public final class ConvertContext: Sendable {
             locationProperties: stringLocationProperties(),
             enableTracking: await sdk.isTrackingEnabled() && enableTracking
         )
+        if let forced {
+            results.append(forced)
+        }
+        return results
     }
 
     /// Resolves one feature flag and returns its ``Feature`` — non-optional by contract, so
@@ -638,4 +723,61 @@ public final class ConvertContext: Sendable {
         let updated = await segmentsManager.currentSegments(forVisitorKey: key)
         await eventBus.fire(.segments, payload: .segments(SegmentsPayload(visitorId: visitorId, segments: updated)))
     }
+}
+
+/// Resolves the ``Variation`` forced by an experiment-preview target (qs-02 IOS-5,
+/// ``ConvertContext/setPreview(experienceId:variationId:)``): checks `localConfig`'s
+/// ``ProjectConfig/rawExperiences`` for an entry whose numeric `id` equals `experienceId` FIRST;
+/// when absent, falls back to `previewState`'s memoized `?exp=` fetch
+/// (``PreviewState/resolveConfig(experienceId:)``) and searches ITS `rawExperiences` the same
+/// way. Once the experience is found (from either source), matches `variationId` via
+/// ``PreviewDecision/forcedVariation(for:variationId:)``.
+///
+/// A file-scope function (not a `ConvertContext` method) so it does not count against the
+/// class's `type_body_length` budget — `file_length` is already disabled file-wide for this file
+/// (see the top-of-file rationale), so this helper adds no NEW suppression.
+/// - Parameters:
+///   - experienceId: The numeric experience id to resolve (the join key ``ConvertContext``
+///     receives from `setPreview`; the experience's STRING `key`, carried on the returned
+///     ``Variation/experienceKey``, is what a later `runExperience(_:)` call is matched against).
+///   - variationId: The numeric variation id to force within the resolved experience.
+///   - localConfig: The context's current config snapshot, checked first.
+///   - previewState: The context's own ``PreviewState``, whose memoized fetch is the fallback.
+/// - Returns: The forced ``Variation``, or `nil` when the experience or variation could not be
+///   resolved (inert-on-bad-input — the caller logs the WARN).
+private func resolvePreviewForcedVariation(
+    experienceId: String,
+    variationId: String,
+    localConfig: ProjectConfig?,
+    previewState: PreviewState
+) async -> Variation? {
+    let experience: Components.Schemas.ConfigExperience?
+    if let localMatch = localConfig?.rawExperiences?.first(where: { $0.id == experienceId }) {
+        experience = localMatch
+    } else {
+        let fetchedConfig = await previewState.resolveConfig(experienceId: experienceId)
+        experience = fetchedConfig?.rawExperiences?.first { $0.id == experienceId }
+    }
+    guard let experience else { return nil }
+    return PreviewDecision.forcedVariation(for: experience, variationId: variationId)
+}
+
+/// Logs the `setPreview` inert-on-bad-input WARN when
+/// ``resolvePreviewForcedVariation(experienceId:variationId:localConfig:previewState:)`` returns
+/// `nil` — a file-scope helper (see that function's placement rationale) so this stays out of
+/// ``ConvertContext``'s `type_body_length` budget. The `message` is ONLY the descriptive tail —
+/// the adapter composes the `[WARN] ConvertContext.setPreview: …` prefix from `type`/`method`
+/// (UX-DR19).
+/// - Parameters:
+///   - logger: The context's ``Logger`` to emit the WARN to.
+///   - experienceId: The unresolved preview target's experience id, echoed in the message.
+///   - variationId: The unresolved preview target's variation id, echoed in the message.
+private func logPreviewResolutionFailure(logger: any Logger, experienceId: String, variationId: String) {
+    logger.log(
+        level: .warn,
+        type: "ConvertContext",
+        method: "setPreview",
+        message: "preview target experienceId '\(experienceId)' / variationId '\(variationId)' "
+            + "could not be resolved — falling through to normal decisions."
+    )
 }

@@ -44,6 +44,15 @@ actor PreviewState {
     /// The memo surface: one entry per `experienceId`, pruned of expired entries on access.
     private var memo: [String: MemoEntry] = [:]
 
+    /// The current preview target's resolved forced decision (qs-02 IOS-5), or `nil` when no
+    /// preview target has been set on the owning context, or the last ``ConvertContext/setPreview``
+    /// resolution failed (inert-on-bad-input — the prior value, if any, is simply left in place
+    /// since `ConvertContext.setPreview` never calls ``setForcedVariation(_:)`` on a failed resolve).
+    /// `ConvertContext.runExperience(_:enableTracking:)` / `runExperiences(enableTracking:)` compare
+    /// this `Variation`'s `experienceKey` against the key being run to decide whether to
+    /// short-circuit before ``ExperienceManager``.
+    private(set) var forcedVariation: Variation?
+
     /// Creates the preview state.
     /// - Parameters:
     ///   - fetchService: The concrete `ConfigFetchService` used to resolve a memo miss.
@@ -84,6 +93,16 @@ actor PreviewState {
         }
         memo[experienceId] = MemoEntry(config: config, fetchedAt: clock.now)
         return config
+    }
+
+    /// Records the resolved forced-decision target for the owning context (qs-02 IOS-5).
+    /// `ConvertContext.setPreview(experienceId:variationId:)` calls this ONLY after successfully
+    /// resolving `experienceId`/`variationId` into a ``Variation`` via
+    /// ``PreviewDecision/forcedVariation(for:variationId:)`` — an unresolved `setPreview` call
+    /// never reaches here, leaving any prior target untouched.
+    /// - Parameter variation: The forced decision to record.
+    func setForcedVariation(_ variation: Variation) {
+        forcedVariation = variation
     }
 
     /// Filters ``memo`` down to entries that are not yet expired as of `now`.
