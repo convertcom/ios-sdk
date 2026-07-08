@@ -265,4 +265,56 @@ struct PreviewZeroTraceTests {
             "a non-preview context's sticky decision / goal-dedup mark must still be written"
         )
     }
+
+    // MARK: - AC6 gap: segment setters are NOT currently preview-gated (RED)
+
+    /// `ConvertContext.setDefaultSegments`/`setCustomSegments` (`ConvertContext.swift:678`,`:708`)
+    /// delegate to `SegmentsManager.setDefaultSegments`/`setCustomSegments`
+    /// (`SegmentsManager.swift:34`,`:60`), which delegate to `DecisionStore.mergeSegments`
+    /// (`DecisionStore.swift:232`) and `DecisionStore.appendCustomSegments` (`DecisionStore.swift:267`)
+    /// — BOTH of which unconditionally `fileStore.write` (`DecisionStore.swift:258`,`:287`) with NO
+    /// preview gate today, unlike the sticky-decision write and the goal-dedup write this suite's
+    /// first test already covers. Confirms preview is genuinely active first (a forced `runExperience`
+    /// result), then calls both segment setters and asserts ZERO writes reached the shared
+    /// `MockFileStore` spy — expected to FAIL (RED) until GREEN adds the same per-context
+    /// `previewActive` gate to these two call sites.
+    @Test("preview-active context's segment setters produce zero sticky-store writes (AC6 gap)")
+    func previewContextSegmentSettersProduceZeroTrace() async throws {
+        let sut = try await makeSUT()
+        defer { try? FileManager.default.removeItem(at: sut.queueStoreURL) }
+        let context = sut.sdk.createContext(visitorId: "preview-segments-visitor")
+
+        await context.setPreview(experienceId: Self.targetExperienceId, variationId: Self.targetForcedVariationId)
+        let forced = await context.runExperience(Self.targetKey)
+        #expect(forced?.id == Self.targetForcedVariationId, "preview must be genuinely active for this context")
+
+        await context.setDefaultSegments(["country": "US"])
+        await context.setCustomSegments(["vip"])
+
+        let decisionURL = try Self.decisionStoreFileURL()
+        #expect(
+            await sut.decisionFileStore.contents(at: decisionURL) == nil,
+            "zero-trace: setDefaultSegments/setCustomSegments must not write to the sticky-decision store under preview"
+        )
+    }
+
+    /// Companion regression guard (AC7): the SAME two setters, called on a NON-preview context, must
+    /// still persist — proving the future fix scopes the gate to `previewActive`, not a blanket
+    /// disable of the segment write path. A FRESH, ISOLATED `SUT`, matching
+    /// ``nonPreviewContextStillTracksAndPersists()``'s isolation rationale above.
+    @Test("a non-preview context's segment setters still persist normally (AC7 regression guard)")
+    func nonPreviewContextSegmentSettersStillPersist() async throws {
+        let sut = try await makeSUT()
+        defer { try? FileManager.default.removeItem(at: sut.queueStoreURL) }
+        let context = sut.sdk.createContext(visitorId: "normal-segments-visitor")
+
+        await context.setDefaultSegments(["country": "US"])
+        await context.setCustomSegments(["vip"])
+
+        let decisionURL = try Self.decisionStoreFileURL()
+        #expect(
+            await sut.decisionFileStore.contents(at: decisionURL) != nil,
+            "a non-preview context's segment setters must still write to the sticky-decision store"
+        )
+    }
 }
