@@ -116,13 +116,7 @@ public struct ConfigFetchService: ConfigProviding {
         ) else {
             throw ConvertError.invalidConfiguration("Malformed config endpoint URL")
         }
-        var items: [URLQueryItem] = []
-        if let env = configuration.environment {
-            items.append(URLQueryItem(name: "environment", value: env))
-        }
-        if let debugToken = configuration.debugToken {
-            items.append(URLQueryItem(name: "debug_token", value: debugToken))
-        }
+        var items = sharedConfigQueryItems()
         if configuration.networkCacheLevel == .low || configuration.debugToken != nil {
             items.append(URLQueryItem(name: "_conv_low_cache", value: "1"))
         }
@@ -133,6 +127,52 @@ public struct ConfigFetchService: ConfigProviding {
             throw ConvertError.invalidConfiguration("Could not build config URL")
         }
         return url
+    }
+
+    /// Assembles `{apiConfigEndpoint}/config/{sdkKey}?exp={experienceId}` for an experience
+    /// preview fetch (qs-02 IOS-4): appends `exp={experienceId}`, FORCES
+    /// `_conv_low_cache=1` UNCONDITIONALLY (a preview must never risk a stale CDN-cached
+    /// config, regardless of `networkCacheLevel` — unlike ``buildConfigURL()``, which only
+    /// forces it when a `debugToken` is set OR `networkCacheLevel == .low`), and reuses the
+    /// shared `environment` / `debug_token` query-item logic ``buildConfigURL()`` already has.
+    /// - Parameter experienceId: The experience whose preview config is being requested.
+    /// - Returns: The fully-built experience-preview config URL.
+    /// - Throws: ``ConvertError/invalidConfiguration(_:)`` if the endpoint string is
+    ///   malformed or the components cannot resolve to a URL.
+    public func buildExperienceConfigURL(experienceId: String) throws -> URL {
+        guard var components = URLComponents(
+            string: configuration.apiConfigEndpoint + "/config/" + configuration.sdkKey
+        ) else {
+            throw ConvertError.invalidConfiguration("Malformed config endpoint URL")
+        }
+        var items = sharedConfigQueryItems()
+        items.append(URLQueryItem(name: "exp", value: experienceId))
+        items.append(URLQueryItem(name: "_conv_low_cache", value: "1"))
+        components.queryItems = items
+        guard let url = components.url else {
+            throw ConvertError.invalidConfiguration("Could not build config URL")
+        }
+        return url
+    }
+
+    /// Query items common to both ``buildConfigURL()`` and
+    /// ``buildExperienceConfigURL(experienceId:)``: `environment` (when set) and
+    /// `debug_token` (qs-02 IOS-1, when set). Extracted so the qs-02 IOS-4 experience-preview
+    /// URL builder does not duplicate this logic (SonarQube new-code-duplication discipline).
+    /// Query-item ORDER is not part of either builder's observable contract (both suites
+    /// assert via `URLComponents` filtering / an order-agnostic dictionary, never a raw
+    /// string compare), so extracting this without reordering is a pure, behavior-preserving
+    /// refactor of ``buildConfigURL()``.
+    /// - Returns: The shared `environment` / `debug_token` query items, in that order.
+    private func sharedConfigQueryItems() -> [URLQueryItem] {
+        var items: [URLQueryItem] = []
+        if let env = configuration.environment {
+            items.append(URLQueryItem(name: "environment", value: env))
+        }
+        if let debugToken = configuration.debugToken {
+            items.append(URLQueryItem(name: "debug_token", value: debugToken))
+        }
+        return items
     }
 
     /// Emits one WARN line tagged to this service and the originating `method`.
@@ -213,36 +253,7 @@ public struct ConfigFetchService: ConfigProviding {
             return nil
         }
 
-        // Auth header only when a non-empty secret is configured. The secret value is
-        // never logged, and `toLoggable` strips any sk_/secret material from error text.
-        var headers: [String: String] = [:]
-        if let secret = configuration.sdkKeySecret, !secret.isEmpty {
-            headers["Authorization"] = "Bearer \(secret)"
-        }
-
-        // CAPTURE the raw `data` here — it is what gets written through to the cache.
-        let data: Data
-        do {
-            (data, _) = try await httpClient.get(url: url, headers: headers)
-        } catch {
-            warn(
-                method: "fetchLiveConfig",
-                reason: "config fetch failed",
-                detail: String(describing: error)
-            )
-            return nil
-        }
-
-        // Decode the SAME raw bytes (single decoder, NO keyDecodingStrategy — AR13).
-        let config: ProjectConfig
-        do {
-            config = try JSONDecoder().decode(ProjectConfig.self, from: data)
-        } catch {
-            warn(
-                method: "fetchLiveConfig",
-                reason: "config decode failed",
-                detail: String(describing: error)
-            )
+        guard let fetched = await getAndDecode(url: url, method: "fetchLiveConfig") else {
             return nil
         }
 
@@ -253,7 +264,7 @@ public struct ConfigFetchService: ConfigProviding {
         // persisted to disk.
         if configuration.debugToken == nil {
             do {
-                try await fileStore.write(data, to: cacheURL)
+                try await fileStore.write(fetched.data, to: cacheURL)
             } catch {
                 warn(
                     method: "fetchLiveConfig",
@@ -263,6 +274,66 @@ public struct ConfigFetchService: ConfigProviding {
             }
         }
 
-        return config
+        return fetched.config
+    }
+
+    /// Fetches the experience-preview config (qs-02 IOS-4): builds the `?exp={experienceId}`
+    /// URL, GETs and decodes it exactly like ``fetchLiveConfig()``, but NEVER reads from or
+    /// writes to the on-disk config cache — a preview/QA config must never persist as the
+    /// ordinary cached config for subsequent launches. Achieved structurally: this method
+    /// simply never calls the cache-write step, rather than widening `fetchLiveConfig()`'s
+    /// own debugToken-gated write condition (which would risk changing `fetchLiveConfig()`'s
+    /// own observable behavior).
+    /// - Parameter experienceId: The experience whose preview config is being requested.
+    /// - Returns: The decoded config on success, or `nil` on URL-build / network / decode
+    ///   failure.
+    public func fetchExperienceConfig(experienceId: String) async -> ProjectConfig? {
+        let url: URL
+        do {
+            url = try buildExperienceConfigURL(experienceId: experienceId)
+        } catch {
+            warn(
+                method: "fetchExperienceConfig",
+                reason: "could not build config URL",
+                detail: String(describing: error)
+            )
+            return nil
+        }
+        return await getAndDecode(url: url, method: "fetchExperienceConfig")?.config
+    }
+
+    /// Shared GET + decode step for ``fetchLiveConfig()`` and
+    /// ``fetchExperienceConfig(experienceId:)``: sends the auth-headered GET, then decodes the
+    /// SAME raw bytes (single decoder, NO keyDecodingStrategy — AR13). The only step that
+    /// differs between the two public methods is the subsequent disk-cache write, which stays
+    /// in ``fetchLiveConfig()`` — this helper never touches `fileStore`.
+    /// - Parameters:
+    ///   - url: The pre-built request URL.
+    ///   - method: The originating public method name, for the WARN `{method}` field.
+    /// - Returns: The decoded config AND the raw response bytes (the latter needed by
+    ///   `fetchLiveConfig()` for its verbatim write-through), or `nil` on any failure stage.
+    private func getAndDecode(url: URL, method: String) async -> (config: ProjectConfig, data: Data)? {
+        // Auth header only when a non-empty secret is configured. The secret value is
+        // never logged, and `toLoggable` strips any sk_/secret material from error text.
+        var headers: [String: String] = [:]
+        if let secret = configuration.sdkKeySecret, !secret.isEmpty {
+            headers["Authorization"] = "Bearer \(secret)"
+        }
+
+        let data: Data
+        do {
+            (data, _) = try await httpClient.get(url: url, headers: headers)
+        } catch {
+            warn(method: method, reason: "config fetch failed", detail: String(describing: error))
+            return nil
+        }
+
+        do {
+            let config = try JSONDecoder().decode(ProjectConfig.self, from: data)
+            return (config, data)
+        } catch {
+            warn(method: method, reason: "config decode failed", detail: String(describing: error))
+            return nil
+        }
     }
 }
