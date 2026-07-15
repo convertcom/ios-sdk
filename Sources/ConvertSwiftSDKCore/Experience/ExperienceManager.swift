@@ -179,7 +179,7 @@ public struct ExperienceManager: Sendable {
         }
 
         // 3–4. AUDIENCE then LOCATION gate (an empty resolved set is unrestricted / passes).
-        guard audiencePasses(full, in: config, attributes: attributes),
+        guard await audiencePasses(full, in: config, attributes: attributes, storeKey: storeKey),
               locationPasses(full, in: config, locationProperties: locationProperties) else {
             return nil
         }
@@ -326,18 +326,50 @@ public struct ExperienceManager: Sendable {
     /// audiences runs for everyone). Otherwise every attached audience's rules are flattened and
     /// CONCATENATED into one outer-OR (the visitor matches if ANY audience's rules match), then
     /// evaluated by ``RuleManager`` (which fails closed on an empty group).
+    ///
+    /// A DEGRADED audience (IOS-1: its typed `rules` is `nil` because its tree embedded an unknown
+    /// `rule_type` leaf, e.g. `bucketed_into_experience_key`) is flattened from its RAW
+    /// sentinel-captured payload (``ProjectConfig/degradedAudienceSentinels``) via
+    /// ``RuleAdapter/flatten(_:)`` (the `JSONValue` overload, IOS-2) instead of the typed path — the
+    /// ONLY dispatch difference; a normally-decoded audience's typed `rules?.value1` is still
+    /// flattened exactly as before (bit-identical, AC7).
+    ///
+    /// Before evaluating, the visitor's sticky-bucketing SNAPSHOT is pre-fetched ONCE per call
+    /// (a PURE read — no LRU touch, no write, no bucketing, no tracking event; AC5) via
+    /// ``DecisionStore/bucketingDecisions(forStoreKey:)`` and closed over by a synchronous
+    /// resolver passed to
+    /// ``RuleManager/evaluate(rules:against:resolvingBucketedIntoExperienceKey:)`` (IOS-2): an
+    /// unknown target experience key (absent from `config`) resolves `nil` (``RuleManager`` warns,
+    /// naming the key — AC8); a known target resolves whether ITS id — iOS's ``DecisionStore`` is
+    /// id-keyed, not key-keyed — is a key in the pre-fetched snapshot.
     private func audiencePasses(
         _ full: Components.Schemas.ConfigExperience,
         in config: ProjectConfig,
-        attributes: [String: String]
-    ) -> Bool {
+        attributes: [String: String],
+        storeKey: String
+    ) async -> Bool {
         let audiences = (full.audiences ?? []).compactMap { config.audience(id: $0) }
         guard !audiences.isEmpty else { return true }
+
+        let bucketing = await decisionStore.bucketingDecisions(forStoreKey: storeKey)
+        let resolver: (String) -> Bool? = { targetExperienceKey in
+            guard let target = config.fullExperience(forKey: targetExperienceKey),
+                  let targetId = target.id else {
+                return nil
+            }
+            return bucketing[targetId] != nil
+        }
+
         let groups = audiences.flatMap { audience -> [RuleGroup] in
+            if let id = audience.id, let sentinel = config.degradedAudienceSentinels?[id] {
+                return Self.flattenDegradedAudienceRules(sentinel)
+            }
             guard let rules = audience.rules?.value1 else { return [] }
             return RuleAdapter.flatten(rules)
         }
-        return ruleManager.evaluate(rules: groups, against: attributes)
+        return ruleManager.evaluate(
+            rules: groups, against: attributes, resolvingBucketedIntoExperienceKey: resolver
+        )
     }
 
     /// Whether the experience's LOCATION gate passes for `locationProperties`.
