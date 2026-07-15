@@ -64,6 +64,19 @@ struct MutualExclusionGenericRegressionTests {
         GenericLeafCase(
             description: "bool family (is_desktop, match_type equals)",
             leafJSON: #"{ "rule_type": "is_desktop", "value": true, "matching": { "match_type": "equals" } }"#
+        ),
+        // AC7 coverage gap (decision-audit finding 2): the three cases above are all NAMED
+        // families (matched off `rule_type` itself). A `generic_*_key_value` family — matched off
+        // the leaf's EXPLICIT `key` sibling (`value3.key` typed / top-level `key` JSON, per
+        // `RuleAdapter.condition(fromTextKeyValue:)` and the JSON path's `keyValueRuleTypes`
+        // routing) — was NOT exercised through this typed-vs-JSON equivalence lock. Real fullstack
+        // configs serve these key-value families, and a degraded audience (carrying the new
+        // `bucketed_into_experience_key` leaf) can carry a `generic_text_key_value` sibling in the
+        // SAME tree, so it flows through the JSON path too.
+        GenericLeafCase(
+            description: "generic text key-value family (explicit key \"browser\", match_type contains)",
+            leafJSON: #"{ "rule_type": "generic_text_key_value", "key": "browser", "value": "chrome", "#
+                + #""matching": { "match_type": "contains" } }"#
         )
     ]
 
