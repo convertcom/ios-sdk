@@ -77,6 +77,23 @@ struct MutualExclusionGenericRegressionTests {
             description: "generic text key-value family (explicit key \"browser\", match_type contains)",
             leafJSON: #"{ "rule_type": "generic_text_key_value", "key": "browser", "value": "chrome", "#
                 + #""matching": { "match_type": "contains" } }"#
+        ),
+        // AC7 divergence probe (code-review R1): `bucketed_into_experience` is a VALID
+        // `RuleElementAudience` discriminator (`BoolMatchRulesTypes.bucketed_into_experience` —
+        // ConfigSchemas.swift) decoded by the SAME `GenericBoolMatchRule` struct as `is_desktop`
+        // above, but `RuleAdapter.condition(fromAudienceLeaf:)` deliberately does NOT route it to
+        // `condition(fromBool:)` (`RuleAdapter.swift`'s `fromBool` doc comment: "the stateful
+        // `bucketed_into_experience` is ALSO `GenericBoolMatchRule` but is deliberately NOT routed
+        // here") — it falls to `default: degraded()` (matchType "", negation false). The JSON-sentinel
+        // path (`RuleAdapter+JSONSentinelFlatten.swift`) has NO such allowlist: any `rule_type` other
+        // than the stateful `bucketed_into_experience_key` sentinel routes through `make(...)` with
+        // the leaf's REAL `matching.negated`/`match_type` — so this leaf's `negated: true` must survive
+        // on the JSON path while the typed path degrades it to `false`, proving the two paths DIVERGE
+        // for this unmapped family.
+        GenericLeafCase(
+            description: "bucketed_into_experience (GenericBoolMatchRule, unmapped in typed switch, negated true)",
+            leafJSON: #"{ "rule_type": "bucketed_into_experience", "value": true, "#
+                + #""matching": { "match_type": "equals", "negated": true } }"#
         )
     ]
 
