@@ -182,7 +182,10 @@ struct ProjectConfigAudienceDegradeTests {
     /// "sentinel exposing rule_type/value/negated" shape concrete — see the file-header note on why
     /// this could not instead be asserted directly against a new `ProjectConfig` accessor without
     /// risking a target-wide compile break.
-    @Test("SentinelWrapped<ConfigAudience> already round-trips an unknown leaf's rule_type/value/negated (infra evidence for GREEN, not the ProjectConfig contract)")
+    @Test("""
+        SentinelWrapped<ConfigAudience> already round-trips an unknown leaf's rule_type/value/negated \
+        (infra evidence for GREEN, not the ProjectConfig contract)
+        """)
     func sentinelWrappedAudienceAlreadyPreservesUnknownLeafFidelity() throws {
         let badAudienceJSON = Self.audienceWithLeafJSON(id: "aud-bad", key: "bad", leafJSON: Self.unknownLeafJSON)
         let data = Data(badAudienceJSON.utf8)
@@ -312,7 +315,10 @@ struct ProjectConfigAudienceDegradeTests {
     /// The `String` value of the `name`-keyed member of an `.object` node, or `nil` when absent or
     /// not a JSON string.
     static func stringMember(named name: String, in value: JSONValue) -> String? {
-        guard case let .object(pairs) = value, case let .string(string)? = pairs.first(where: { $0.key == name })?.value else {
+        guard
+            case let .object(pairs) = value,
+            case let .string(string)? = pairs.first(where: { $0.key == name })?.value
+        else {
             return nil
         }
         return string
@@ -321,7 +327,10 @@ struct ProjectConfigAudienceDegradeTests {
     /// The `Bool` value of the `name`-keyed member of an `.object` node, or `nil` when absent or not
     /// a JSON boolean.
     static func boolMember(named name: String, in value: JSONValue) -> Bool? {
-        guard case let .object(pairs) = value, case let .bool(bool)? = pairs.first(where: { $0.key == name })?.value else {
+        guard
+            case let .object(pairs) = value,
+            case let .bool(bool)? = pairs.first(where: { $0.key == name })?.value
+        else {
             return nil
         }
         return bool
