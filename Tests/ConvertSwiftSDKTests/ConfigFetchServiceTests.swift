@@ -1,66 +1,33 @@
 // Tests/ConvertSwiftSDKTests/ConfigFetchServiceTests.swift
 //
-// RED phase (Epic 2, Story 3 — config-fetch coordinator): this suite exercises
-// `ConfigFetchService`, the `Sendable` coordinator that builds the config URL,
-// fetches the live config (write-through caching the RAW response bytes), and
-// loads / repairs the on-disk cache. The type DOES NOT EXIST YET — the GREEN step
-// creates it at `Sources/ConvertSwiftSDK/ConfigFetchService.swift`. Until then this file
-// fails to compile with "cannot find 'ConfigFetchService' in scope", which is the
-// expected RED state for this TDD cycle. (Every collaborator referenced here —
-// `MockHTTPClient`, `MockLogger`, `LockedBox` from `MockPorts.swift`,
-// `CoordinatedFileStore`, `ConvertConfiguration`, `CacheLevel`, `ProjectConfig`,
-// `LogLevel` — already compiles; only the `ConfigFetchService` references are
-// unresolved.)
+// `ConfigFetchService` (Epic 2, Story 3) coordinator suite: builds the config URL, fetches the
+// live config (write-through caching the RAW response bytes), and loads / repairs the on-disk
+// cache. Public API driven by these tests: `buildConfigURL() throws -> URL`,
+// `loadCachedConfig() async -> ProjectConfig?`, `fetchLiveConfig() async -> ProjectConfig?` — all
+// return optionals; none throw to the caller, none touch `ConfigStore`.
 //
-// ── ASSUMED GREEN INIT SEAM (load-bearing — the implementer MUST match this) ───
-// The service takes the cache URL via init so tests inject a UNIQUE TEMP URL and
-// never touch the real Application Support directory (where
-// `CoordinatedFileStore.configCacheURL(for:)` points). In production the `cacheURL`
-// argument DEFAULTS to that real path; tests override it. Assumed signature:
-//
-//   init(
-//       httpClient: any HTTPClient,
-//       fileStore: CoordinatedFileStore,
-//       configuration: ConvertConfiguration,
-//       logger: any Logger,
-//       cacheURL: URL = CoordinatedFileStore.configCacheURL(for: configuration.sdkKey)
-//   )
-//
-// (A Swift default-argument expression cannot reference an earlier parameter, so the
-// GREEN implementer either provides this via a convenience overload / factory or a
-// nil-sentinel that resolves to `configCacheURL(for: configuration.sdkKey)` inside
-// the body. What the TESTS require is only that `cacheURL:` is injectable; the
-// production default path is the implementer's to wire. The seam is the contract.)
-//
-// Public API driven by these tests:
-//   * `func buildConfigURL() throws -> URL`
-//   * `func loadCachedConfig() async -> ProjectConfig?`
-//   * `func fetchLiveConfig() async -> ProjectConfig?`
-// The service returns optionals and does NOT touch ConfigStore.
+// ── Test seam ────────────────────────────────────────────────────────────────
+// The designated init takes an explicit `cacheURL` so tests inject a UNIQUE TEMP path and never
+// touch the real Application Support directory (`CoordinatedFileStore.configCacheURL(for:)`); a
+// convenience init derives the production default from `configuration.sdkKey`.
 //
 // ── Transport double: MockHTTPClient (NOT URLProtocolStub) ────────────────────
-// These tests use the `MockHTTPClient` ACTOR from `MockPorts.swift`, never
-// `URLProtocolStub`. Rationale: (1) `MockHTTPClient(response: (data, httpResponse))`
-// lets a test set the EXACT response `Data` byte-for-byte — required for the raw-byte
-// write-through assertion (`fetchLiveConfigWritesRawBytesToCache`), which proves the
-// service caches the verbatim bytes from `get()` rather than re-encoding the decoded
-// config (a re-encode would reorder keys and the byte-equality would fail). (2)
-// `MockHTTPClient` holds NO process-global state — each test gets its own instance —
-// so this suite is parallel-safe and needs NO nesting under the `.serialized`
-// `URLProtocolStubBackedTests` parent: URLProtocolStub's global `reset()` race
-// (documented in `URLSessionHTTPClientTests.swift`) is structurally impossible here.
-// `MockHTTPClient.requests` records each request's headers for the auth assertions.
+// `MockHTTPClient` (`MockPorts.swift`) lets a test set the EXACT response `Data` byte-for-byte —
+// required for the raw-byte write-through assertion (`fetchLiveConfigWritesRawBytesToCache`),
+// which proves the service caches the verbatim bytes from `get()` rather than re-encoding the
+// decoded config. It holds NO process-global state, so this suite is parallel-safe and needs NO
+// nesting under the `.serialized` `URLProtocolStubBackedTests` parent.
 //
-// ── Isolation + cleanup shape (NFR21 — no test artifacts leak) ────────────────
-// Every cache URL is a UNIQUE path under `FileManager.default.temporaryDirectory`
-// (a fresh UUID subdirectory) so cases never collide and never touch the real
-// Application Support dir. Each UUID dir is recorded and removed in `deinit`
-// (swift-testing makes a fresh suite instance per `@Test` and runs `deinit` after
-// it). A `final class` (not `struct`) carries the `deinit`; the recorded-dirs set is
-// held in a `LockedBox` (the lock-cell from `MockPorts.swift`) so the mutable
-// instance state is `Sendable`-safe on this package's macOS 12 / iOS 15 floor (where
-// `Synchronization.Mutex` is unavailable) and reads soundly from `deinit` — mirroring
+// ── Isolation + cleanup (NFR21 — no test artifacts leak) ───────────────────────
+// Every cache URL is a UNIQUE path under a fresh UUID subdirectory of
+// `FileManager.default.temporaryDirectory`, recorded and removed in `deinit` (a `final class`,
+// not `struct`, so it can carry one) via a `LockedBox`-guarded set — mirroring
 // `CoordinatedFileStoreTests`.
+//
+// ── Companion file ─────────────────────────────────────────────────────────────
+// The qs-02 IOS-1 `debugToken` tests live in the sibling `ConfigFetchServiceDebugTokenTests.swift`
+// (an extension of this suite), split out to keep this file and its `type_body_length` under the
+// project's lint limits.
 
 import Testing
 import Foundation
@@ -132,8 +99,9 @@ final class ConfigFetchServiceTests {
     /// service under test, the transport double (to read recorded request headers),
     /// the file store + the temp `cacheURL` (to inspect on-disk bytes), and the logger
     /// (to assert emitted WARNs). A named struct (not a tuple) keeps the `large_tuple`
-    /// lint rule satisfied and lets tests read handles by name.
-    private struct SUT {
+    /// lint rule satisfied and lets tests read handles by name. Not `private` — the
+    /// companion `ConfigFetchServiceDebugTokenTests.swift` extension names this type.
+    struct SUT {
         let service: ConfigFetchService
         let httpClient: MockHTTPClient
         let fileStore: CoordinatedFileStore
@@ -158,21 +126,33 @@ final class ConfigFetchServiceTests {
     ///     Pass the EXACT bytes when a test asserts on the cached payload.
     ///   - httpError: canned `URLError` thrown by `get()`; takes precedence over a
     ///     configured response (matches `MockHTTPClient` semantics).
-    private func makeSUT(
+    ///   - debugToken: optional QA debug token (qs-02 IOS-1) — drives the
+    ///     `debug_token=` query param, the forced/deduped `_conv_low_cache=1`, and the
+    ///     cache-elimination behavior of `loadCachedConfig()` / `fetchLiveConfig()`.
+    ///
+    /// ── ASSUMED GREEN INIT SEAM (qs-02 IOS-1) ──────────────────────────────────────
+    /// `ConvertConfiguration.init` does not have `debugToken` yet (current last param is
+    /// `networkCacheLevel`); this forwards `debugToken` AFTER it, assuming GREEN appends
+    /// `debugToken: String? = nil` as the new last parameter — a one-line reorder here if not.
+    /// Not `private` — reused (not duplicated) by the companion
+    /// `ConfigFetchServiceDebugTokenTests.swift` extension.
+    func makeSUT(
         sdkKey: String = ConfigFetchServiceTests.sdkKey,
         secret: String? = nil,
         environment: String? = nil,
         cacheLevel: CacheLevel = .normal,
         cacheURL: URL? = nil,
         httpResponse: Data? = nil,
-        httpError: URLError? = nil
+        httpError: URLError? = nil,
+        debugToken: String? = nil
     ) -> SUT {
         let resolvedCacheURL = cacheURL ?? uniqueCacheURL()
         let configuration = ConvertConfiguration(
             sdkKey: sdkKey,
             sdkKeySecret: secret,
             environment: environment,
-            networkCacheLevel: cacheLevel
+            networkCacheLevel: cacheLevel,
+            debugToken: debugToken
         )
         let cannedResponse = httpResponse.map { ($0, okResponse(for: resolvedCacheURL)) }
         let httpClient = MockHTTPClient(response: cannedResponse, error: httpError)

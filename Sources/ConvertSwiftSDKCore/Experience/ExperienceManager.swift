@@ -141,6 +141,17 @@ public struct ExperienceManager: Sendable {
     ///   - locationProperties: The data map the location gate evaluates against.
     ///   - enableTracking: When `false`, suppresses the bucketing enqueue (passed through to the
     ///     bucket step); the variation is still selected, persisted, and fired.
+    ///   - persistDecision: When `false`, suppresses the sticky-decision ``DecisionStore/saveDecision``
+    ///     WRITE on a NEW decision (qs-02 IOS-6, AC6 zero-trace gate) — the variation is still
+    ///     selected and the `.bucketing` event still fires; only the disk write is skipped. Sticky
+    ///     READS (the short-circuit above) are unaffected. Defaults to `true` so every existing
+    ///     call site — unaware of preview — persists exactly as before (AC10 regression safety).
+    ///   - emitBucketing: When `false`, suppresses the `.bucketing` ``EventBus`` fire on a NEW
+    ///     decision (qs-02 Fix 1, JS parity: `context.ts` wraps every `SystemEvents.BUCKETING` emit
+    ///     in `if (!this._preview)`) — the variation is still selected and persisted (subject to
+    ///     `persistDecision`); only the observer notification is skipped. Defaults to `true` so
+    ///     every existing call site — unaware of preview — fires exactly as before (AC10 regression
+    ///     safety).
     /// - Returns: The assigned ``Variation``, or `nil` on any short-circuit / gate failure / miss.
     public func selectVariation( // swiftlint:disable:this function_parameter_count
         forKey key: String,
@@ -150,7 +161,9 @@ public struct ExperienceManager: Sendable {
         projectId: String,
         attributes: [String: String],
         locationProperties: [String: String],
-        enableTracking: Bool
+        enableTracking: Bool,
+        persistDecision: Bool = true,
+        emitBucketing: Bool = true
     ) async -> Variation? {
         // 1. Resolve the full experience and its id (the id keys sticky / persist).
         guard let full = config.fullExperience(forKey: key), let experienceId = full.id else {
@@ -180,16 +193,22 @@ public struct ExperienceManager: Sendable {
             return nil
         }
 
-        // 6. PERSIST the new decision, then FIRE `.bucketing` (only on a NEW decision).
-        await decisionStore.saveDecision(
-            variationId: variation.id, experienceId: experienceId, storeKey: storeKey
-        )
-        await eventBus.fire(
-            .bucketing,
-            payload: .bucketing(BucketingPayload(
-                experienceId: experienceId, variationId: variation.id, visitorId: visitorId
-            ))
-        )
+        // 6. PERSIST the new decision (qs-02 IOS-6: skipped under preview via `persistDecision`),
+        //    then FIRE `.bucketing` on a NEW decision — gated by `emitBucketing` (qs-02 Fix 1:
+        //    skipped under preview, independent of `persistDecision`).
+        if persistDecision {
+            await decisionStore.saveDecision(
+                variationId: variation.id, experienceId: experienceId, storeKey: storeKey
+            )
+        }
+        if emitBucketing {
+            await eventBus.fire(
+                .bucketing,
+                payload: .bucketing(BucketingPayload(
+                    experienceId: experienceId, variationId: variation.id, visitorId: visitorId
+                ))
+            )
+        }
         return variation
     }
 
@@ -233,6 +252,12 @@ public struct ExperienceManager: Sendable {
     ///   - locationProperties: The data map each experience's location gate evaluates against.
     ///   - enableTracking: Forwarded UNCHANGED to every per-experience bucket; when `false` the bucketing
     ///     enqueue is suppressed (the variation is still selected, persisted, and fired).
+    ///   - persistDecision: Forwarded UNCHANGED to every per-experience ``selectVariation`` call
+    ///     (qs-02 IOS-6, AC6 zero-trace gate); defaults to `true` so every existing call site
+    ///     persists exactly as before (AC10 regression safety).
+    ///   - emitBucketing: Forwarded UNCHANGED to every per-experience ``selectVariation`` call
+    ///     (qs-02 Fix 1, JS parity); defaults to `true` so every existing call site fires exactly
+    ///     as before (AC10 regression safety).
     /// - Returns: The assigned ``Variation`` for every eligible experience, in config order; `[]` when
     ///   the config has no experiences or the visitor is eligible for none.
     public func selectVariations( // swiftlint:disable:this function_parameter_count
@@ -242,7 +267,9 @@ public struct ExperienceManager: Sendable {
         projectId: String,
         attributes: [String: String],
         locationProperties: [String: String],
-        enableTracking: Bool
+        enableTracking: Bool,
+        persistDecision: Bool = true,
+        emitBucketing: Bool = true
     ) async -> [Variation] {
         guard let experiences = config.rawExperiences, !experiences.isEmpty else { return [] }
         var results: [Variation] = []
@@ -260,7 +287,9 @@ public struct ExperienceManager: Sendable {
                 projectId: projectId,
                 attributes: attributes,
                 locationProperties: locationProperties,
-                enableTracking: enableTracking
+                enableTracking: enableTracking,
+                persistDecision: persistDecision,
+                emitBucketing: emitBucketing
             ) {
                 results.append(variation)
             }

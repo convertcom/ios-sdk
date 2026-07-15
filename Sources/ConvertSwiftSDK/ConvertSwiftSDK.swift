@@ -142,6 +142,16 @@ public final class ConvertSwiftSDK: Sendable {
     /// `configuration.networkTracking` in `init`.
     private let trackingState: TrackingState
 
+    /// The HTTP transport ``createContext`` uses to build each context's OWN per-context
+    /// ``ConfigFetchService`` for the experience-preview `?exp=` fetch (qs-02 IOS-5). `nil` (the
+    /// default — production) resolves to a fresh ``URLSessionHTTPClient`` in ``createContext``,
+    /// mirroring the MAIN config load's real transport (`ConvertSwiftSDK.swift`, the detached
+    /// load `Task`'s `activeProvider` construction); a test injects a `MockHTTPClient` to stub the
+    /// preview fetch WITHOUT touching the main `configProvider` seam — the two are separate
+    /// ``ConfigFetchService`` instances. The ``HTTPClient`` port refines `Sendable`, so this `let`
+    /// keeps the class an all-`let` `Sendable final class` with no suppression.
+    private let previewHTTPClient: (any HTTPClient)?
+
     /// Dependency-injecting initializer (the test seam). Stores its dependencies, creates the
     /// ``ConfigStore`` over the shared ``EventBus``, then launches the detached config-load
     /// task. Non-throwing and non-blocking — validation and the real config fetch happen in the
@@ -176,6 +186,10 @@ public final class ConvertSwiftSDK: Sendable {
     ///     injects a `MockLogger`.
     ///   - decisionStore: The ONE canonical ``DecisionStore`` injected into every context this SDK
     ///     creates. Defaults to a fresh empty store; a test injects its own to assert shared identity.
+    ///   - previewHTTPClient: The HTTP transport ``createContext`` uses for each context's own
+    ///     per-context experience-preview ``ConfigFetchService`` (qs-02 IOS-5). `nil` (the default)
+    ///     selects a fresh production ``URLSessionHTTPClient`` in ``createContext``; a test injects a
+    ///     `MockHTTPClient` to stub the `?exp=` preview fetch independently of `configProvider`.
     ///
     /// The body exceeds the 50-line `function_body_length` default by a small margin because it wires
     /// the SDK's full collaborator graph (config store, the resolved `EventSink`, the shared
@@ -195,7 +209,8 @@ public final class ConvertSwiftSDK: Sendable {
         keyValueStore: any KeyValueStore = UserDefaultsKeyValueStore(),
         eventSink: (any EventSink)? = nil,
         logger: any Logger = NoopLogger(),
-        decisionStore: DecisionStore = DecisionStore(logger: NoopLogger(), fileStore: ApplicationSupportFileStore())
+        decisionStore: DecisionStore = DecisionStore(logger: NoopLogger(), fileStore: ApplicationSupportFileStore()),
+        previewHTTPClient: (any HTTPClient)? = nil
     ) {
         self.configuration = configuration
         self.eventBus = eventBus
@@ -204,6 +219,7 @@ public final class ConvertSwiftSDK: Sendable {
         self.keyValueStore = keyValueStore
         self.decisionStore = decisionStore
         self.logger = logger
+        self.previewHTTPClient = previewHTTPClient
         // Seed the runtime tracking flag from the init-time config value (Story 5.6 / AC3).
         // Held as a `let` actor reference so this class stays an all-`let` Sendable final class.
         self.trackingState = TrackingState(initialValue: configuration.networkTracking)
@@ -668,6 +684,21 @@ public final class ConvertSwiftSDK: Sendable {
         }
         let coercedAttributes = coerce(attributes, label: "attribute")
         let coercedLocationProperties = coerce(locationProperties, label: "location property")
+        // A FRESH per-context ``ConfigFetchService`` (qs-02 IOS-5) — a SECOND, independent
+        // ``ConfigProviding`` instance from the MAIN config's `activeProvider` built inside the
+        // detached load `Task` above: same shape (``previewHTTPClient`` or a fresh production
+        // ``URLSessionHTTPClient``, a fresh ``CoordinatedFileStore()``, this SDK's `configuration`
+        // and `logger`), but never shared with the main config load or with any OTHER context —
+        // so a preview fetch never contends with the main config's cache file. A FRESH
+        // ``PreviewState`` per context (never a shared SDK-level instance) is what guarantees AC7
+        // isolation: one context's preview target can never leak into a sibling context.
+        let previewFetchService = ConfigFetchService(
+            httpClient: previewHTTPClient ?? URLSessionHTTPClient(sdkVersion: SDKVersion.current),
+            fileStore: CoordinatedFileStore(),
+            configuration: configuration,
+            logger: logger
+        )
+        let previewState = PreviewState(fetchService: previewFetchService)
         return ConvertContext(
             sdk: self,
             visitorId: resolvedId,
@@ -678,7 +709,8 @@ public final class ConvertSwiftSDK: Sendable {
             featureManager: featureManager,
             eventSink: eventSink,
             eventBus: eventBus,
-            logger: logger
+            logger: logger,
+            previewState: previewState
         )
     }
 }
