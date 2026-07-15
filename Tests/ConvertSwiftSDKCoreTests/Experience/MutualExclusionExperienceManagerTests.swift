@@ -1,0 +1,311 @@
+// Tests/ConvertSwiftSDKCoreTests/Experience/MutualExclusionExperienceManagerTests.swift
+//
+// RED-phase suite for IOS-3 (M2 integration, iOS mutual-exclusion qs-03): the REAL, read-only
+// resolver wired into `ExperienceManager`'s audience gate, exercised END-TO-END through the
+// PUBLIC `selectVariation` API — no new Sources symbols are referenced here (the resolver /
+// async-`audiencePasses` change described in the dispatch is entirely INTERNAL to
+// `ExperienceManager`), so this file COMPILES today and FAILS AT RUNTIME because the current
+// audience gate cannot see a degraded audience's stateful leaf at all. Spec of record:
+//   _bmad-output/planning-artifacts/2026-06-09-convert-ios-sdk/qs-03-mutual-exclusion-rule.md
+// Task/plan: work/2026-07-15-ios-sdk-mutual-exclusion/workflow-state.yaml (task IOS-3, "jmr4").
+//
+// ── Why this is RED today (a real runtime behavior gap, not a compile error) ───────────────────
+// `ExperienceManager.audiencePasses` (Experience/ExperienceManager.swift:329-341) resolves each
+// attached audience via `config.audience(id:)`, then reads its TYPED `rules?.value1`. For a
+// DEGRADED audience (IOS-1: one whose rule tree embeds the unrecognised
+// `bucketed_into_experience_key` leaf) that typed `rules` is `nil` by construction
+// (`ProjectConfig+AudienceDecoding.swift`'s `reconstructAudience(fromSentinelPayload:)` never
+// populates it) — so `guard let rules = audience.rules?.value1 else { return [] }` yields NO
+// groups for that audience. With the sole attached audience emitting zero groups,
+// `ruleManager.evaluate(rules: [], against:)` fails CLOSED (RuleManager's empty-rule-set guard,
+// `Rules/RuleManager.swift:53-61`) — so an experience gated on a degraded mutual-exclusion
+// audience returns `nil` for EVERY visitor, unconditionally, regardless of whether the visitor
+// is actually bucketed into the target. That is wrong for the never-ran-target case (AC2's
+// second half — must bucket normally) and produces no warning naming an unresolved target key
+// (AC8): the emitted warning is always the generic "empty rule set, returning false".
+//
+// GREEN (IOS-3) pre-fetches the visitor's bucketing snapshot via `DecisionStore
+// .bucketingDecisions(forStoreKey:)` (a PURE read, AC5), builds a synchronous three-state
+// resolver `(targetExperienceKey) -> Bool?` from it + `config.fullExperience(forKey:)`, routes a
+// DEGRADED audience through `RuleAdapter.flatten(_ sentinelRuleTree: JSONValue)` (reading the
+// `"rules"` member off `ProjectConfig.degradedAudienceSentinels[id]`) instead of the typed path,
+// and threads the resolver into
+// `ruleManager.evaluate(rules:against:resolvingBucketedIntoExperienceKey:)` (both from IOS-2).
+//
+// ── Fixtures ─────────────────────────────────────────────────────────────────────────────────
+// `MutualExclusionFixtures` (Support/MutualExclusionFixtures.swift) builds a two-experience
+// config: `exp-a` (always buckets, no gates — the mutual-exclusion TARGET) and `exp-b` (gated on
+// ONE degraded audience carrying the stateful leaf, optionally combined with a generic `country`
+// leaf under ALL/ANY).
+//
+// ── Test-hygiene ─────────────────────────────────────────────────────────────────────────────
+// `attributes` is `[:]` (the default) everywhere except the two AC6 combination tests, which need
+// a `country` value to drive the generic sibling leaf — proving AC4 structurally for every
+// pure-exclusion scenario. EventBus delivery is asynchronous (`fire` dispatches each callback as
+// an independent `MainActor` `Task`), so every fire-count read goes through `drain()` (a
+// `MainActor.run {}` executor barrier) — mirrors `ExperienceManagerTests.drain()` verbatim.
+// Every scenario shares ONE subject factory / one select helper (SonarQube 3% convention already
+// established by the sibling `ExperienceManagerTests`), so no ≥10-line block is copy-pasted.
+
+import Foundation
+import Testing
+@testable import ConvertSwiftSDKCore
+
+@Suite("ExperienceManager mutual-exclusion end-to-end (bucketed_into_experience_key) — IOS-3 RED")
+struct MutualExclusionExperienceManagerTests {
+
+    // MARK: - Shared identifiers
+
+    private enum Ids {
+        static let account = "a"
+        static let project = "p"
+        static let visitorRanExpA = "v-ran-a"
+        static let visitorFresh = "v-fresh"
+
+        /// The storeKey the pipeline derives — `<account>-<project>-<visitor>`.
+        static func storeKey(_ visitor: String) -> String { "\(account)-\(project)-\(visitor)" }
+    }
+
+    // MARK: - Subject factory (SonarQube 3% new-duplicated-lines gate)
+
+    /// Builds the subject with REAL collaborators wired to the passed (or default) doubles —
+    /// mirrors `ExperienceManagerTests.makeExperienceManager` (a sibling suite, not reachable
+    /// from this file's `private` scope, so re-declared here rather than forked in shape).
+    private func makeExperienceManager(
+        decisionStore: DecisionStore = DecisionStore(logger: MockLogger(), fileStore: MockFileStore()),
+        eventSink: MockEventSink = MockEventSink(),
+        eventBus: EventBus = EventBus(),
+        logger: MockLogger = MockLogger()
+    ) -> ExperienceManager {
+        ExperienceManager(
+            ruleManager: RuleManager(logger: logger),
+            bucketingManager: BucketingManager(eventSink: eventSink, logger: logger),
+            decisionStore: decisionStore,
+            eventBus: eventBus,
+            logger: logger
+        )
+    }
+
+    /// Invokes `selectVariation` with the shared account/project ids and per-scenario visitor /
+    /// attributes, with tracking always on (the mutual-exclusion rule is orthogonal to
+    /// `enableTracking`, already covered by `ExperienceManagerTests`).
+    private func select(
+        _ subject: ExperienceManager,
+        key: String,
+        in config: ProjectConfig,
+        visitorId: String,
+        attributes: [String: String] = [:]
+    ) async -> Variation? {
+        await subject.selectVariation(
+            forKey: key,
+            in: config,
+            visitorId: visitorId,
+            accountId: Ids.account,
+            projectId: Ids.project,
+            attributes: attributes,
+            locationProperties: [:],
+            enableTracking: true
+        )
+    }
+
+    /// Lets already-dispatched `MainActor` callbacks run before assertions read a capture.
+    /// Mirrors `ExperienceManagerTests.drain()` verbatim (see that file's doc for why
+    /// `Task.yield()` does not suffice).
+    private func drain() async {
+        await MainActor.run { }
+    }
+
+    // MARK: - AC2 + AC4 — end-to-end exclusion, empty attributes throughout
+
+    /// A visitor already bucketed into `exp-a` is excluded from `exp-b` (`negated: true` against
+    /// `exp-a`) — the core mutual-exclusion behavior, with `attributes` empty throughout (AC4).
+    @Test("AC2/AC4: a visitor already bucketed into exp-a is excluded from exp-b (negated rule)")
+    func visitorBucketedIntoExpAIsExcludedFromExpB() async throws {
+        let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
+            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
+                MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true)
+            ])
+        )
+        let subject = makeExperienceManager()
+
+        let variationA = await select(subject, key: "exp-a", in: config, visitorId: Ids.visitorRanExpA)
+        #expect(variationA != nil, "exp-a has no gates and must bucket")
+
+        let variationB = await select(subject, key: "exp-b", in: config, visitorId: Ids.visitorRanExpA)
+        #expect(variationB == nil, "a visitor already bucketed into exp-a must be excluded from exp-b")
+    }
+
+    /// A DIFFERENT, fresh visitor who never ran `exp-a` buckets into `exp-b` normally — the
+    /// negated exclusion dissolves when the visitor was never bucketed into the target.
+    @Test("AC2/AC4: a fresh visitor who never ran exp-a buckets into exp-b normally")
+    func freshVisitorNeverRanExpABucketsIntoExpB() async throws {
+        let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
+            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
+                MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true)
+            ])
+        )
+        let subject = makeExperienceManager()
+
+        let variationB = await select(subject, key: "exp-b", in: config, visitorId: Ids.visitorFresh)
+
+        #expect(
+            variationB?.experienceKey == "exp-b",
+            "a visitor who never ran exp-a must bucket into exp-b normally (negated exclusion dissolves)"
+        )
+    }
+
+    // MARK: - AC3 — cross-relaunch persistence (row 8)
+
+    /// `exp-a`'s decision, persisted by ONE `DecisionStore` instance, still excludes `exp-b` after
+    /// a FRESH `DecisionStore` + fresh `ExperienceManager` are constructed against the SAME
+    /// `MockFileStore` container and rehydrated via `loadFromDisk()` — simulating an app relaunch.
+    @Test("AC3: exp-a's decision persisted by one DecisionStore excludes exp-b after a fresh relaunch")
+    func crossRelaunchPersistenceExcludesExpB() async throws {
+        let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
+            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
+                MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true)
+            ])
+        )
+        let sharedFiles = MockFileStore()
+        let firstLaunchStore = DecisionStore(logger: MockLogger(), fileStore: sharedFiles)
+        let firstLaunchSubject = makeExperienceManager(decisionStore: firstLaunchStore)
+        let variationA = await select(
+            firstLaunchSubject, key: "exp-a", in: config, visitorId: Ids.visitorRanExpA
+        )
+        #expect(variationA != nil, "exp-a has no gates and must bucket on the first launch")
+
+        // Simulate relaunch: a FRESH DecisionStore + fresh ExperienceManager against the SAME
+        // MockFileStore container, rehydrated from disk — NOT carried over in-memory.
+        let relaunchStore = DecisionStore(logger: MockLogger(), fileStore: sharedFiles)
+        await relaunchStore.loadFromDisk()
+        let relaunchSubject = makeExperienceManager(decisionStore: relaunchStore)
+
+        let variationB = await select(
+            relaunchSubject, key: "exp-b", in: config, visitorId: Ids.visitorRanExpA
+        )
+
+        #expect(
+            variationB == nil,
+            "row 8: a decision persisted before relaunch must still exclude exp-b after rehydration"
+        )
+    }
+
+    // MARK: - AC5 — read-only: no new bucketing / storage write / tracking event from the check
+
+    /// Evaluating `exp-b`'s exclusion audience must not itself bucket the target, write a new
+    /// sticky decision, or enqueue a tracking event — the ONLY store entry / enqueue / fire must
+    /// be the ones `exp-a`'s OWN run already produced.
+    @Test("AC5: evaluating exp-b's exclusion rule triggers no new bucketing, write, or tracking event")
+    func exclusionRuleEvaluationIsReadOnly() async throws {
+        let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
+            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
+                MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true)
+            ])
+        )
+        let store = DecisionStore(logger: MockLogger(), fileStore: MockFileStore())
+        let sink = MockEventSink()
+        let bus = EventBus()
+        let subject = makeExperienceManager(decisionStore: store, eventSink: sink, eventBus: bus)
+        let fireCount = LockedBox(0)
+        _ = await bus.on(.bucketing) { _ in fireCount.withLock { $0 += 1 } }
+
+        _ = await select(subject, key: "exp-a", in: config, visitorId: Ids.visitorRanExpA)
+        await drain()
+        let eventsAfterA = await sink.recordedEvents().count
+        let firesAfterA = fireCount.get
+
+        let variationB = await select(subject, key: "exp-b", in: config, visitorId: Ids.visitorRanExpA)
+        await drain()
+
+        #expect(
+            variationB == nil,
+            "the exclusion must still hold for this read-only assertion to be meaningful"
+        )
+        let eventsAfterB = await sink.recordedEvents().count
+        #expect(eventsAfterB == eventsAfterA, "evaluating exp-b's audience must enqueue no new tracking event")
+        #expect(fireCount.get == firesAfterA, "evaluating exp-b's audience must fire no new .bucketing event")
+        let bucketing = await store.bucketingDecisions(forStoreKey: Ids.storeKey(Ids.visitorRanExpA))
+        #expect(
+            bucketing.count == 1,
+            "only exp-a's decision may be stored; exp-b must not be bucketed into or written"
+        )
+    }
+
+    // MARK: - AC6 — intra-audience combination with a generic rule (ALL / ANY)
+
+    /// ALL (ONE AND-block): the negated exclusion leaf AND a generic `country` leaf must BOTH
+    /// pass — a fresh (never-ran-exp-a) visitor with `country == "US"` passes; the SAME visitor
+    /// shape with `country == "UK"` fails on the generic leaf alone.
+    @Test("AC6: ALL — the negated exclusion AND a generic country rule must both pass")
+    func allCombinationRequiresBothLeavesToPass() async throws {
+        let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
+            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
+                MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true),
+                MutualExclusionFixtures.countryLeafJSON(equals: "US")
+            ])
+        )
+        let subject = makeExperienceManager()
+
+        let passes = await select(
+            subject, key: "exp-b", in: config, visitorId: "v-all-us", attributes: ["country": "US"]
+        )
+        #expect(passes != nil, "not bucketed into exp-a AND country==US: both pass -> ALL passes")
+
+        let failsOnCountry = await select(
+            subject, key: "exp-b", in: config, visitorId: "v-all-uk", attributes: ["country": "UK"]
+        )
+        #expect(
+            failsOnCountry == nil,
+            "not bucketed into exp-a but country==UK: the generic leaf fails -> ALL fails"
+        )
+    }
+
+    /// ANY (TWO OR-groups): a passing generic `country` group compensates for a FAILING
+    /// (bucketed-into-target) exclusion group — a visitor bucketed into `exp-a` (the stateful
+    /// group fails) still passes `exp-b`'s gate via the sibling `country == "US"` group.
+    @Test("AC6: ANY — a passing generic country rule compensates for a failing exclusion group")
+    func anyCombinationGenericCompensatesForFailingExclusion() async throws {
+        let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
+            audienceRulesJSON: MutualExclusionFixtures.anyOfRulesJSON([
+                MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true),
+                MutualExclusionFixtures.countryLeafJSON(equals: "US")
+            ])
+        )
+        let subject = makeExperienceManager()
+
+        let variationA = await select(subject, key: "exp-a", in: config, visitorId: Ids.visitorRanExpA)
+        #expect(variationA != nil, "exp-a has no gates and must bucket")
+
+        let passesViaCountry = await select(
+            subject, key: "exp-b", in: config, visitorId: Ids.visitorRanExpA, attributes: ["country": "US"]
+        )
+        #expect(
+            passesViaCountry != nil,
+            "the stateful group fails (bucketed into exp-a) but the country group passes -> OR passes"
+        )
+    }
+
+    // MARK: - AC8 — unknown target experience key logs a warning naming that key
+
+    /// A rule targeting an experience key absent from the config resolves `bucketedRaw = false`
+    /// (unknown target) and logs a warning NAMING the unresolved key — not the generic
+    /// "empty rule set" message the current (broken) wiring emits.
+    @Test("AC8: targeting an unknown experience key logs a warning naming it")
+    func unknownTargetExperienceKeyLogsWarning() async throws {
+        let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
+            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
+                MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-zz", negated: false)
+            ])
+        )
+        let logger = MockLogger()
+        let subject = makeExperienceManager(logger: logger)
+
+        let variation = await select(subject, key: "exp-b", in: config, visitorId: Ids.visitorFresh)
+
+        #expect(variation == nil, "an unrecognised target resolves bucketedRaw=false -> matched=false")
+        #expect(
+            logger.entries().contains { $0.level == .warn && $0.message.contains("exp-zz") },
+            "the unknown target key must be named in a warning"
+        )
+    }
+}
