@@ -27,6 +27,35 @@ extension RuleAdapter {
         "generic_text_key_value", "generic_numeric_key_value", "generic_bool_key_value"
     ]
 
+    /// Named (non-key-value) `rule_type` discriminators the typed switch
+    /// `RuleAdapter.condition(fromAudienceLeaf:)` (`RuleAdapter.swift`) routes to a LIVE extractor.
+    /// This is the JSON-walk's coverage boundary and MUST match that switch's covered cases
+    /// exactly, so a `rule_type` the typed switch does NOT enumerate (e.g. the stateful
+    /// `bucketed_into_experience`, or any bd-d4p-deferred family) fails closed identically on both
+    /// paths, never a wrong-positive. `condition(fromAudienceLeaf:)` is the source of truth — keep
+    /// this set in sync with it by hand; it is not shared code because the typed switch's routing
+    /// itself is out of scope for this JSON-walk feature.
+    private static let namedFamilyRuleTypes: Set<String> = [
+        // text family — condition(fromText:)
+        "browser_version", "campaign", "city", "keyword", "medium",
+        "page_tag_category_id", "page_tag_category_name", "page_tag_custom_1",
+        "page_tag_custom_2", "page_tag_custom_3", "page_tag_custom_4",
+        "page_tag_customer_id", "page_tag_page_type", "page_tag_product_name",
+        "page_tag_product_sku", "query_string", "region", "source_name", "url",
+        "url_with_query", "user_agent", "visitor_id",
+        // country — condition(fromCountry:)
+        "country",
+        // numeric family — condition(fromNumeric:)
+        "avg_time_page", "days_since_last_visit", "page_tag_product_price",
+        "pages_visited_count", "visit_duration", "visits_count",
+        // bool family — condition(fromBool:); NOTE `bucketed_into_experience` is ALSO
+        // `GenericBoolMatchRule` but is deliberately NOT in this set, mirroring the typed switch's
+        // `fromBool` doc comment that it stays unrouted (falls through to `default: degraded()`).
+        "is_desktop", "is_mobile", "is_tablet",
+        // singleton families
+        "cookie", "language", "browser_name", "os"
+    ]
+
     /// Flattens a `rules` sub-tree captured as a raw `JSONValue` sentinel (the shape a degraded
     /// audience's `rules` member has — see `ProjectConfig+AudienceDecoding.swift`) into the same
     /// flat `[RuleGroup]` model the typed overloads in `RuleAdapter.swift` produce: one
@@ -95,10 +124,20 @@ extension RuleAdapter {
             )
         }
 
-        let key = keyValueRuleTypes.contains(ruleType)
-            ? (stringValue(of: "key", in: pairs) ?? "")
-            : ruleType
-        return make(key: key, value: ruleValueString(rawValue), negated: negated, matchType: matchType)
+        if keyValueRuleTypes.contains(ruleType) {
+            let key = stringValue(of: "key", in: pairs) ?? ""
+            return make(key: key, value: ruleValueString(rawValue), negated: negated, matchType: matchType)
+        }
+
+        // Coverage-boundary gate (code-review R1 / AC7 divergence probe): a `rule_type` NOT in the
+        // named-family allowlist above — e.g. `bucketed_into_experience`, or any bd-d4p-deferred
+        // family — is UNMAPPED in the typed switch too, so it must degrade fail-closed here as
+        // well, rather than routing through `make(...)` with the leaf's real matching/value.
+        guard namedFamilyRuleTypes.contains(ruleType) else {
+            return degraded()
+        }
+
+        return make(key: ruleType, value: ruleValueString(rawValue), negated: negated, matchType: matchType)
     }
 
     /// Converts a leaf's raw `value` member to the `String?` ``RuleCondition/value`` needs,
