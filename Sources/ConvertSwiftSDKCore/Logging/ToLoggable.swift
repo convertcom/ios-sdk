@@ -77,12 +77,20 @@ private func maskedKey(for token: String) -> String {
 /// One alternation (not two independently-run regexes) so future secret-param additions stay a
 /// single-pattern extension; the two alternatives are told apart per-match via the presence /
 /// absence of capture group 1, which only the `sdkKeySecret|sdkKey` branch populates.
+///
+/// The `debug_token` branch is anchored with a negative lookbehind on a preceding word character
+/// (`(?<![A-Za-z0-9_])`) so a lookalike param name like `x_debug_token=…` is NOT matched (and
+/// therefore not over-stripped) — the lookbehind blocks a match only when `debug_token` is
+/// preceded by an identifier character, so a real `debug_token=<value>` is still fully stripped
+/// whether it sits right after `?`, after `&`, or at the very start of the string (no preceding
+/// character at all). This is safer than an `(?<=[?&])`-style lookbehind (used on Android),
+/// which would incorrectly MISS a token at the very start of a string with no leading `?`/`&`.
 private func stripSecretQueryParams(from value: String) -> String {
     // Match `<param>=<value>` up to the next `&`, `#`, whitespace, or end of string. Group 1
     // captures the masked-param-name branch only; the `debug_token` branch has no capture group,
     // so `match.range(at: 1)` is `NSNotFound` for it (the per-match discriminator below).
     guard let regex = try? NSRegularExpression(
-        pattern: "(?:(sdkKeySecret|sdkKey)=[^&#\\s]*)|debug_token=[^&#\\s]*"
+        pattern: "(?:(sdkKeySecret|sdkKey)=[^&#\\s]*)|(?<![A-Za-z0-9_])debug_token=[^&#\\s]*"
     ) else {
         return value
     }

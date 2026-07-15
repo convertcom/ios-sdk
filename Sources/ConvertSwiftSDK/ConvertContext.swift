@@ -292,10 +292,12 @@ public final class ConvertContext: Sendable {
         let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
         let attributes = mergedAttributes(stringAttributes(), with: segments)
         // Thread the COMBINED gate (FR6 global tracking, per-call `enableTracking`, and IOS-6's
-        // `!previewActive`) into the manager: the variation is still selected/persisted/fired, but
+        // `!previewActive`) into the manager: the variation is still selected/persisted, but
         // `BucketingManager` skips the enqueue when ANY flag is false (Story 5.4/5.6; qs-02 IOS-6
         // extends to preview). `persistDecision: !previewActive` also suppresses the sticky WRITE for
-        // a sibling under preview (AC6); the sticky READ above is unaffected.
+        // a sibling under preview (AC6); the sticky READ above is unaffected. `emitBucketing:
+        // !previewActive` (qs-02 Fix 1, JS parity) suppresses the `.bucketing` EventBus fire for
+        // every experience while preview is active, matching JS's `if (!this._preview)` guard.
         return await experienceManager.selectVariation(
             forKey: key,
             in: config,
@@ -305,7 +307,8 @@ public final class ConvertContext: Sendable {
             attributes: attributes,
             locationProperties: stringLocationProperties(),
             enableTracking: await sdk.isTrackingEnabled() && enableTracking && !previewActive,
-            persistDecision: !previewActive
+            persistDecision: !previewActive,
+            emitBucketing: !previewActive
         )
     }
 
@@ -396,7 +399,9 @@ public final class ConvertContext: Sendable {
         // Thread the COMBINED gate (global tracking, per-call `enableTracking`, IOS-6's
         // `!previewActive`) into the bulk path, mirroring the single-experience path (Story 5.4/5.6;
         // qs-02 IOS-6 extends to preview). `persistDecision: !previewActive` suppresses the sticky
-        // WRITE for each sibling under preview (AC6).
+        // WRITE for each sibling under preview (AC6). `emitBucketing: !previewActive` (qs-02 Fix 1,
+        // JS parity) suppresses the `.bucketing` EventBus fire for every sibling while preview is
+        // active, matching JS's `if (!this._preview)` guard.
         var results = await experienceManager.selectVariations(
             in: effectiveConfig,
             visitorId: visitorId,
@@ -405,7 +410,8 @@ public final class ConvertContext: Sendable {
             attributes: attributes,
             locationProperties: stringLocationProperties(),
             enableTracking: await sdk.isTrackingEnabled() && enableTracking && !previewActive,
-            persistDecision: !previewActive
+            persistDecision: !previewActive,
+            emitBucketing: !previewActive
         )
         if let forced {
             results.append(forced)
@@ -447,11 +453,12 @@ public final class ConvertContext: Sendable {
     /// on the experience/conversion paths, not at this caller.
     ///
     /// qs-02 IOS-fix2 / contract §2 (zero-trace): a preview target on THIS context (any key, not just a
-    /// carrying experience's) still suppresses the bucketing enqueue and the sticky WRITE for whichever
-    /// experience carries this feature — gated on the PER-CONTEXT `previewState`, never the global
-    /// `network.tracking` flag (deliberately NOT combined with it, mirroring the scope asymmetry above:
-    /// the feature path stays uncoupled from `isTrackingEnabled()`). The feature itself still RESOLVES
-    /// normally (coherent rendering) — only tracking/persistence at the source is suppressed.
+    /// carrying experience's) still suppresses the bucketing enqueue, the sticky WRITE, and (qs-02 Fix
+    /// 1, JS parity) the `.bucketing` `EventBus` fire for whichever experience carries this feature —
+    /// gated on the PER-CONTEXT `previewState`, never the global `network.tracking` flag (deliberately
+    /// NOT combined with it, mirroring the scope asymmetry above: the feature path stays uncoupled from
+    /// `isTrackingEnabled()`). The feature itself still RESOLVES normally (coherent rendering) — only
+    /// tracking/persistence/observer-notification at the source is suppressed.
     /// - Parameter key: The feature `key` to look up and resolve.
     /// - Returns: The resolved ``Feature`` — `.enabled` with typed variables, or `.disabled` on a
     ///   missing snapshot / miss.
@@ -484,7 +491,8 @@ public final class ConvertContext: Sendable {
             attributes: attributes,
             locationProperties: stringLocationProperties(),
             enableTracking: !previewActive,
-            persistDecision: !previewActive
+            persistDecision: !previewActive,
+            emitBucketing: !previewActive
         )
     }
 
@@ -536,7 +544,8 @@ public final class ConvertContext: Sendable {
             attributes: attributes,
             locationProperties: stringLocationProperties(),
             enableTracking: !previewActive,
-            persistDecision: !previewActive
+            persistDecision: !previewActive,
+            emitBucketing: !previewActive
         )
     }
 

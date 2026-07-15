@@ -86,6 +86,9 @@ public struct FeatureManager: Sendable {
     ///   - persistDecision: Forwarded to the delegated `selectVariation` call — suppresses the sticky
     ///     decision WRITE at the source (e.g. under experiment preview). Defaults to `true` (today's
     ///     behavior, unchanged for every other caller).
+    ///   - emitBucketing: Forwarded to the delegated `selectVariation` call — suppresses the
+    ///     `.bucketing` `EventBus` fire at the source (qs-02 Fix 1, e.g. under experiment preview).
+    ///     Defaults to `true` (today's behavior, unchanged for every other caller).
     /// - Returns: The resolved ``Feature`` — `.enabled` with typed variables, or `.disabled`.
     public func evaluateFeature( // swiftlint:disable:this function_parameter_count
         key: String,
@@ -96,7 +99,8 @@ public struct FeatureManager: Sendable {
         attributes: [String: String],
         locationProperties: [String: String],
         enableTracking: Bool = true,
-        persistDecision: Bool = true
+        persistDecision: Bool = true,
+        emitBucketing: Bool = true
     ) async -> Feature {
         // 1. Look up the feature; a miss is a population-layer warning, then disabled.
         guard let feature = config.features?.first(where: { $0.key == key }) else {
@@ -122,7 +126,8 @@ public struct FeatureManager: Sendable {
                 attributes: attributes,
                 locationProperties: locationProperties,
                 enableTracking: enableTracking,
-                persistDecision: persistDecision
+                persistDecision: persistDecision,
+                emitBucketing: emitBucketing
             )
             // 3c. Visitor not bucketed into this carrier — a later experience might still carry it.
             guard let variation else { continue }
@@ -161,6 +166,9 @@ public struct FeatureManager: Sendable {
     ///   - persistDecision: Forwarded to each ``evaluateFeature`` call — suppresses the sticky
     ///     decision WRITE at the source (e.g. under experiment preview). Defaults to `true` (today's
     ///     behavior, unchanged for every other caller).
+    ///   - emitBucketing: Forwarded to each ``evaluateFeature`` call — suppresses the `.bucketing`
+    ///     `EventBus` fire at the source (qs-02 Fix 1, e.g. under experiment preview). Defaults to
+    ///     `true` (today's behavior, unchanged for every other caller).
     /// - Returns: One ``Feature`` per `config.features` entry, in config order; `[]` when empty.
     public func evaluateAllFeatures( // swiftlint:disable:this function_parameter_count
         in config: ProjectConfig,
@@ -170,7 +178,8 @@ public struct FeatureManager: Sendable {
         attributes: [String: String],
         locationProperties: [String: String],
         enableTracking: Bool = true,
-        persistDecision: Bool = true
+        persistDecision: Bool = true,
+        emitBucketing: Bool = true
     ) async -> [Feature] {
         guard let features = config.features, !features.isEmpty else { return [] }
         var results: [Feature] = []
@@ -186,7 +195,8 @@ public struct FeatureManager: Sendable {
                 attributes: attributes,
                 locationProperties: locationProperties,
                 enableTracking: enableTracking,
-                persistDecision: persistDecision
+                persistDecision: persistDecision,
+                emitBucketing: emitBucketing
             )
             results.append(resolved)
         }

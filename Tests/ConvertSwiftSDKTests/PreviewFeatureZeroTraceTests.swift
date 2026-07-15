@@ -153,6 +153,19 @@ struct PreviewFeatureZeroTraceTests {
         )
     }
 
+    // MARK: - `.bucketing` observer capture (qs-02 Fix 1 — mirrors
+    // `PreviewZeroTraceTests.subscribeBucketingCount`'s `sdk.on(.bucketing)` + `LockedBox` pattern;
+    // this file owns its own copy per the established per-suite-file wiring precedent above)
+
+    /// Subscribes a `.bucketing` fire-count counter on `sdk`'s bus, returning the counter and the
+    /// token to `off` when the caller is done. `EventBus.fire` delivers each callback as an
+    /// independent `MainActor` task, so callers `await MainActor.run { }` before reading the count.
+    private func subscribeBucketingCount(on sdk: ConvertSwiftSDK) async -> (LockedBox<Int>, EventListenerToken) {
+        let fired = LockedBox<Int>(0)
+        let token = await sdk.on(.bucketing) { _ in fired.withLock { $0 += 1 } }
+        return (fired, token)
+    }
+
     // MARK: - AC6 gap: the FEATURE path is NOT currently preview-gated (RED)
 
     /// Confirms preview is genuinely active first (a forced `runExperience` result on the UNRELATED
@@ -160,13 +173,15 @@ struct PreviewFeatureZeroTraceTests {
     /// `runFeatures()` for a feature carried by a SEPARATE 100%-traffic, never-before-decided
     /// experience and asserts: the feature STILL resolves `.enabled` (coherent rendering, contract
     /// §2 — this is NOT an early-return-to-disabled test) while ZERO writes ever reach the shared
-    /// `MockFileStore` spy and ZERO `.bucketing` entries ever reach the on-disk queue file / the
-    /// uploader. Expected to FAIL (RED) today, per the file-header gap.
+    /// `MockFileStore` spy, ZERO `.bucketing` entries ever reach the on-disk queue file / the
+    /// uploader, and (qs-02 Fix 1) ZERO `.bucketing` OBSERVER events are ever delivered. Expected to
+    /// FAIL (RED) today, per the file-header gap.
     @Test("preview-active context's runFeatures produces zero trace and still resolves the feature (AC6 gap, IOS-fix2)")
     func previewContextFeaturePathProducesZeroTrace() async throws {
         let sut = try await makeSUT()
         defer { try? FileManager.default.removeItem(at: sut.queueStoreURL) }
         let context = sut.sdk.createContext(visitorId: "preview-feature-visitor")
+        let (bucketingFired, bucketingToken) = await subscribeBucketingCount(on: sut.sdk)
 
         await context.setPreview(experienceId: Self.targetExperienceId, variationId: Self.targetForcedVariationId)
         let forced = await context.runExperience(Self.targetKey)
@@ -194,6 +209,41 @@ struct PreviewFeatureZeroTraceTests {
             await sut.decisionFileStore.contents(at: decisionURL) == nil,
             "zero-trace: runFeatures must not write a sticky decision under preview"
         )
+
+        await MainActor.run { }
+        #expect(
+            bucketingFired.get == 0,
+            "zero-trace (Fix 1): runFeatures must not fire the .bucketing observer event under preview"
+        )
+        await sut.sdk.off(bucketingToken)
+    }
+
+    /// Companion to ``previewContextFeaturePathProducesZeroTrace()`` for the SINGULAR `runFeature(_:)`
+    /// entry point (qs-02 Fix 1): under preview, `runFeature(_:)` must still resolve the feature
+    /// (coherent rendering) while firing ZERO `.bucketing` observer events.
+    @Test("preview-active context's runFeature produces zero .bucketing observer events (Fix 1)")
+    func previewContextSingularRunFeatureProducesZeroBucketingEvents() async throws {
+        let sut = try await makeSUT()
+        defer { try? FileManager.default.removeItem(at: sut.queueStoreURL) }
+        let context = sut.sdk.createContext(visitorId: "preview-single-feature-visitor")
+        let (bucketingFired, bucketingToken) = await subscribeBucketingCount(on: sut.sdk)
+
+        await context.setPreview(experienceId: Self.targetExperienceId, variationId: Self.targetForcedVariationId)
+        let forced = await context.runExperience(Self.targetKey)
+        #expect(forced?.id == Self.targetForcedVariationId, "preview must be genuinely active for this context")
+
+        let feature = await context.runFeature(Self.featureKey)
+        #expect(
+            feature.status == .enabled,
+            "coherent rendering: the feature must still resolve correctly under preview (contract §2)"
+        )
+
+        await MainActor.run { }
+        #expect(
+            bucketingFired.get == 0,
+            "zero-trace (Fix 1): runFeature must not fire the .bucketing observer event under preview"
+        )
+        await sut.sdk.off(bucketingToken)
     }
 
     // MARK: - AC7 companion: a non-preview context's feature path still tracks + persists normally
@@ -205,15 +255,20 @@ struct PreviewFeatureZeroTraceTests {
     /// per F-171 — no `enableTracking` argument is added). A FRESH, ISOLATED `SUT` (own queue/decision
     /// store), matching `PreviewZeroTraceTests.nonPreviewContextStillTracksAndPersists()`'s isolation
     /// rationale. Expected to PASS today (pins the CURRENT correct non-preview behaviour before GREEN
-    /// touches the feature path).
+    /// touches the feature path). Also asserts (Fix 1 regression guard) that the `.bucketing` OBSERVER
+    /// event still fires normally when preview is NOT active.
     @Test("a non-preview context's runFeatures still enqueues and persists normally (AC7 regression guard)")
     func nonPreviewContextFeaturePathStillPersists() async throws {
         let sut = try await makeSUT()
         defer { try? FileManager.default.removeItem(at: sut.queueStoreURL) }
         let context = sut.sdk.createContext(visitorId: "normal-feature-visitor")
+        let (bucketingFired, bucketingToken) = await subscribeBucketingCount(on: sut.sdk)
 
         let features = await context.runFeatures()
         #expect(features.first(where: { $0.key == Self.featureKey })?.status == .enabled)
+        await MainActor.run { }
+        #expect(bucketingFired.get == 1, "a non-preview .bucketing observer event must still fire normally")
+        await sut.sdk.off(bucketingToken)
 
         await sut.queue.persistBeforeBackground()
         let persisted = try await sut.queueStore.load()

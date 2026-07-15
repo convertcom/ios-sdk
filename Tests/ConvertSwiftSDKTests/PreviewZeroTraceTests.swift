@@ -172,6 +172,21 @@ struct PreviewZeroTraceTests {
         )
     }
 
+    // MARK: - `.bucketing` observer capture (qs-02 Fix 1 — mirrors
+    // `ConversionTrackingTests.firesConversionSystemEvent`'s `sdk.on(.conversion)` + `LockedBox`
+    // pattern, applied to `.bucketing`, so no test invents a new bus-observation mechanism)
+
+    /// Subscribes a `.bucketing` fire-count counter on `sdk`'s bus, returning the counter and the
+    /// token to `off` when the caller is done. `EventBus.fire` delivers each callback as an
+    /// independent `MainActor` task, so callers `await MainActor.run { }` (the same barrier
+    /// `ConversionTrackingTests` uses) before reading the count. Centralized so no test in this file
+    /// re-spells the subscribe wiring (SonarQube 3% gate).
+    private func subscribeBucketingCount(on sdk: ConvertSwiftSDK) async -> (LockedBox<Int>, EventListenerToken) {
+        let fired = LockedBox<Int>(0)
+        let token = await sdk.on(.bucketing) { _ in fired.withLock { $0 += 1 } }
+        return (fired, token)
+    }
+
     // MARK: - AC6: zero trace across the full preview lifecycle incl. a background transition
 
     /// The AC6 hard gate: on a PREVIEW context, run the forced target, run a SIBLING (non-previewed)
@@ -182,12 +197,16 @@ struct PreviewZeroTraceTests {
     /// background-session upload), nothing is ever persisted to the on-disk event-queue file, and
     /// nothing is ever written to the sticky-decision file. `other?.id == otherVariationId` is the
     /// AC7-adjacent "coherent rendering" companion: the sibling experience must still DECIDE normally
-    /// even though nothing about that decision may be tracked or persisted.
+    /// even though nothing about that decision may be tracked or persisted. Also asserts (qs-02 Fix 1,
+    /// JS parity — `context.ts`'s `if (!this._preview)` guard around every `SystemEvents.BUCKETING`
+    /// emit) that the `.bucketing` OBSERVER event never fires for EITHER the target or the sibling
+    /// while preview is active.
     @Test("preview lifecycle incl. background transition produces zero tracking + zero sticky writes")
     func previewLifecycleProducesZeroTrace() async throws {
         let sut = try await makeSUT()
         defer { try? FileManager.default.removeItem(at: sut.queueStoreURL) }
         let context = sut.sdk.createContext(visitorId: "preview-visitor")
+        let (bucketingFired, bucketingToken) = await subscribeBucketingCount(on: sut.sdk)
 
         await context.setPreview(experienceId: Self.targetExperienceId, variationId: Self.targetForcedVariationId)
 
@@ -198,6 +217,12 @@ struct PreviewZeroTraceTests {
         #expect(
             other?.id == Self.otherVariationId,
             "a non-previewed sibling must still decide normally (coherent rendering, contract §2)"
+        )
+
+        await MainActor.run { }
+        #expect(
+            bucketingFired.get == 0,
+            "zero-trace (Fix 1): the .bucketing observer event must not fire for the target or the sibling"
         )
 
         await context.trackConversion(Self.goalKey, goalData: [.amount: .double(9.99)])
@@ -232,6 +257,40 @@ struct PreviewZeroTraceTests {
             await sut.decisionFileStore.contents(at: decisionURL) == nil,
             "zero-trace: no sticky-decision / goal-dedup write must ever land on disk"
         )
+        await sut.sdk.off(bucketingToken)
+    }
+
+    // MARK: - AC6: the bulk `runExperiences` path must also produce zero `.bucketing` observer events
+
+    /// Companion to ``previewLifecycleProducesZeroTrace()`` for the BULK path (qs-02 Fix 1): under
+    /// preview, `runExperiences()` must still resolve BOTH the forced target (appended back per
+    /// `ConvertContext.runExperiences(enableTracking:)`'s contract) and the sibling (coherent
+    /// rendering), while firing ZERO `.bucketing` observer events for either.
+    @Test("preview-active runExperiences produces zero .bucketing observer events (Fix 1, bulk path)")
+    func previewRunExperiencesProducesZeroBucketingEvents() async throws {
+        let sut = try await makeSUT()
+        defer { try? FileManager.default.removeItem(at: sut.queueStoreURL) }
+        let context = sut.sdk.createContext(visitorId: "preview-bulk-visitor")
+        let (bucketingFired, bucketingToken) = await subscribeBucketingCount(on: sut.sdk)
+
+        await context.setPreview(experienceId: Self.targetExperienceId, variationId: Self.targetForcedVariationId)
+        let results = await context.runExperiences()
+
+        #expect(
+            results.first(where: { $0.experienceKey == Self.targetKey })?.id == Self.targetForcedVariationId,
+            "the forced target must still be present in the bulk results"
+        )
+        #expect(
+            results.first(where: { $0.experienceKey == Self.otherKey })?.id == Self.otherVariationId,
+            "the sibling must still decide normally (coherent rendering, contract §2)"
+        )
+
+        await MainActor.run { }
+        #expect(
+            bucketingFired.get == 0,
+            "zero-trace (Fix 1): runExperiences must not fire the .bucketing observer event under preview"
+        )
+        await sut.sdk.off(bucketingToken)
     }
 
     // MARK: - AC7 companion: a non-preview context must still track + persist normally
@@ -241,15 +300,21 @@ struct PreviewZeroTraceTests {
     /// adds is keyed on the PER-CONTEXT `previewActive` flag, not the SDK-shared tracking state (which
     /// would silently break every non-preview caller). A FRESH, ISOLATED `SUT` (own queue/decision
     /// store) — sharing this SUT with the zero-trace test above would let a genuine enqueue collide
-    /// with that test's "must stay empty" assertions.
+    /// with that test's "must stay empty" assertions. Also asserts (Fix 1 regression guard) that the
+    /// `.bucketing` OBSERVER event still fires normally when preview is NOT active — proving the new
+    /// `emitBucketing` gate is keyed on `previewActive`, not a blanket suppression.
     @Test("a concurrent non-preview context still enqueues and persists normally (AC7 regression guard)")
     func nonPreviewContextStillTracksAndPersists() async throws {
         let sut = try await makeSUT()
         defer { try? FileManager.default.removeItem(at: sut.queueStoreURL) }
         let context = sut.sdk.createContext(visitorId: "normal-visitor")
+        let (bucketingFired, bucketingToken) = await subscribeBucketingCount(on: sut.sdk)
 
         let other = await context.runExperience(Self.otherKey)
         #expect(other?.id == Self.otherVariationId)
+        await MainActor.run { }
+        #expect(bucketingFired.get == 1, "a non-preview .bucketing observer event must still fire normally")
+        await sut.sdk.off(bucketingToken)
         await context.trackConversion(Self.goalKey, goalData: [.amount: .double(9.99)])
 
         await sut.queue.persistBeforeBackground()

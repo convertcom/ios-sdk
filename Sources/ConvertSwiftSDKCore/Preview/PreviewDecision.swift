@@ -25,25 +25,36 @@ public enum PreviewDecision {
     /// Field mapping mirrors the `Variation` shape `BucketingManager.bucket`/
     /// `bucketVersionGated` build from a normal bucketed decision
     /// (`Sources/ConvertSwiftSDKCore/Bucketing/BucketingManager.swift:118-123`, `:205-210`):
-    /// optional `id`/`key` fields degrade to `""` rather than being force-unwrapped.
+    /// optional `id`/`key` fields degrade to `""` rather than being force-unwrapped — EXCEPT
+    /// `experience.key`/`experience.id`, which is treated as bad input rather than degraded (see
+    /// below): a `Variation` carrying an empty `experienceKey` would poison
+    /// `ConvertContext.runExperiences`' sibling filter (`$0.key != forced.experienceKey` becomes
+    /// `$0.key != ""`, dropping every real-keyed sibling) and could never be matched by
+    /// `runExperience`'s `forced.experienceKey == key` short-circuit either.
     ///
     /// - Parameters:
     ///   - experience: the experience config to match `variationId` against.
     ///   - variationId: the id of the variation to force.
     /// - Returns: the forced `Variation`, or `nil` when `variationId` is not present in
-    ///   `experience.variations` (inert-on-bad-input signal). Never logs, never throws.
+    ///   `experience.variations`, OR `experience.key` / `experience.id` is nil/empty
+    ///   (inert-on-bad-input signal, same `nil` as an unmatched `variationId`). Never logs, never
+    ///   throws.
     public static func forcedVariation(
         for experience: Components.Schemas.ConfigExperience,
         variationId: String
     ) -> Variation? {
+        guard let experienceKey = experience.key, !experienceKey.isEmpty,
+              let experienceId = experience.id, !experienceId.isEmpty else {
+            return nil
+        }
         guard let matched = experience.variations?.first(where: { $0.id == variationId }) else {
             return nil
         }
         return Variation(
             id: matched.id ?? "",
             key: matched.key ?? "",
-            experienceId: experience.id ?? "",
-            experienceKey: experience.key ?? ""
+            experienceId: experienceId,
+            experienceKey: experienceKey
         )
     }
 }

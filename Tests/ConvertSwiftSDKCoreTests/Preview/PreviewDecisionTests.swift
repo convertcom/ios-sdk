@@ -28,8 +28,13 @@
 //   - Matches `variationId` against `experience.variations` by `id` and returns a `Variation`
 //     in the SAME shape `BucketingManager.bucket`/`bucketVersionGated` build from a normal
 //     bucketed decision (verified at `Sources/ConvertSwiftSDKCore/Bucketing/BucketingManager.swift:118-123`
-//     and `:205-210`): `Variation(id: matched.id, key: matched.key ?? "", experienceId:
-//     experience.id ?? "", experienceKey: experience.key ?? "")`.
+//     and `:205-210`): `Variation(id: matched.id ?? "", key: matched.key ?? "", experienceId:
+//     experience.id, experienceKey: experience.key)` — EXCEPT `experience.key`/`experience.id`,
+//     which (qs-02 Fix 3) is inert-on-bad-input rather than degraded: a nil OR empty
+//     `experience.key`/`experience.id` returns `nil`, the SAME signal as an unmatched
+//     `variationId`, instead of building a `Variation` with an empty `experienceKey` that would
+//     poison `ConvertContext.runExperiences`' sibling filter and could never be matched by
+//     `runExperience`'s `experienceKey == key` short-circuit.
 //   - MUST bypass experience status/environment and variation status/traffic by construction:
 //     the signature has no attributes/environment/locationProperties parameter for a rule gate
 //     to consult, and no visitorId/hash-seed input for a bucketing walk to run — status/traffic/
@@ -40,9 +45,10 @@
 //     implementation constraint — not independently testable here without spy infrastructure,
 //     which is out of scope for this primitive; the structural signature above is the enforcement
 //     mechanism: neither collaborator is reachable without a visitorId/store to pass them).
-//   - Returns `nil` when `variationId` is not present in `experience.variations` (inert-on-bad-
-//     input signal). The primitive itself must not log or throw — the warning-log + "context
-//     behaves fully normally" wiring around this `nil` is deferred to task IOS-5.
+//   - Returns `nil` when `variationId` is not present in `experience.variations`, OR
+//     `experience.key`/`experience.id` is nil/empty (inert-on-bad-input signal). The primitive
+//     itself must not log or throw — the warning-log + "context behaves fully normally" wiring
+//     around this `nil` is deferred to task IOS-5.
 //
 // SonarQube `new_duplicated_lines_density` (3% gate): every scenario rides ONE parameterized
 // `@Test(arguments:)` over a single `forcedVariationCases` table, built from two shared
@@ -98,8 +104,8 @@ struct PreviewDecisionTests {
     /// normal decision (draft/paused status, a mismatched environment) while still expecting the
     /// forced variation back.
     private static func makeExperience(
-        id: String,
-        key: String,
+        id: String?,
+        key: String?,
         status: Components.Schemas.ExperienceStatuses? = nil,
         environment: String? = nil,
         variations: [VariationSpec]
@@ -250,6 +256,70 @@ struct PreviewDecisionTests {
                 ]
             ),
             variationId: "does-not-exist",
+            expected: nil
+        ),
+
+        // --- inert-on-bad-input (qs-02 Fix 3): nil experience.key -> nil, even on a matching
+        // variationId — a `Variation` with an empty `experienceKey` would poison
+        // `runExperiences`' sibling filter and could never be matched by `runExperience`'s
+        // `experienceKey == key` short-circuit. ---
+        ForcedVariationCase(
+            description: "nil experience.key with an otherwise-matching variationId -> nil",
+            experience: makeExperience(
+                id: "exp-nil-key",
+                key: nil,
+                status: .active,
+                variations: [
+                    VariationSpec(id: "var-1", key: "control", trafficAllocation: 100, status: .running)
+                ]
+            ),
+            variationId: "var-1",
+            expected: nil
+        ),
+
+        // --- inert-on-bad-input (qs-02 Fix 3): empty experience.key -> nil (same as nil). ---
+        ForcedVariationCase(
+            description: "empty experience.key with an otherwise-matching variationId -> nil",
+            experience: makeExperience(
+                id: "exp-empty-key",
+                key: "",
+                status: .active,
+                variations: [
+                    VariationSpec(id: "var-1", key: "control", trafficAllocation: 100, status: .running)
+                ]
+            ),
+            variationId: "var-1",
+            expected: nil
+        ),
+
+        // --- inert-on-bad-input (qs-02 Fix 3): nil experience.id -> nil, even on a matching
+        // variationId and a non-empty key. ---
+        ForcedVariationCase(
+            description: "nil experience.id with an otherwise-matching variationId -> nil",
+            experience: makeExperience(
+                id: nil,
+                key: "exp-nil-id-key",
+                status: .active,
+                variations: [
+                    VariationSpec(id: "var-1", key: "control", trafficAllocation: 100, status: .running)
+                ]
+            ),
+            variationId: "var-1",
+            expected: nil
+        ),
+
+        // --- inert-on-bad-input (qs-02 Fix 3): empty experience.id -> nil (same as nil). ---
+        ForcedVariationCase(
+            description: "empty experience.id with an otherwise-matching variationId -> nil",
+            experience: makeExperience(
+                id: "",
+                key: "exp-empty-id-key",
+                status: .active,
+                variations: [
+                    VariationSpec(id: "var-1", key: "control", trafficAllocation: 100, status: .running)
+                ]
+            ),
+            variationId: "var-1",
             expected: nil
         )
     ]
