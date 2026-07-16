@@ -318,8 +318,10 @@ internal enum RuleAdapter {
 
     /// Builds a ``RuleCondition`` from the four extracted fields, applying the documented defaults:
     /// an absent `match_type` becomes `""` (fail-closed in ``Comparisons``); an absent `negated`
-    /// becomes `false`.
-    private static func make(
+    /// becomes `false`. Internal (not `private`) so `RuleAdapter+JSONSentinelFlatten.swift`'s
+    /// JSON-sentinel leaf mapping (IOS-2, qs-03) can reuse the SAME builder the typed per-family
+    /// extractors above call, rather than forking the leaf field mapping.
+    static func make(
         key: String,
         value: String?,
         negated: Bool?,
@@ -338,8 +340,9 @@ internal enum RuleAdapter {
     /// `matchType` is absent from ``Comparisons/comparators``, so the condition evaluates to false —
     /// never a wrong-positive. `key` is left empty because no attribute lookup can succeed once the
     /// operator is unmapped. Extending coverage means adding the leaf's `case` to the switches above,
-    /// NOT changing this fail-closed default.
-    private static func degraded() -> RuleCondition {
+    /// NOT changing this fail-closed default. Internal (not `private`) for the same
+    /// `RuleAdapter+JSONSentinelFlatten.swift` reuse reason as ``make(key:value:negated:matchType:)``.
+    static func degraded() -> RuleCondition {
         RuleCondition(key: "", matchType: "", value: nil, negation: false)
     }
 }

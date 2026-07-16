@@ -179,7 +179,7 @@ public struct ExperienceManager: Sendable {
         }
 
         // 3–4. AUDIENCE then LOCATION gate (an empty resolved set is unrestricted / passes).
-        guard audiencePasses(full, in: config, attributes: attributes),
+        guard await audiencePasses(full, in: config, attributes: attributes, storeKey: storeKey),
               locationPasses(full, in: config, locationProperties: locationProperties) else {
             return nil
         }
@@ -322,22 +322,56 @@ public struct ExperienceManager: Sendable {
 
     /// Whether the experience's AUDIENCE gate passes for `attributes`.
     ///
-    /// An EMPTY resolved audience set is UNRESTRICTED → `true` (parity: an experience with no
-    /// audiences runs for everyone). Otherwise every attached audience's rules are flattened and
-    /// CONCATENATED into one outer-OR (the visitor matches if ANY audience's rules match), then
-    /// evaluated by ``RuleManager`` (which fails closed on an empty group).
+    /// An EMPTY resolved audience set is UNRESTRICTED → `true`. Otherwise EVERY attached
+    /// audience is resolved to its OWN match boolean via ``ExperienceManager
+    /// /flattenedGroups(for:in:)`` + ``ExperienceManager/statefulLeaf(in:)`` (whole-audience
+    /// EXCLUSION override through ``BucketingExclusion/resolve(targetExperienceKey:negated:
+    /// resolver:logger:)`` when a stateful leaf is detected; the generic ``RuleManager`` path
+    /// otherwise — see those declarations for the full JS-parity rationale, M2 iOS
+    /// mutual-exclusion qs-04), then composed via `full.settings?.matching_options?.audiences`
+    /// (JS `data-manager.ts:418-428`): `.all` requires every audience to match; `.any`/absent
+    /// requires only one.
+    ///
+    /// The visitor's sticky-bucketing SNAPSHOT is pre-fetched ONCE per call (a PURE read — no
+    /// LRU touch, no write, no bucketing, no tracking event; AC5) via ``DecisionStore
+    /// /bucketingDecisions(forStoreKey:)`` and closed over by a synchronous resolver: an unknown
+    /// target experience key resolves `nil` (warns, naming the key — AC8); a known target
+    /// resolves whether ITS id is a key in the pre-fetched snapshot.
     private func audiencePasses(
         _ full: Components.Schemas.ConfigExperience,
         in config: ProjectConfig,
-        attributes: [String: String]
-    ) -> Bool {
+        attributes: [String: String],
+        storeKey: String
+    ) async -> Bool {
         let audiences = (full.audiences ?? []).compactMap { config.audience(id: $0) }
         guard !audiences.isEmpty else { return true }
-        let groups = audiences.flatMap { audience -> [RuleGroup] in
-            guard let rules = audience.rules?.value1 else { return [] }
-            return RuleAdapter.flatten(rules)
+
+        let bucketing = await decisionStore.bucketingDecisions(forStoreKey: storeKey)
+        let resolver: (String) -> Bool? = { targetExperienceKey in
+            guard let target = config.fullExperience(forKey: targetExperienceKey),
+                  let targetId = target.id else {
+                return nil
+            }
+            return bucketing[targetId] != nil
         }
-        return ruleManager.evaluate(rules: groups, against: attributes)
+
+        let matches = audiences.map { audience -> Bool in
+            let groups = Self.flattenedGroups(for: audience, in: config)
+            if let leaf = Self.statefulLeaf(in: groups) {
+                return BucketingExclusion.resolve(
+                    targetExperienceKey: leaf.targetExperienceKey,
+                    negated: leaf.negated,
+                    resolver: resolver,
+                    logger: logger
+                )
+            }
+            return ruleManager.evaluate(rules: groups, against: attributes)
+        }
+
+        if full.settings?.matching_options?.audiences == .all {
+            return matches.allSatisfy { $0 }
+        }
+        return matches.contains(true)
     }
 
     /// Whether the experience's LOCATION gate passes for `locationProperties`.

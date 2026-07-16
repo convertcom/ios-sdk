@@ -76,6 +76,11 @@ enum ProjectConfigFixtures {
     ///   - alloc: The variation's 0–100 traffic percentage.
     ///   - audiences: Audience ID strings to gate on (empty ⇒ audience gate bypassed/unrestricted).
     ///   - locations: Location ID strings to gate on (empty ⇒ location gate bypassed/unrestricted).
+    ///   - matchingOptionsAudiences: Emits `settings.matching_options.audiences` as this raw wire value
+    ///     (`"all"` / `"any"`, per `Components.Schemas.GenericListMatchingOptions`) when non-`nil`. `nil`
+    ///     (the default) omits the `settings` object entirely — byte-identical to every pre-existing
+    ///     caller's output (qs-04 mutual-exclusion two-audience rework; the multi-audience ALL/ANY
+    ///     composition `matching_options` drives is exercised by `MutualExclusionExperienceManagerTests`).
     static func experienceJSON(
         id: String,
         key: String,
@@ -83,14 +88,18 @@ enum ProjectConfigFixtures {
         variationKey: String,
         alloc: Int,
         audiences: [String] = [],
-        locations: [String] = []
+        locations: [String] = [],
+        matchingOptionsAudiences: String? = nil
     ) -> String {
-        """
+        let settingsFragment = matchingOptionsAudiences.map {
+            ",\"settings\":{\"matching_options\":{\"audiences\":\"\($0)\"}}"
+        } ?? ""
+        return """
         {"id":"\(id)","key":"\(key)","type":"a/b",\
         "audiences":\(idArrayJSON(audiences)),\
         "locations":\(idArrayJSON(locations)),\
         "variations":[{"id":"\(variationId)","key":"\(variationKey)",\
-        "traffic_allocation":\(alloc)}]}
+        "traffic_allocation":\(alloc)}]\(settingsFragment)}
         """
     }
 

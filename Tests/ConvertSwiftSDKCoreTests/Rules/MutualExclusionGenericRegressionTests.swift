@@ -1,0 +1,145 @@
+// Tests/ConvertSwiftSDKCoreTests/Rules/MutualExclusionGenericRegressionTests.swift
+//
+// RED-phase suite for IOS-2 (M2 unit, iOS mutual-exclusion qs-03) — AC7 ("generic-rule regression
+// lock"): adding the JSON-sentinel `RuleAdapter.flatten(_ sentinelRuleTree: JSONValue)` overload (see
+// the sibling `MutualExclusionJSONFlattenTests.swift` for its assumed shape/rationale —
+// not re-derived here) must NOT change how a GENERIC leaf resolves through the EXISTING typed path,
+// and the NEW JSON-sentinel path must produce the SAME `RuleCondition`s the typed path already does
+// for the SAME wire leaf — "reuse, do not fork, the OR/AND/OR_WHEN semantics" (qs-03 AC7 wording).
+// Spec of record:
+//   _bmad-output/implementation-artifacts/2026-06-09-convert-ios-sdk/qs-04-mutual-exclusion-rule.md
+// Task/plan: work/2026-07-15-ios-sdk-mutual-exclusion/workflow-state.yaml (task IOS-2, "v18s").
+// (Citation path corrected: ai-driven-product-dev#86 — qs-03 was renumbered/relocated to qs-04 under
+// implementation-artifacts/ after this suite was authored. No behavioral change: this suite tests
+// `RuleAdapter.flatten` typed-vs-JSON-sentinel equivalence, which the qs-04 whole-audience-override
+// rework (see the sibling `MutualExclusionRuleManagerTests.swift` header) does not touch.)
+//
+// ── Isolation rationale (per the IOS-2 dispatch) ──────────────────────────────────────────────────
+// Kept as its OWN file, deliberately separate from `MutualExclusionJSONFlattenTests.swift`
+// (which proves a STATEFUL leaf survives ALONGSIDE a generic one) and from
+// `MutualExclusionRuleManagerTests.swift` (which proves `RuleManager`'s resolver seam) — so a
+// regression in the bit-identical generic-path contract shows up as its own isolated failure, not
+// entangled with the new stateful-leaf assertions.
+//
+// This file depends on the SAME not-yet-existing symbol as its sibling —
+// `RuleAdapter.flatten(_ sentinelRuleTree: JSONValue) -> [RuleGroup]` — and so MUST fail to COMPILE
+// today ("type 'RuleAdapter' has no member 'flatten'" for a `JSONValue` argument), the expected,
+// correct RED state; as with the sibling suites, this breaks `swift build`/`swift test` for the WHOLE
+// `ConvertSwiftSDKCoreTests` target until GREEN lands (unavoidable in a single-SPM-module target).
+//
+// ── Method ─────────────────────────────────────────────────────────────────────────────────────────
+// For each of 3 generic families (a text family via `city`, the `country` family, and the `bool`
+// family via `is_desktop` — the exact three families the IOS-2 dispatch names), the SAME leaf JSON is
+// decoded TWO ways: once through the EXISTING typed `Components.Schemas.RuleObjectAudience` decoder
+// (`RuleAdapter.flatten(_ audience:)`), once through the NEW `JSONValue` decoder
+// (`RuleAdapter.flatten(_ sentinelRuleTree:)`) — and the two `[RuleGroup]` results are asserted
+// EQUAL. `RuleGroup`/`RuleCondition` are both `Equatable` (structural, synthesized), so this is a
+// direct bit-identical comparison, not a field-by-field manual check that could itself drift.
+//
+// SonarQube `new_duplicated_lines_density` guard: ONE parameterized `@Test(arguments:)` drives all 3
+// families from a single `genericLeafCases` table + two shared decode helpers — no per-family test
+// function duplication.
+
+import Foundation
+import Testing
+@testable import ConvertSwiftSDKCore
+
+@Suite("RuleAdapter generic-rule regression lock: typed vs JSON-sentinel flatten — IOS-2 AC7 RED")
+struct MutualExclusionGenericRegressionTests {
+
+    /// One generic-family leaf JSON literal under test, reusing the EXACT shapes already proven
+    /// end-to-end by `RuleAdapterTests` (city/`contains`, country/`equals`, is_desktop/`equals`) so
+    /// this suite carries no risk of a fixture typo silently producing a false-negative "these agree"
+    /// result.
+    struct GenericLeafCase: Sendable {
+        let description: String
+        let leafJSON: String
+    }
+
+    static let genericLeafCases: [GenericLeafCase] = [
+        GenericLeafCase(
+            description: "text family (city, match_type contains)",
+            leafJSON: #"{ "rule_type": "city", "value": "NY", "matching": { "match_type": "contains" } }"#
+        ),
+        GenericLeafCase(
+            description: "country family (match_type equals)",
+            leafJSON: #"{ "rule_type": "country", "value": "US", "matching": { "match_type": "equals" } }"#
+        ),
+        GenericLeafCase(
+            description: "bool family (is_desktop, match_type equals)",
+            leafJSON: #"{ "rule_type": "is_desktop", "value": true, "matching": { "match_type": "equals" } }"#
+        ),
+        // AC7 coverage gap (decision-audit finding 2): the three cases above are all NAMED
+        // families (matched off `rule_type` itself). A `generic_*_key_value` family — matched off
+        // the leaf's EXPLICIT `key` sibling (`value3.key` typed / top-level `key` JSON, per
+        // `RuleAdapter.condition(fromTextKeyValue:)` and the JSON path's `keyValueRuleTypes`
+        // routing) — was NOT exercised through this typed-vs-JSON equivalence lock. Real fullstack
+        // configs serve these key-value families, and a degraded audience (carrying the new
+        // `bucketed_into_experience_key` leaf) can carry a `generic_text_key_value` sibling in the
+        // SAME tree, so it flows through the JSON path too.
+        GenericLeafCase(
+            description: "generic text key-value family (explicit key \"browser\", match_type contains)",
+            leafJSON: #"{ "rule_type": "generic_text_key_value", "key": "browser", "value": "chrome", "#
+                + #""matching": { "match_type": "contains" } }"#
+        ),
+        // AC7 convergence lock (code-review R1 fix, corrected in R2): `bucketed_into_experience` is a
+        // VALID `RuleElementAudience` discriminator (`BoolMatchRulesTypes.bucketed_into_experience` —
+        // ConfigSchemas.swift) decoded by the SAME `GenericBoolMatchRule` struct as `is_desktop`
+        // above, but it is UNMAPPED on BOTH paths: the typed switch
+        // `RuleAdapter.condition(fromAudienceLeaf:)` deliberately does not route it to
+        // `condition(fromBool:)` (`RuleAdapter.swift`'s `fromBool` doc comment: "the stateful
+        // `bucketed_into_experience` is ALSO `GenericBoolMatchRule` but is deliberately NOT routed
+        // here") and falls to `default: degraded()`; the JSON-sentinel path's
+        // `condition(fromSentinelLeaf:)` (`RuleAdapter+JSONSentinelFlatten.swift`) has a
+        // `namedFamilyRuleTypes` allowlist that deliberately EXCLUDES `bucketed_into_experience` for
+        // the same reason, so its `guard namedFamilyRuleTypes.contains(ruleType) else { return
+        // degraded() }` degrades this leaf too instead of routing it through `make(...)` with the
+        // leaf's real `matching.negated`/`match_type`. Both paths therefore degrade to the identical
+        // `(key "", matchType "", value nil, negation false)` — this leaf's `negated: true` does NOT
+        // survive on either path. This vector's purpose is to LOCK that convergence: it guards
+        // against re-introducing the R1 over-cover bug where the JSON path evaluated unmapped
+        // families live (using their real `negated`/`match_type` instead of degrading them), which
+        // would silently re-diverge this case from the typed path.
+        GenericLeafCase(
+            description: "bucketed_into_experience (GenericBoolMatchRule, unmapped in typed switch, negated true)",
+            leafJSON: #"{ "rule_type": "bucketed_into_experience", "value": true, "#
+                + #""matching": { "match_type": "equals", "negated": true } }"#
+        )
+    ]
+
+    /// Decodes `leavesJSON` through the EXISTING typed `RuleObjectAudience` path (the same envelope
+    /// `RuleAdapterTests.makeAudienceRules` uses).
+    private func decodeTyped(orWhenLeaves leavesJSON: String) throws -> Components.Schemas.RuleObjectAudience {
+        let envelope = """
+        { "OR": [ { "AND": [ { "OR_WHEN": [ \(leavesJSON) ] } ] } ] }
+        """
+        return try JSONDecoder().decode(
+            Components.Schemas.RuleObjectAudience.self,
+            from: Data(envelope.utf8)
+        )
+    }
+
+    /// Decodes the SAME `leavesJSON` through the NEW `JSONValue` sentinel path.
+    private func decodeSentinelRuleTree(orWhenLeaves leavesJSON: String) throws -> JSONValue {
+        let envelope = """
+        { "OR": [ { "AND": [ { "OR_WHEN": [ \(leavesJSON) ] } ] } ] }
+        """
+        return try JSONDecoder().decode(JSONValue.self, from: Data(envelope.utf8))
+    }
+
+    /// AC7: for every generic family, the typed-path and JSON-sentinel-path flatten to EQUAL
+    /// `[RuleGroup]` — the new JSON-walk must reuse, not fork, the per-leaf extraction and the
+    /// OR/AND/OR_WHEN collapse.
+    @Test(
+        "typed-path and JSON-sentinel-path flatten produce bit-identical RuleGroups per generic family",
+        arguments: genericLeafCases
+    )
+    func typedAndJSONPathsAgree(_ testCase: GenericLeafCase) throws {
+        let typedGroups = RuleAdapter.flatten(try decodeTyped(orWhenLeaves: testCase.leafJSON))
+        let jsonGroups = RuleAdapter.flatten(try decodeSentinelRuleTree(orWhenLeaves: testCase.leafJSON))
+        #expect(
+            typedGroups == jsonGroups,
+            "\(testCase.description): typed-path and JSON-sentinel-path must produce identical RuleGroups"
+        )
+    }
+}

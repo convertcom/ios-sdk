@@ -1,11 +1,15 @@
 // RuleManager.swift
 // OR-of-AND rule-set evaluator for audience / location matching (Epic 3 / Story 3).
 //
-// PARITY NOTE — JavaScript SDK is ground truth. The boolean structure mirrors the LIVE
-// `javascript-sdk/packages/rules/src/rule-manager.ts` (verified). The live JS is three
-// levels (OR → AND → OR_WHEN → item); this story collapses it to a FLAT two-level model
-// (`[RuleGroup]` outer-OR of `RuleGroup { conditions }` inner-AND) per the story tasks —
-// Story 3.4 adapts the generated 3-level `RuleObjectAudience` graph into this flat model.
+// PARITY NOTE — the boolean structure (OR-of-AND over a flat two-level `[RuleGroup]` outer-OR
+// of `RuleGroup { conditions }` inner-AND) is intended to mirror the LIVE JS
+// `javascript-sdk/packages/rules/src/rule-manager.ts`'s three-level OR → AND → OR_WHEN → item
+// walk collapsed per the Story 3.4 flattening. CAVEAT (recorded here rather than claimed as
+// blanket-verified): the collapse is confirmed bit-identical to the live JS ONLY for the
+// single-leaf `OR_WHEN` shape every fixture in this suite exercises; `RuleAdapter`'s
+// AND(OR(leaves)) → AND(all leaves) collapse for a MULTI-leaf `OR_WHEN` block has not been
+// checked against JS's OR_WHEN-is-an-OR semantics and is tracked as a known, separately-filed
+// gap — beads issue `ai-driven-product-dev-iefd`. Out of scope here; not fixed by this file.
 //
 // FAIL-CLOSED (AC3): both empty-collection cases return `false` AND log a WARN — an empty
 // outer rule set and an empty AND group. Eligibility is NEVER vacuous-true.
@@ -14,6 +18,16 @@
 // The nil flows straight into `Comparisons.evaluate` for EVERY operator — `RuleManager`
 // never short-circuits on a missing key, because `exists` / `doesNotExist` rely on nil
 // reaching the comparator to compute presence.
+//
+// GENERIC-ONLY EVALUATOR (M2, iOS mutual-exclusion qs-04 re-architecture): `evaluate` no
+// longer accepts a `resolvingBucketedIntoExperienceKey` resolver — a whole-audience
+// `bucketed_into_experience_key` exclusion rule is now detected and resolved OUTSIDE this type,
+// at the `ExperienceManager` audience layer, via the dedicated ``BucketingExclusion`` seam
+// (mirrors JS's `_isBucketingExclusionRule` / `_resolveBucketingExclusion`, which likewise never
+// route through the generic `isRuleMatched` engine for an exclusion audience). This evaluator
+// therefore only ever sees generic (non-stateful) conditions again — see the sibling
+// `Tests/ConvertSwiftSDKCoreTests/Rules/MutualExclusionRuleManagerTests.swift` header for the
+// full rework rationale.
 //
 // Foundation-only: a stateless `struct` whose only stored property is a `Sendable` ``Logger``
 // is itself `Sendable` — no actor isolation needed.
@@ -72,10 +86,10 @@ internal struct RuleManager {
         }
     }
 
-    /// Evaluates one leaf condition by dispatching to ``Comparisons``. The attribute lookup is
-    /// an optional (nil when the key is absent); that optional flows straight through for EVERY
-    /// operator — there is NO short-circuit on a missing key (AC2), because exists/doesNotExist
-    /// compute presence from the nil itself.
+    /// Evaluates one leaf condition against `attributes`. The lookup is an optional (`nil`
+    /// when the key is absent) that flows straight through for EVERY operator — there is NO
+    /// short-circuit on a missing key (AC2), because exists/doesNotExist compute presence from
+    /// the nil itself.
     private func evaluate(condition: RuleCondition, against attributes: [String: String]) -> Bool {
         let value = attributes[condition.key]
         return Comparisons.evaluate(
