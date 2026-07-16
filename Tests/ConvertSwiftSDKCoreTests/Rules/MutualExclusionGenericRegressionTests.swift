@@ -78,18 +78,24 @@ struct MutualExclusionGenericRegressionTests {
             leafJSON: #"{ "rule_type": "generic_text_key_value", "key": "browser", "value": "chrome", "#
                 + #""matching": { "match_type": "contains" } }"#
         ),
-        // AC7 divergence probe (code-review R1): `bucketed_into_experience` is a VALID
-        // `RuleElementAudience` discriminator (`BoolMatchRulesTypes.bucketed_into_experience` —
+        // AC7 convergence lock (code-review R1 fix, corrected in R2): `bucketed_into_experience` is a
+        // VALID `RuleElementAudience` discriminator (`BoolMatchRulesTypes.bucketed_into_experience` —
         // ConfigSchemas.swift) decoded by the SAME `GenericBoolMatchRule` struct as `is_desktop`
-        // above, but `RuleAdapter.condition(fromAudienceLeaf:)` deliberately does NOT route it to
+        // above, but it is UNMAPPED on BOTH paths: the typed switch
+        // `RuleAdapter.condition(fromAudienceLeaf:)` deliberately does not route it to
         // `condition(fromBool:)` (`RuleAdapter.swift`'s `fromBool` doc comment: "the stateful
         // `bucketed_into_experience` is ALSO `GenericBoolMatchRule` but is deliberately NOT routed
-        // here") — it falls to `default: degraded()` (matchType "", negation false). The JSON-sentinel
-        // path (`RuleAdapter+JSONSentinelFlatten.swift`) has NO such allowlist: any `rule_type` other
-        // than the stateful `bucketed_into_experience_key` sentinel routes through `make(...)` with
-        // the leaf's REAL `matching.negated`/`match_type` — so this leaf's `negated: true` must survive
-        // on the JSON path while the typed path degrades it to `false`, proving the two paths DIVERGE
-        // for this unmapped family.
+        // here") and falls to `default: degraded()`; the JSON-sentinel path's
+        // `condition(fromSentinelLeaf:)` (`RuleAdapter+JSONSentinelFlatten.swift`) has a
+        // `namedFamilyRuleTypes` allowlist that deliberately EXCLUDES `bucketed_into_experience` for
+        // the same reason, so its `guard namedFamilyRuleTypes.contains(ruleType) else { return
+        // degraded() }` degrades this leaf too instead of routing it through `make(...)` with the
+        // leaf's real `matching.negated`/`match_type`. Both paths therefore degrade to the identical
+        // `(key "", matchType "", value nil, negation false)` — this leaf's `negated: true` does NOT
+        // survive on either path. This vector's purpose is to LOCK that convergence: it guards
+        // against re-introducing the R1 over-cover bug where the JSON path evaluated unmapped
+        // families live (using their real `negated`/`match_type` instead of degrading them), which
+        // would silently re-diverge this case from the typed path.
         GenericLeafCase(
             description: "bucketed_into_experience (GenericBoolMatchRule, unmapped in typed switch, negated true)",
             leafJSON: #"{ "rule_type": "bucketed_into_experience", "value": true, "#
