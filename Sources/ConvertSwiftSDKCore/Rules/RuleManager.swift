@@ -1,11 +1,15 @@
 // RuleManager.swift
 // OR-of-AND rule-set evaluator for audience / location matching (Epic 3 / Story 3).
 //
-// PARITY NOTE — JavaScript SDK is ground truth. The boolean structure mirrors the LIVE
-// `javascript-sdk/packages/rules/src/rule-manager.ts` (verified). The live JS is three
-// levels (OR → AND → OR_WHEN → item); this story collapses it to a FLAT two-level model
-// (`[RuleGroup]` outer-OR of `RuleGroup { conditions }` inner-AND) per the story tasks —
-// Story 3.4 adapts the generated 3-level `RuleObjectAudience` graph into this flat model.
+// PARITY NOTE — the boolean structure (OR-of-AND over a flat two-level `[RuleGroup]` outer-OR
+// of `RuleGroup { conditions }` inner-AND) is intended to mirror the LIVE JS
+// `javascript-sdk/packages/rules/src/rule-manager.ts`'s three-level OR → AND → OR_WHEN → item
+// walk collapsed per the Story 3.4 flattening. CAVEAT (recorded here rather than claimed as
+// blanket-verified): the collapse is confirmed bit-identical to the live JS ONLY for the
+// single-leaf `OR_WHEN` shape every fixture in this suite exercises; `RuleAdapter`'s
+// AND(OR(leaves)) → AND(all leaves) collapse for a MULTI-leaf `OR_WHEN` block has not been
+// checked against JS's OR_WHEN-is-an-OR semantics and is tracked as a known, separately-filed
+// gap — beads issue `ai-driven-product-dev-iefd`. Out of scope here; not fixed by this file.
 //
 // FAIL-CLOSED (AC3): both empty-collection cases return `false` AND log a WARN — an empty
 // outer rule set and an empty AND group. Eligibility is NEVER vacuous-true.
@@ -14,6 +18,16 @@
 // The nil flows straight into `Comparisons.evaluate` for EVERY operator — `RuleManager`
 // never short-circuits on a missing key, because `exists` / `doesNotExist` rely on nil
 // reaching the comparator to compute presence.
+//
+// GENERIC-ONLY EVALUATOR (M2, iOS mutual-exclusion qs-04 re-architecture): `evaluate` no
+// longer accepts a `resolvingBucketedIntoExperienceKey` resolver — a whole-audience
+// `bucketed_into_experience_key` exclusion rule is now detected and resolved OUTSIDE this type,
+// at the `ExperienceManager` audience layer, via the dedicated ``BucketingExclusion`` seam
+// (mirrors JS's `_isBucketingExclusionRule` / `_resolveBucketingExclusion`, which likewise never
+// route through the generic `isRuleMatched` engine for an exclusion audience). This evaluator
+// therefore only ever sees generic (non-stateful) conditions again — see the sibling
+// `Tests/ConvertSwiftSDKCoreTests/Rules/MutualExclusionRuleManagerTests.swift` header for the
+// full rework rationale.
 //
 // Foundation-only: a stateless `struct` whose only stored property is a `Sendable` ``Logger``
 // is itself `Sendable` — no actor isolation needed.
@@ -39,17 +53,8 @@ internal struct RuleManager {
     /// - Parameters:
     ///   - rules: The outer OR — the set passes if ANY group passes. Empty → `false` + WARN.
     ///   - attributes: The data map each condition's `key` is resolved against.
-    ///   - resolver: Queried for a STATEFUL leaf's (`condition.statefulTarget != nil`) target
-    ///     experience key — `true` (bucketed) / `false` (known target, not bucketed) / `nil`
-    ///     (unknown target, or no resolver supplied at all). A `nil` result WARNs (naming the
-    ///     target key) and is treated as `false`. Generic (non-stateful) leaves never consult
-    ///     this resolver — their attribute-lookup path (below) is untouched (IOS-2, qs-03).
     /// - Returns: `true` on the first passing group; `false` if none pass or the set is empty.
-    func evaluate(
-        rules: [RuleGroup],
-        against attributes: [String: String],
-        resolvingBucketedIntoExperienceKey resolver: ((String) -> Bool?)? = nil
-    ) -> Bool {
+    func evaluate(rules: [RuleGroup], against attributes: [String: String]) -> Bool {
         guard !rules.isEmpty else {
             logger.log(
                 level: .warn,
@@ -60,17 +65,13 @@ internal struct RuleManager {
             return false
         }
         return rules.contains { group in
-            evaluate(group: group, against: attributes, resolvingBucketedIntoExperienceKey: resolver)
+            evaluate(group: group, against: attributes)
         }
     }
 
     /// Evaluates one AND-group: passes only if ALL conditions pass (short-circuits on the
     /// first failing condition). Empty group → `false` + WARN (fail-closed, AC3).
-    private func evaluate(
-        group: RuleGroup,
-        against attributes: [String: String],
-        resolvingBucketedIntoExperienceKey resolver: ((String) -> Bool?)?
-    ) -> Bool {
+    private func evaluate(group: RuleGroup, against attributes: [String: String]) -> Bool {
         guard !group.conditions.isEmpty else {
             logger.log(
                 level: .warn,
@@ -81,26 +82,15 @@ internal struct RuleManager {
             return false
         }
         return group.conditions.allSatisfy { condition in
-            evaluate(condition: condition, against: attributes, resolvingBucketedIntoExperienceKey: resolver)
+            evaluate(condition: condition, against: attributes)
         }
     }
 
-    /// Evaluates one leaf condition. A STATEFUL leaf (`condition.statefulTarget != nil`) BYPASSES
-    /// `attributes[key]` -> ``Comparisons`` entirely and resolves through ``evaluateStateful(_:
-    /// negation:resolver:)`` instead (AC7 — the generic path below must stay bit-identical, so it
-    /// cannot ride the same dispatch, which has no "bucketed-into" comparator). Every other
-    /// (generic) leaf keeps the EXACT existing attribute-lookup path: the lookup is an optional
-    /// (nil when the key is absent) that flows straight through for EVERY operator — there is NO
+    /// Evaluates one leaf condition against `attributes`. The lookup is an optional (`nil`
+    /// when the key is absent) that flows straight through for EVERY operator — there is NO
     /// short-circuit on a missing key (AC2), because exists/doesNotExist compute presence from
     /// the nil itself.
-    private func evaluate(
-        condition: RuleCondition,
-        against attributes: [String: String],
-        resolvingBucketedIntoExperienceKey resolver: ((String) -> Bool?)?
-    ) -> Bool {
-        if let statefulTarget = condition.statefulTarget {
-            return evaluateStateful(statefulTarget, negation: condition.negation, resolver: resolver)
-        }
+    private func evaluate(condition: RuleCondition, against attributes: [String: String]) -> Bool {
         let value = attributes[condition.key]
         return Comparisons.evaluate(
             matchType: condition.matchType,
@@ -109,33 +99,5 @@ internal struct RuleManager {
             negated: condition.negation,
             logger: logger
         )
-    }
-
-    /// Resolves a STATEFUL leaf (today only `bucketed_into_experience_key`) via the injected
-    /// three-state resolver. `resolver?(target.targetExperienceKey)` is `nil` both when no
-    /// resolver was supplied at all and when a supplied resolver returns `nil` for an unknown
-    /// target — either way that is an "unknown target", so it WARNs (naming the target key) and
-    /// defaults `bucketedRaw` to `false`; a resolver returning `false` (a KNOWN target the
-    /// visitor is simply not bucketed into) does NOT warn (AC8). Negation is applied to
-    /// `bucketedRaw` exactly once, whichever branch produced it.
-    private func evaluateStateful(
-        _ target: StatefulRuleTarget,
-        negation: Bool,
-        resolver: ((String) -> Bool?)?
-    ) -> Bool {
-        let bucketedRaw: Bool
-        if let resolved = resolver?(target.targetExperienceKey) {
-            bucketedRaw = resolved
-        } else {
-            logger.log(
-                level: .warn,
-                type: "RuleManager",
-                method: "evaluate",
-                message: "bucketed_into_experience_key: unknown target experience key "
-                    + "'\(target.targetExperienceKey)', treating as not bucketed"
-            )
-            bucketedRaw = false
-        }
-        return negation ? !bucketedRaw : bucketedRaw
     }
 }

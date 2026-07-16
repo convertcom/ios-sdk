@@ -322,26 +322,21 @@ public struct ExperienceManager: Sendable {
 
     /// Whether the experience's AUDIENCE gate passes for `attributes`.
     ///
-    /// An EMPTY resolved audience set is UNRESTRICTED → `true` (parity: an experience with no
-    /// audiences runs for everyone). Otherwise every attached audience's rules are flattened and
-    /// CONCATENATED into one outer-OR (the visitor matches if ANY audience's rules match), then
-    /// evaluated by ``RuleManager`` (which fails closed on an empty group).
+    /// An EMPTY resolved audience set is UNRESTRICTED → `true`. Otherwise EVERY attached
+    /// audience is resolved to its OWN match boolean via ``ExperienceManager
+    /// /flattenedGroups(for:in:)`` + ``ExperienceManager/statefulLeaf(in:)`` (whole-audience
+    /// EXCLUSION override through ``BucketingExclusion/resolve(targetExperienceKey:negated:
+    /// resolver:logger:)`` when a stateful leaf is detected; the generic ``RuleManager`` path
+    /// otherwise — see those declarations for the full JS-parity rationale, M2 iOS
+    /// mutual-exclusion qs-04), then composed via `full.settings?.matching_options?.audiences`
+    /// (JS `data-manager.ts:418-428`): `.all` requires every audience to match; `.any`/absent
+    /// requires only one.
     ///
-    /// A DEGRADED audience (IOS-1: its typed `rules` is `nil` because its tree embedded an unknown
-    /// `rule_type` leaf, e.g. `bucketed_into_experience_key`) is flattened from its RAW
-    /// sentinel-captured payload (``ProjectConfig/degradedAudienceSentinels``) via
-    /// ``RuleAdapter/flatten(_:)`` (the `JSONValue` overload, IOS-2) instead of the typed path — the
-    /// ONLY dispatch difference; a normally-decoded audience's typed `rules?.value1` is still
-    /// flattened exactly as before (bit-identical, AC7).
-    ///
-    /// Before evaluating, the visitor's sticky-bucketing SNAPSHOT is pre-fetched ONCE per call
-    /// (a PURE read — no LRU touch, no write, no bucketing, no tracking event; AC5) via
-    /// ``DecisionStore/bucketingDecisions(forStoreKey:)`` and closed over by a synchronous
-    /// resolver passed to
-    /// ``RuleManager/evaluate(rules:against:resolvingBucketedIntoExperienceKey:)`` (IOS-2): an
-    /// unknown target experience key (absent from `config`) resolves `nil` (``RuleManager`` warns,
-    /// naming the key — AC8); a known target resolves whether ITS id — iOS's ``DecisionStore`` is
-    /// id-keyed, not key-keyed — is a key in the pre-fetched snapshot.
+    /// The visitor's sticky-bucketing SNAPSHOT is pre-fetched ONCE per call (a PURE read — no
+    /// LRU touch, no write, no bucketing, no tracking event; AC5) via ``DecisionStore
+    /// /bucketingDecisions(forStoreKey:)`` and closed over by a synchronous resolver: an unknown
+    /// target experience key resolves `nil` (warns, naming the key — AC8); a known target
+    /// resolves whether ITS id is a key in the pre-fetched snapshot.
     private func audiencePasses(
         _ full: Components.Schemas.ConfigExperience,
         in config: ProjectConfig,
@@ -360,16 +355,23 @@ public struct ExperienceManager: Sendable {
             return bucketing[targetId] != nil
         }
 
-        let groups = audiences.flatMap { audience -> [RuleGroup] in
-            if let id = audience.id, let sentinel = config.degradedAudienceSentinels?[id] {
-                return Self.flattenDegradedAudienceRules(sentinel)
+        let matches = audiences.map { audience -> Bool in
+            let groups = Self.flattenedGroups(for: audience, in: config)
+            if let leaf = Self.statefulLeaf(in: groups) {
+                return BucketingExclusion.resolve(
+                    targetExperienceKey: leaf.targetExperienceKey,
+                    negated: leaf.negated,
+                    resolver: resolver,
+                    logger: logger
+                )
             }
-            guard let rules = audience.rules?.value1 else { return [] }
-            return RuleAdapter.flatten(rules)
+            return ruleManager.evaluate(rules: groups, against: attributes)
         }
-        return ruleManager.evaluate(
-            rules: groups, against: attributes, resolvingBucketedIntoExperienceKey: resolver
-        )
+
+        if full.settings?.matching_options?.audiences == .all {
+            return matches.allSatisfy { $0 }
+        }
+        return matches.contains(true)
     }
 
     /// Whether the experience's LOCATION gate passes for `locationProperties`.

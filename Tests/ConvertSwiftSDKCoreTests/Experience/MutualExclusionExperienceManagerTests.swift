@@ -261,6 +261,9 @@ struct MutualExclusionExperienceManagerTests {
         let config = try MutualExclusionFixtures.twoAudienceMutualExclusionConfig(matchingOptions: "all")
         let subject = makeExperienceManager()
 
+        let variationA = await select(subject, key: "exp-a", in: config, visitorId: Ids.visitorRanExpA)
+        #expect(variationA != nil, "exp-a has no gates and must bucket")
+
         let excludedDespiteGenericMatch = await select(
             subject, key: "exp-b", in: config, visitorId: Ids.visitorRanExpA, attributes: ["country": "US"]
         )

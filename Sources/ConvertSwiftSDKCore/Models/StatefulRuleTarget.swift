@@ -7,8 +7,10 @@ import Foundation
 /// Carries the target-experience-KEY payload of a STATEFUL rule leaf (today only
 /// `bucketed_into_experience_key`). Unlike every other ``RuleCondition`` leaf, this one is
 /// resolved not by looking `key` up in `attributes` and dispatching through ``Comparisons``, but
-/// by querying an injected bucketing-decision resolver
-/// (`RuleManager.evaluate(rules:against:resolvingBucketedIntoExperienceKey:)`) — see qs-03.
+/// by a whole-audience-override seam that queries an injected bucketing-decision resolver
+/// (``BucketingExclusion/resolve(targetExperienceKey:negated:resolver:logger:)``, detected via
+/// ``ExperienceManager/statefulLeaf(in:)`` — M2, iOS mutual-exclusion qs-04 re-architecture;
+/// `RuleManager` itself no longer consults this leaf at all, see qs-03/qs-04).
 internal struct StatefulRuleTarget: Sendable, Equatable {
     /// The wire `rule_type` discriminator (today always `"bucketed_into_experience_key"`) —
     /// carried as a forward-compat marker in case a sibling stateful rule type is added later.
