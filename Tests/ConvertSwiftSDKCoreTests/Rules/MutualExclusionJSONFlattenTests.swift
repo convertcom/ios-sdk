@@ -1,4 +1,4 @@
-// Tests/ConvertSwiftSDKCoreTests/Rules/MutualExclusionRuleAdapterJSONFlattenTests.swift
+// Tests/ConvertSwiftSDKCoreTests/Rules/MutualExclusionJSONFlattenTests.swift
 //
 // RED-phase suite for IOS-2 (M2 unit, iOS mutual-exclusion qs-03): `RuleAdapter` gains a path to
 // flatten a rule tree FROM the sentinel `JSONValue` an audience degrades to when its rule tree embeds
@@ -71,7 +71,7 @@ import Testing
 @testable import ConvertSwiftSDKCore
 
 @Suite("RuleAdapter JSON-sentinel flatten (bucketed_into_experience_key) — IOS-2 RED")
-struct MutualExclusionRuleAdapterJSONFlattenTests {
+struct MutualExclusionJSONFlattenTests {
 
     // MARK: - Fixture factory (single decode site — SonarQube duplication guard)
 

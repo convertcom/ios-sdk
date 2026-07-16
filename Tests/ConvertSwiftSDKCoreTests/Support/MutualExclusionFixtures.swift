@@ -17,7 +17,7 @@
 // decode and is retained as a placeholder + sentinel-captured raw JSON in
 // `ProjectConfig.degradedAudienceSentinels`) attached to a SECOND experience — combined, per
 // test, with a generic `country` leaf either under ONE AND-block (ALL) or as a separate OR-group
-// (ANY), reusing the SAME leaf-JSON literals `MutualExclusionRuleAdapterJSONFlattenTests` (IOS-2)
+// (ANY), reusing the SAME leaf-JSON literals `MutualExclusionJSONFlattenTests` (IOS-2)
 // already proved decode/flatten correctly.
 
 import Foundation
@@ -46,7 +46,7 @@ enum MutualExclusionFixtures {
     }
 
     /// ONE AND-block ("ALL" — every leaf in `leavesJSON` must pass together), wrapped in the sole
-    /// outer OR entry. Mirrors `MutualExclusionRuleAdapterJSONFlattenTests.makeSentinelRuleTree`'s
+    /// outer OR entry. Mirrors `MutualExclusionJSONFlattenTests.makeSentinelRuleTree`'s
     /// envelope shape.
     static func allOfRulesJSON(_ leavesJSON: [String]) -> String {
         "{\"OR\":[{\"AND\":[{\"OR_WHEN\":[" + leavesJSON.joined(separator: ",") + "]}]}]}"

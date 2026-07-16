@@ -2,7 +2,7 @@
 //
 // RED-phase suite for IOS-2 (M2 unit, iOS mutual-exclusion qs-03) — AC7 ("generic-rule regression
 // lock"): adding the JSON-sentinel `RuleAdapter.flatten(_ sentinelRuleTree: JSONValue)` overload (see
-// the sibling `MutualExclusionRuleAdapterJSONFlattenTests.swift` for its assumed shape/rationale —
+// the sibling `MutualExclusionJSONFlattenTests.swift` for its assumed shape/rationale —
 // not re-derived here) must NOT change how a GENERIC leaf resolves through the EXISTING typed path,
 // and the NEW JSON-sentinel path must produce the SAME `RuleCondition`s the typed path already does
 // for the SAME wire leaf — "reuse, do not fork, the OR/AND/OR_WHEN semantics" (qs-03 AC7 wording).
@@ -11,7 +11,7 @@
 // Task/plan: work/2026-07-15-ios-sdk-mutual-exclusion/workflow-state.yaml (task IOS-2, "v18s").
 //
 // ── Isolation rationale (per the IOS-2 dispatch) ──────────────────────────────────────────────────
-// Kept as its OWN file, deliberately separate from `MutualExclusionRuleAdapterJSONFlattenTests.swift`
+// Kept as its OWN file, deliberately separate from `MutualExclusionJSONFlattenTests.swift`
 // (which proves a STATEFUL leaf survives ALONGSIDE a generic one) and from
 // `MutualExclusionRuleManagerTests.swift` (which proves `RuleManager`'s resolver seam) — so a
 // regression in the bit-identical generic-path contract shows up as its own isolated failure, not
