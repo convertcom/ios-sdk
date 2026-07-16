@@ -5,8 +5,14 @@
 // an unrecognised `rule_type` leaf (IOS-1's `ProjectConfig.degradedAudienceSentinels`, already
 // committed — see `Sources/ConvertSwiftSDKCore/Data/ProjectConfig.swift`,
 // `ProjectConfig+AudienceDecoding.swift`). Spec of record:
-//   _bmad-output/planning-artifacts/2026-06-09-convert-ios-sdk/qs-03-mutual-exclusion-rule.md
+//   _bmad-output/implementation-artifacts/2026-06-09-convert-ios-sdk/qs-04-mutual-exclusion-rule.md
 // Task/plan: work/2026-07-15-ios-sdk-mutual-exclusion/workflow-state.yaml (task IOS-2, "v18s").
+// (Citation path corrected: ai-driven-product-dev#86 — qs-03 was renumbered/relocated to qs-04 under
+// implementation-artifacts/ after this suite was authored. No behavioral change: this suite tests
+// `RuleAdapter.flatten(_ sentinelRuleTree:)` detection output (a stateful leaf surviving alongside a
+// generic sibling), which the qs-04 whole-audience-override rework — see the sibling
+// `MutualExclusionRuleManagerTests.swift` header — does not touch; only the RESOLUTION of an already-
+// detected stateful leaf moved out of `RuleManager`.)
 //
 // ── Why this must exist (consequence of IOS-1) ────────────────────────────────────────────────────
 // A `bucketed_into_experience_key` leaf makes the WHOLE audience fail the generated typed decode

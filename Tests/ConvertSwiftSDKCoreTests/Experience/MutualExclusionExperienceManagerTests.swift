@@ -1,46 +1,56 @@
 // Tests/ConvertSwiftSDKCoreTests/Experience/MutualExclusionExperienceManagerTests.swift
 //
-// RED-phase suite for IOS-3 (M2 integration, iOS mutual-exclusion qs-03): the REAL, read-only
-// resolver wired into `ExperienceManager`'s audience gate, exercised END-TO-END through the
-// PUBLIC `selectVariation` API — no new Sources symbols are referenced here (the resolver /
-// async-`audiencePasses` change described in the dispatch is entirely INTERNAL to
-// `ExperienceManager`), so this file COMPILES today and FAILS AT RUNTIME because the current
-// audience gate cannot see a degraded audience's stateful leaf at all. Spec of record:
-//   _bmad-output/planning-artifacts/2026-06-09-convert-ios-sdk/qs-03-mutual-exclusion-rule.md
-// Task/plan: work/2026-07-15-ios-sdk-mutual-exclusion/workflow-state.yaml (task IOS-3, "jmr4").
+// RED-phase suite for M2 (iOS mutual-exclusion qs-04): the REAL, read-only resolver wired into
+// `ExperienceManager`'s audience gate, exercised END-TO-END through the PUBLIC `selectVariation`
+// API — no new Sources symbols are referenced here (the resolver / async-`audiencePasses` /
+// `matching_options` composition change is entirely INTERNAL to `ExperienceManager`), so this
+// file COMPILES today and FAILS AT RUNTIME. Spec of record:
+//   _bmad-output/implementation-artifacts/2026-06-09-convert-ios-sdk/qs-04-mutual-exclusion-rule.md
+// Task/plan: work/2026-07-15-ios-sdk-mutual-exclusion/workflow-state.yaml.
 //
-// ── Why this is RED today (a real runtime behavior gap, not a compile error) ───────────────────
-// `ExperienceManager.audiencePasses` (Experience/ExperienceManager.swift:329-341) resolves each
+// ── Why this is RED today (two independent runtime gaps, not a compile error) ──────────────────
+// (1) `ExperienceManager.audiencePasses` (Experience/ExperienceManager.swift:329-341) resolves each
 // attached audience via `config.audience(id:)`, then reads its TYPED `rules?.value1`. For a
-// DEGRADED audience (IOS-1: one whose rule tree embeds the unrecognised
-// `bucketed_into_experience_key` leaf) that typed `rules` is `nil` by construction
-// (`ProjectConfig+AudienceDecoding.swift`'s `reconstructAudience(fromSentinelPayload:)` never
-// populates it) — so `guard let rules = audience.rules?.value1 else { return [] }` yields NO
-// groups for that audience. With the sole attached audience emitting zero groups,
-// `ruleManager.evaluate(rules: [], against:)` fails CLOSED (RuleManager's empty-rule-set guard,
-// `Rules/RuleManager.swift:53-61`) — so an experience gated on a degraded mutual-exclusion
-// audience returns `nil` for EVERY visitor, unconditionally, regardless of whether the visitor
-// is actually bucketed into the target. That is wrong for the never-ran-target case (AC2's
-// second half — must bucket normally) and produces no warning naming an unresolved target key
-// (AC8): the emitted warning is always the generic "empty rule set, returning false".
+// DEGRADED audience (its rule tree embeds the unrecognised `bucketed_into_experience_key` leaf)
+// that typed `rules` is `nil` by construction (`ProjectConfig+AudienceDecoding.swift`'s
+// `reconstructAudience(fromSentinelPayload:)` never populates it) — so a degraded audience emits
+// NO groups. With the sole attached audience emitting zero groups (the pure-exclusion AC2/AC3/AC5/
+// AC8 scenarios), `ruleManager.evaluate(rules: [], against:)` fails CLOSED (`Rules/RuleManager
+// .swift:53-61`) — an experience gated on a degraded mutual-exclusion audience returns `nil` for
+// EVERY visitor, unconditionally, regardless of whether the visitor is actually bucketed into the
+// target. Wrong for the never-ran-target case (AC2's second half) and produces no warning naming
+// an unresolved target key (AC8).
+// (2) `audiencePasses` CONCATENATES every attached audience's flattened groups into ONE flat outer
+// OR (Experience/ExperienceManager.swift:326-328/363-369) and never reads
+// `full.settings?.matching_options?.audiences` at all — so the qs-04 AC6 two-audience `ALL`/`ANY`
+// scenarios (below) do not merely fail on the degraded audience (gap 1); even a fully-typed generic
+// second audience would be OR-combined with the exclusion audience regardless of the experience's
+// declared `matching_options.audiences`, which is a SEPARATE, additional divergence from JS parity
+// (`javascript-sdk/packages/data/src/data-manager.ts:419-428`, `_isBucketingExclusionRule`/
+// `_resolveBucketingExclusion`/`filterMatchedRecordsWithRule`, `data-manager.ts:1246-1345`).
 //
-// GREEN (IOS-3) pre-fetches the visitor's bucketing snapshot via `DecisionStore
-// .bucketingDecisions(forStoreKey:)` (a PURE read, AC5), builds a synchronous three-state
-// resolver `(targetExperienceKey) -> Bool?` from it + `config.fullExperience(forKey:)`, routes a
-// DEGRADED audience through `RuleAdapter.flatten(_ sentinelRuleTree: JSONValue)` (reading the
-// `"rules"` member off `ProjectConfig.degradedAudienceSentinels[id]`) instead of the typed path,
-// and threads the resolver into
-// `ruleManager.evaluate(rules:against:resolvingBucketedIntoExperienceKey:)` (both from IOS-2).
+// GREEN detects a degraded audience's stateful leaf via `RuleAdapter.flatten(_ sentinelRuleTree:
+// JSONValue)` (reading the `"rules"` member off `ProjectConfig.degradedAudienceSentinels[id]`),
+// resolves an EXCLUSION audience's match via a whole-audience-override seam (mirroring JS's
+// `_resolveBucketingExclusion` — sibling leaves in the SAME audience tree are NEVER evaluated),
+// resolves a GENERIC audience's match via the existing `RuleManager.evaluate` (unchanged, AC7),
+// then composes the PER-AUDIENCE match booleans via `settings.matching_options.audiences`
+// (`ALL` ⇒ every attached audience must match; `ANY`/absent ⇒ at least one must match — JS parity).
 //
 // ── Fixtures ─────────────────────────────────────────────────────────────────────────────────
-// `MutualExclusionFixtures` (Support/MutualExclusionFixtures.swift) builds a two-experience
-// config: `exp-a` (always buckets, no gates — the mutual-exclusion TARGET) and `exp-b` (gated on
-// ONE degraded audience carrying the stateful leaf, optionally combined with a generic `country`
-// leaf under ALL/ANY).
+// `MutualExclusionFixtures` (Support/MutualExclusionFixtures.swift) builds:
+//   - `twoExperienceMutualExclusionConfig` — `exp-a` (always buckets, TARGET) + `exp-b` gated on
+//     ONE degraded (pure-exclusion) audience — used by AC2/AC3/AC5/AC8.
+//   - `twoAudienceMutualExclusionConfig` — `exp-a` (TARGET) + `exp-b` gated on TWO SEPARATE
+//     audiences (a dedicated exclusion audience + a generic `country` audience), composed via
+//     `settings.matching_options.audiences` — used by the AC6 tests below (the JS-parity
+//     two-audience shape; the PRIOR mixed-single-audience shape, which combined a stateful and a
+//     generic leaf inside ONE audience's tree via ordinary AND/OR, corresponded to no real JS code
+//     path and has been REMOVED — see `MutualExclusionFixtures.swift`'s header).
 //
 // ── Test-hygiene ─────────────────────────────────────────────────────────────────────────────
 // `attributes` is `[:]` (the default) everywhere except the two AC6 combination tests, which need
-// a `country` value to drive the generic sibling leaf — proving AC4 structurally for every
+// a `country` value to drive the generic audience's leaf — proving AC4 structurally for every
 // pure-exclusion scenario. EventBus delivery is asynchronous (`fire` dispatches each callback as
 // an independent `MainActor` `Task`), so every fire-count read goes through `drain()` (a
 // `MainActor.run {}` executor barrier) — mirrors `ExperienceManagerTests.drain()` verbatim.
@@ -122,9 +132,9 @@ struct MutualExclusionExperienceManagerTests {
     @Test("AC2/AC4: a visitor already bucketed into exp-a is excluded from exp-b (negated rule)")
     func visitorBucketedIntoExpAIsExcludedFromExpB() async throws {
         let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
-            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
+            audienceRulesJSON: MutualExclusionFixtures.singleLeafRulesJSON(
                 MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true)
-            ])
+            )
         )
         let subject = makeExperienceManager()
 
@@ -140,9 +150,9 @@ struct MutualExclusionExperienceManagerTests {
     @Test("AC2/AC4: a fresh visitor who never ran exp-a buckets into exp-b normally")
     func freshVisitorNeverRanExpABucketsIntoExpB() async throws {
         let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
-            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
+            audienceRulesJSON: MutualExclusionFixtures.singleLeafRulesJSON(
                 MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true)
-            ])
+            )
         )
         let subject = makeExperienceManager()
 
@@ -162,9 +172,9 @@ struct MutualExclusionExperienceManagerTests {
     @Test("AC3: exp-a's decision persisted by one DecisionStore excludes exp-b after a fresh relaunch")
     func crossRelaunchPersistenceExcludesExpB() async throws {
         let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
-            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
+            audienceRulesJSON: MutualExclusionFixtures.singleLeafRulesJSON(
                 MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true)
-            ])
+            )
         )
         let sharedFiles = MockFileStore()
         let firstLaunchStore = DecisionStore(logger: MockLogger(), fileStore: sharedFiles)
@@ -198,9 +208,9 @@ struct MutualExclusionExperienceManagerTests {
     @Test("AC5: evaluating exp-b's exclusion rule triggers no new bucketing, write, or tracking event")
     func exclusionRuleEvaluationIsReadOnly() async throws {
         let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
-            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
+            audienceRulesJSON: MutualExclusionFixtures.singleLeafRulesJSON(
                 MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true)
-            ])
+            )
         )
         let store = DecisionStore(logger: MockLogger(), fileStore: MockFileStore())
         let sink = MockEventSink()
@@ -231,57 +241,76 @@ struct MutualExclusionExperienceManagerTests {
         )
     }
 
-    // MARK: - AC6 — intra-audience combination with a generic rule (ALL / ANY)
+    // MARK: - AC6 — cross-AUDIENCE combination via `matching_options.audiences` (ALL / ANY)
+    //
+    // JS-parity two-audience shape (`MutualExclusionFixtures.twoAudienceMutualExclusionConfig`):
+    // `exp-b` carries TWO SEPARATE attached audiences — a dedicated exclusion audience (the negated
+    // `bucketed_into_experience_key` leaf ALONE, targeting `exp-a`) and a generic `country == "US"`
+    // audience — composed via `exp-b`'s `settings.matching_options.audiences`. `audiencePasses`
+    // never reads `matching_options` at all today (it OR-concatenates every attached audience's
+    // groups unconditionally), so the ALL scenario below is the one that discriminates RED from
+    // GREEN: today a visitor excluded by the exclusion audience alone still passes because the
+    // generic audience's OR carries it through, regardless of the declared `ALL` requirement.
 
-    /// ALL (ONE AND-block): the negated exclusion leaf AND a generic `country` leaf must BOTH
-    /// pass — a fresh (never-ran-exp-a) visitor with `country == "US"` passes; the SAME visitor
-    /// shape with `country == "UK"` fails on the generic leaf alone.
-    @Test("AC6: ALL — the negated exclusion AND a generic country rule must both pass")
-    func allCombinationRequiresBothLeavesToPass() async throws {
-        let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
-            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
-                MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true),
-                MutualExclusionFixtures.countryLeafJSON(equals: "US")
-            ])
-        )
+    /// ALL: both the dedicated exclusion audience AND the generic `country` audience must match —
+    /// a visitor bucketed into `exp-a` fails the (negated) exclusion audience, so `exp-b` must be
+    /// excluded even though the generic `country == "US"` audience independently matches (today's
+    /// flat-OR gate incorrectly lets this visitor through via the passing generic audience alone).
+    @Test("AC6: ALL — both the exclusion audience and the generic country audience must match")
+    func allMatchingOptionRequiresBothAudiencesToPass() async throws {
+        let config = try MutualExclusionFixtures.twoAudienceMutualExclusionConfig(matchingOptions: "all")
         let subject = makeExperienceManager()
 
-        let passes = await select(
-            subject, key: "exp-b", in: config, visitorId: "v-all-us", attributes: ["country": "US"]
-        )
-        #expect(passes != nil, "not bucketed into exp-a AND country==US: both pass -> ALL passes")
-
-        let failsOnCountry = await select(
-            subject, key: "exp-b", in: config, visitorId: "v-all-uk", attributes: ["country": "UK"]
+        let excludedDespiteGenericMatch = await select(
+            subject, key: "exp-b", in: config, visitorId: Ids.visitorRanExpA, attributes: ["country": "US"]
         )
         #expect(
-            failsOnCountry == nil,
-            "not bucketed into exp-a but country==UK: the generic leaf fails -> ALL fails"
+            excludedDespiteGenericMatch == nil,
+            "ALL: bucketed into exp-a fails the exclusion audience even though country==US passes -> excluded"
+        )
+
+        let passesWhenBothMatch = await select(
+            subject, key: "exp-b", in: config, visitorId: "v-all-fresh-us", attributes: ["country": "US"]
+        )
+        #expect(
+            passesWhenBothMatch != nil,
+            "ALL: never ran exp-a (exclusion audience passes) AND country==US (generic passes) -> exp-b serves"
         )
     }
 
-    /// ANY (TWO OR-groups): a passing generic `country` group compensates for a FAILING
-    /// (bucketed-into-target) exclusion group — a visitor bucketed into `exp-a` (the stateful
-    /// group fails) still passes `exp-b`'s gate via the sibling `country == "US"` group.
-    @Test("AC6: ANY — a passing generic country rule compensates for a failing exclusion group")
-    func anyCombinationGenericCompensatesForFailingExclusion() async throws {
-        let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
-            audienceRulesJSON: MutualExclusionFixtures.anyOfRulesJSON([
-                MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-a", negated: true),
-                MutualExclusionFixtures.countryLeafJSON(equals: "US")
-            ])
-        )
+    /// ANY: either audience matching suffices — a visitor bucketed into `exp-a` fails the
+    /// exclusion audience, but the generic `country == "US"` audience compensates, so `exp-b`
+    /// still serves; a visitor matching NEITHER audience is excluded.
+    @Test("AC6: ANY — either the exclusion audience or the generic country audience matching suffices")
+    func anyMatchingOptionEitherAudiencePassing() async throws {
+        let config = try MutualExclusionFixtures.twoAudienceMutualExclusionConfig(matchingOptions: "any")
         let subject = makeExperienceManager()
 
         let variationA = await select(subject, key: "exp-a", in: config, visitorId: Ids.visitorRanExpA)
         #expect(variationA != nil, "exp-a has no gates and must bucket")
 
-        let passesViaCountry = await select(
+        let passesViaGenericAudience = await select(
             subject, key: "exp-b", in: config, visitorId: Ids.visitorRanExpA, attributes: ["country": "US"]
         )
         #expect(
-            passesViaCountry != nil,
-            "the stateful group fails (bucketed into exp-a) but the country group passes -> OR passes"
+            passesViaGenericAudience != nil,
+            "ANY: the exclusion audience fails (bucketed into exp-a) but country==US passes -> exp-b serves"
+        )
+
+        // A SEPARATE visitor for the neither-matches assertion (not `Ids.visitorRanExpA` again): that
+        // visitor already holds a STICKY exp-b decision from the `passesViaGenericAudience` call above,
+        // and a sticky hit short-circuits every gate (by design) regardless of `matching_options` — reusing
+        // it here would test sticky-return semantics, not the ALL/ANY composition. This visitor is bucketed
+        // into exp-a fresh (so the exclusion audience fails the same way) but has NO prior exp-b decision.
+        let visitorNeitherMatches = "v-any-neither"
+        let priorExpA = await select(subject, key: "exp-a", in: config, visitorId: visitorNeitherMatches)
+        #expect(priorExpA != nil, "exp-a has no gates and must bucket for the neither-matches visitor too")
+        let excludedWhenNeitherMatches = await select(
+            subject, key: "exp-b", in: config, visitorId: visitorNeitherMatches, attributes: ["country": "UK"]
+        )
+        #expect(
+            excludedWhenNeitherMatches == nil,
+            "ANY: the exclusion audience fails AND country==UK fails the generic audience -> exp-b excluded"
         )
     }
 
@@ -293,9 +322,9 @@ struct MutualExclusionExperienceManagerTests {
     @Test("AC8: targeting an unknown experience key logs a warning naming it")
     func unknownTargetExperienceKeyLogsWarning() async throws {
         let config = try MutualExclusionFixtures.twoExperienceMutualExclusionConfig(
-            audienceRulesJSON: MutualExclusionFixtures.allOfRulesJSON([
+            audienceRulesJSON: MutualExclusionFixtures.singleLeafRulesJSON(
                 MutualExclusionFixtures.statefulLeafJSON(targetExperienceKey: "exp-zz", negated: false)
-            ])
+            )
         )
         let logger = MockLogger()
         let subject = makeExperienceManager(logger: logger)

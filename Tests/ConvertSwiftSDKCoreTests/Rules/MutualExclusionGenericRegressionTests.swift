@@ -7,8 +7,12 @@
 // and the NEW JSON-sentinel path must produce the SAME `RuleCondition`s the typed path already does
 // for the SAME wire leaf — "reuse, do not fork, the OR/AND/OR_WHEN semantics" (qs-03 AC7 wording).
 // Spec of record:
-//   _bmad-output/planning-artifacts/2026-06-09-convert-ios-sdk/qs-03-mutual-exclusion-rule.md
+//   _bmad-output/implementation-artifacts/2026-06-09-convert-ios-sdk/qs-04-mutual-exclusion-rule.md
 // Task/plan: work/2026-07-15-ios-sdk-mutual-exclusion/workflow-state.yaml (task IOS-2, "v18s").
+// (Citation path corrected: ai-driven-product-dev#86 — qs-03 was renumbered/relocated to qs-04 under
+// implementation-artifacts/ after this suite was authored. No behavioral change: this suite tests
+// `RuleAdapter.flatten` typed-vs-JSON-sentinel equivalence, which the qs-04 whole-audience-override
+// rework (see the sibling `MutualExclusionRuleManagerTests.swift` header) does not touch.)
 //
 // ── Isolation rationale (per the IOS-2 dispatch) ──────────────────────────────────────────────────
 // Kept as its OWN file, deliberately separate from `MutualExclusionJSONFlattenTests.swift`
