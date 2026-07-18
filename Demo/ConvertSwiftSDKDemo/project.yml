@@ -23,9 +23,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.convert.ConvertSwiftSDKDemo
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: 1
         SWIFT_VERSION: "6.0"
@@ -36,6 +33,23 @@ targets:
         # .tint(ConvertTheme.accent) uses), so there is no separate AccentColor
         # asset to drift out of sync (AC2 — one mode-resolving accent).
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: BrandAccent
+    # A real Info.plist (rather than GENERATE_INFOPLIST_FILE) is required from here on:
+    # experiment-preview deep links (qs-02/qs-03 host-app wiring) register the `convertdemo`
+    # URL scheme via CFBundleURLTypes, which the INFOPLIST_KEY_* build-setting shorthand cannot
+    # express. XcodeGen writes this file on every `generate` run, so its properties must mirror
+    # Info.plist exactly; see that file's own header comment for the `simctl openurl` test command.
+    info:
+      path: Info.plist
+      properties:
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        LSRequiresIPhoneOS: true
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: com.convert.ConvertSwiftSDKDemo.preview
+            CFBundleURLSchemes:
+              - convertdemo
     dependencies:
       - package: ConvertSwiftSDK
         product: ConvertSwiftSDK
