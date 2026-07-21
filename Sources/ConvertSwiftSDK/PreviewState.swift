@@ -46,8 +46,10 @@ actor PreviewState {
 
     /// The current preview target's resolved forced decision (qs-02 IOS-5), or `nil` when no
     /// preview target has been set on the owning context, or the last ``ConvertContext/setPreview``
-    /// resolution failed (inert-on-bad-input — the prior value, if any, is simply left in place
-    /// since `ConvertContext.setPreview` never calls ``setForcedVariation(_:)`` on a failed resolve).
+    /// resolution FAILED (inert-on-bad-input — a failed resolution CLEARS any prior target via
+    /// ``clearForcedVariation()``, matching the JS reference's `_preview = null` on every failure
+    /// path, so a stale forced decision from an earlier successful `setPreview` can never survive
+    /// a subsequent unresolved one).
     /// `ConvertContext.runExperience(_:enableTracking:)` / `runExperiences(enableTracking:)` compare
     /// this `Variation`'s `experienceKey` against the key being run to decide whether to
     /// short-circuit before ``ExperienceManager``.
@@ -114,6 +116,16 @@ actor PreviewState {
     /// - Parameter variation: The forced decision to record.
     func setForcedVariation(_ variation: Variation) {
         forcedVariation = variation
+    }
+
+    /// Clears any prior forced-decision target for the owning context (JS parity — the JS
+    /// reference nulls its `_preview` field on every `setPreview` failure path). Called by
+    /// ``ConvertContext/setPreview(experienceId:variationId:)`` when
+    /// ``PreviewDecision/forcedVariation(for:variationId:)`` (or the upstream experience
+    /// resolution) fails, so a FAILED re-preview call can never leave a STALE forced decision
+    /// from an earlier successful `setPreview` in place. A no-op when no target was set.
+    func clearForcedVariation() {
+        forcedVariation = nil
     }
 
     /// Filters ``memo`` down to entries that are not yet expired as of `now`.

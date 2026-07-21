@@ -89,8 +89,16 @@ internal struct BucketingManager {
         //    filter at L568-572 treats `isNaN(ta)` as included). `traffic_allocation` is a 0–100
         //    PERCENTAGE (see SCALE NOTE), so it is scaled `×100` into the 0..<10000 bucket-unit
         //    space the selector accumulates in — matching the JS/Android SDKs. Order is preserved.
+        //    A non-RUNNING variation (e.g. STOPPED) is also dropped here even when it carries a
+        //    nonzero `traffic_allocation` — matches the JS reference's `_buildPackedBuckets`
+        //    (`status === RUNNING` filter) and this SDK's own anchored path
+        //    (`AnchoredBucketing.swift`'s `statusActive` check); a STOPPED arm must never be
+        //    selectable regardless of its wire-configured allocation.
         let eligible: [WeightedVariation] = (experience.variations ?? []).compactMap { variation in
             guard let key = variation.id else {
+                return nil
+            }
+            guard variation.status == nil || variation.status == .running else {
                 return nil
             }
             let allocation: Double

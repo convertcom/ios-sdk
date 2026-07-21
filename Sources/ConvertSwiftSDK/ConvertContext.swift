@@ -217,10 +217,11 @@ public final class ConvertContext: Sendable {
     ///
     /// **Inert on bad input:** when `experienceId` cannot be resolved (absent from both the local
     /// snapshot AND the fetch) OR ``PreviewDecision/forcedVariation(for:variationId:)`` cannot match
-    /// `variationId` within the resolved experience's variations, this WARNs and returns WITHOUT
-    /// updating ``PreviewState`` — the context (and any experience it is later asked to run,
-    /// including one previously targeted by a successful `setPreview` call) behaves fully normally.
-    /// The WARN `message` is ONLY the descriptive tail — the adapter composes the
+    /// `variationId` within the resolved experience's variations, this WARNs and CLEARS any prior
+    /// forced target via ``PreviewState/clearForcedVariation()`` (JS parity — the JS reference nulls
+    /// `_preview` on every failure path) — the context (and any experience it is later asked to run,
+    /// including one previously targeted by an EARLIER successful `setPreview` call) behaves fully
+    /// normally afterward. The WARN `message` is ONLY the descriptive tail — the adapter composes the
     /// `[WARN] ConvertContext.setPreview: …` prefix from `type`/`method` (UX-DR19).
     /// - Parameters:
     ///   - experienceId: The numeric experience id to force (from `PreviewParam.parse`'s
@@ -235,6 +236,7 @@ public final class ConvertContext: Sendable {
             previewState: previewState
         ) else {
             logPreviewResolutionFailure(logger: logger, experienceId: experienceId, variationId: variationId)
+            await previewState.clearForcedVariation()
             return
         }
         await previewState.setForcedVariation(forced)

@@ -29,6 +29,14 @@ struct BucketingManagerTests {
         let id: String
         let key: String
         let alloc: Double
+        let status: Components.Schemas.VariationStatuses?
+
+        init(id: String, key: String, alloc: Double, status: Components.Schemas.VariationStatuses? = nil) {
+            self.id = id
+            self.key = key
+            self.alloc = alloc
+            self.status = status
+        }
     }
 
     /// The fields extracted from an encoded bucketing entry — a named struct (not a 3-member
@@ -62,7 +70,8 @@ struct BucketingManagerTests {
             Components.Schemas.ExperienceVariationConfig(
                 id: variation.id,
                 key: variation.key,
-                traffic_allocation: variation.alloc
+                traffic_allocation: variation.alloc,
+                status: variation.status
             )
         }
         return Components.Schemas.ConfigExperience(id: id, key: key, variations: configs)
@@ -173,6 +182,41 @@ struct BucketingManagerTests {
             variations: [
                 VariationSpec(id: "varA", key: "varA-key", alloc: 50),
                 VariationSpec(id: "varB", key: "varB-key", alloc: 50)
+            ]
+        )
+        let manager = makeBucketingManager()
+        let variation = await manager.bucket(visitorId: visitorId, experience: experience)
+        #expect(variation?.id == expectedVariationId)
+    }
+
+    // MARK: - JS parity regression: a STOPPED variation is excluded from packed eligibility
+
+    /// JS parity regression: `_buildPackedBuckets` filters on `status === RUNNING` — a STOPPED
+    /// variation must never get a bucket band, even carrying a nonzero `traffic_allocation`. Reuses
+    /// the SAME experience id / visitor ids / hash-derived bucket values already pinned by
+    /// ``fiftyFiftySplitBucketsAcrossTheSpace`` (`visitor-a` → bucket 3774, `visitor-c` → bucket
+    /// 7328), but with `varB` now `stopped` instead of `running`: `varA`'s `[0,5000)` band is
+    /// UNCHANGED (still selected for `visitor-a`), while `varB`'s would-be `[5000,10000)` band is
+    /// dropped entirely from `eligible` — `selectBucket`'s accumulated weight tops out at 5000, so
+    /// `visitor-c`'s bucket value (7328, in the now-uncovered tail) selects NOTHING rather than the
+    /// stopped arm.
+    @Test(
+        "JS parity — a STOPPED variation with nonzero traffic_allocation is never selected",
+        arguments: [
+            (visitorId: "visitor-a", expectedVariationId: "varA"),
+            (visitorId: "visitor-c", expectedVariationId: nil)
+        ] as [(visitorId: String, expectedVariationId: String?)]
+    )
+    func stoppedVariationExcludedFromPackedEligibility(
+        visitorId: String,
+        expectedVariationId: String?
+    ) async {
+        let experience = makeExperience(
+            id: "100334665",
+            key: "exp-key",
+            variations: [
+                VariationSpec(id: "varA", key: "varA-key", alloc: 50, status: .running),
+                VariationSpec(id: "varB", key: "varB-key", alloc: 50, status: .stopped)
             ]
         )
         let manager = makeBucketingManager()
