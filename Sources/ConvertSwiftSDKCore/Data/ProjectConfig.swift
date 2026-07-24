@@ -27,6 +27,16 @@ import Foundation
 ///     disposition: the experience survives and its ``Experience/type`` degrades to `nil`. Once
 ///     the serving-spec regen graduates `"a/b_fullstack"` to a first-class case it decodes
 ///     cleanly — the degrade then applies only to type values the enum still lacks.
+///   - **D5** (IOS-1, mobile mutual-exclusion) an `audiences[].rules` tree may embed a rule leaf
+///     whose `rule_type` discriminator the generated `RuleElementAudience` `oneOf` does not carry
+///     (e.g. `bucketed_into_experience_key`) → a raw element decode throws
+///     `unknownOneOfDiscriminator`. Disposition: the OFFENDING audience alone degrades — decoded
+///     per-element through `SentinelWrapped<Components.Schemas.ConfigAudience>` (never throws),
+///     it is reconstructed as a placeholder `ConfigAudience` (its `id`/`key`/`name` recovered from
+///     the captured `.sentinel` payload, `rules` left `nil`) so it stays retrievable via
+///     ``audience(id:)``, while the raw payload is retained in ``degradedAudienceSentinels`` for a
+///     future rule-level consumer (IOS-2) to read the unknown leaf's `rule_type`/`value`/`negated`.
+///     Every sibling audience — including ones before/after it in the array — decodes untouched.
 ///
 /// ── How the degrade is localized (NOT a boundary catch) ──────────────────────────────────
 /// Every degrade is a per-field `try?` inside a typed `init(from:)`, mirroring the sanctioned
@@ -60,8 +70,22 @@ public struct ProjectConfig: Decodable, Sendable {
     /// whole-array `dataCorrupted` throw nulling its valid siblings. `nil` when the field is absent or every
     /// element degraded. Queried via ``fullExperience(forKey:)``.
     public var rawExperiences: [Components.Schemas.ConfigExperience]?
-    /// Audiences (wire `audiences`) — the generated element type decodes cleanly in the baseline.
+    /// Audiences (wire `audiences`, D5): decoded PER-ELEMENT through
+    /// `SentinelWrapped<Components.Schemas.ConfigAudience>` (never throws — see
+    /// `PolymorphicSentinels.swift`) so a single audience whose rule tree embeds an unknown
+    /// `rule_type` discriminator degrades out ALONE instead of nulling the whole array (the prior
+    /// whole-array `try?` regression). A degraded audience is NOT dropped — it is reconstructed as
+    /// a placeholder carrying its recovered `id`/`key`/`name` (see ``degradedAudienceSentinels``
+    /// for the raw payload) — so every audience, known or degraded, remains retrievable via
+    /// ``audience(id:)``. `nil` only when the field is absent or the array is empty.
     public var audiences: [Components.Schemas.ConfigAudience]?
+    /// Raw `.sentinel` payloads for audiences retained in ``audiences`` whose rule tree embedded an
+    /// unknown `rule_type` discriminator (D5), keyed by the audience's recovered `id`. Not consumed
+    /// by this task (IOS-1) — retained so a future rule-level consumer (IOS-2) can read the
+    /// unknown leaf's `rule_type`/`value`/`negated` off the captured `JSONValue`. `nil` when no
+    /// audience degraded to a sentinel, or when a degraded audience's payload lacked a recoverable
+    /// `id`.
+    public var degradedAudienceSentinels: [String: JSONValue]?
     /// Segments (wire `segments`) — the generated element type decodes cleanly in the baseline.
     public var segments: [Components.Schemas.ConfigSegment]?
     /// Locations (wire `locations`) — the generated element type decodes cleanly in the baseline.
@@ -152,10 +176,17 @@ public struct ProjectConfig: Decodable, Sendable {
             }
             rawExperiences = collected.isEmpty ? nil : collected
         }
-        audiences = try? container.decodeIfPresent(
-            [Components.Schemas.ConfigAudience].self,
-            forKey: .audiences
-        )
+        // D5: retain EVERY audience, decoded PER-ELEMENT so a single audience whose rule tree
+        // embeds an unrecognised `rule_type` leaf degrades out ALONE instead of a whole-array
+        // `try?` nulling every sibling. The per-element loop + its LOOP-TERMINATION INVARIANT live
+        // in `ProjectConfig+AudienceDecoding.swift` (split out to stay under SwiftLint's
+        // file/function length gates — the logic is a direct extension of this decode, not a
+        // separate feature).
+        if var rawAudiences = try? container.nestedUnkeyedContainer(forKey: .audiences) {
+            let decodedAudiences = Self.decodeDegradingAudiences(from: &rawAudiences)
+            audiences = decodedAudiences.audiences
+            degradedAudienceSentinels = decodedAudiences.sentinels
+        }
         segments = try? container.decodeIfPresent(
             [Components.Schemas.ConfigSegment].self,
             forKey: .segments
@@ -259,8 +290,11 @@ public struct ProjectConfig: Decodable, Sendable {
 
     /// The `String` value of the `name`-keyed member in a `JSONValue` object's pairs, or `nil` when
     /// the member is absent or not a JSON string. Centralizes the `.object` member read so the
-    /// sentinel reconstruction never inlines the find-then-unwrap per field.
-    private static func stringValue(of name: String, in pairs: [JSONValue.Pair]) -> String? {
+    /// sentinel reconstruction never inlines the find-then-unwrap per field. Internal (not
+    /// `private`) so ``ProjectConfig/decodeDegradingAudiences(from:)`` in
+    /// `ProjectConfig+AudienceDecoding.swift` can reuse it for the D5 audience reconstruction
+    /// without duplicating the same four-line lookup.
+    static func stringValue(of name: String, in pairs: [JSONValue.Pair]) -> String? {
         guard case let .string(value)? = pairs.first(where: { $0.key == name })?.value else {
             return nil
         }

@@ -43,6 +43,15 @@ struct ConvertSwiftSDKDemoApp: App {
                     await viewModel.startEventInspector()
                     await viewModel.start()
                 }
+                // Experiment-preview deep links (qs-02/qs-03 host-app wiring, `Model/
+                // DemoViewModel+Preview.swift`). The demo registers the `convertdemo` URL
+                // scheme (see Info.plist / README "Testing experiment-preview deep links");
+                // SwiftUI routes any open-URL event here regardless of which tab is active.
+                // `applyPreviewLink` is fully inert on a missing/malformed `convert_preview`
+                // query item, so a stray or malformed URL never corrupts app state.
+                .onOpenURL { url in
+                    Task { await viewModel.applyPreviewLink(url) }
+                }
                 // Tear the Event Inspector subscription down when the app moves to
                 // the background — the correct teardown point for the demo. The
                 // `.task` above does NOT re-fire on return to foreground, and this

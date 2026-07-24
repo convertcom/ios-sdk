@@ -32,6 +32,7 @@
 		EC9FC27BB45ECFF34FF06369 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = "TEMP_8D50EC2F-E11F-4D4C-9713-4E057F4F075F" /* Assets.xcassets */; };
 		DEC0DE000000000000000001 /* demo-config.json in Resources */ = {isa = PBXBuildFile; fileRef = DEC0DE000000000000000002 /* demo-config.json */; };
 		FF6DFE9D2E966A8221A5DCE3 /* ConfigState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FB3ECD39557B4BD82B372 /* ConfigState.swift */; };
+		DEC0DE000000000000000004 /* DemoViewModel+Preview.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC0DE000000000000000005 /* DemoViewModel+Preview.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -61,6 +62,8 @@
 		"TEMP_8D50EC2F-E11F-4D4C-9713-4E057F4F075F" /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		DEC0DE000000000000000002 /* demo-config.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-config.json"; sourceTree = "<group>"; };
 		"TEMP_CA83CA2C-B089-4A16-B89C-7E997C2ED50B" /* ConvertSwiftSDKDemoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvertSwiftSDKDemoApp.swift; sourceTree = "<group>"; };
+		DEC0DE000000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		DEC0DE000000000000000005 /* DemoViewModel+Preview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoViewModel+Preview.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -141,6 +144,7 @@
 				32A7AB9721D664AE01FD4F2F /* DemoViewModel+Config.swift */,
 				1DF1D7B4E7C17D5D60315AD8 /* DemoViewModel+Conversions.swift */,
 				0F070E645EA5862EAF753FDF /* DemoViewModel+Inspector.swift */,
+				DEC0DE000000000000000005 /* DemoViewModel+Preview.swift */,
 				532237ECDD6A745AABAFEA65 /* InspectorEvent.swift */,
 			);
 			path = Model;
@@ -164,6 +168,7 @@
 			children = (
 				"TEMP_8D50EC2F-E11F-4D4C-9713-4E057F4F075F" /* Assets.xcassets */,
 				DEC0DE000000000000000002 /* demo-config.json */,
+				DEC0DE000000000000000003 /* Info.plist */,
 				"TEMP_1BF71A44-8E85-4D7F-A9EB-CE4EF34828DF" /* ContentView.swift */,
 				"TEMP_CA83CA2C-B089-4A16-B89C-7E997C2ED50B" /* ConvertSwiftSDKDemoApp.swift */,
 				2BB4597078C45D14D92BC818 /* Tabs */,
@@ -259,6 +264,7 @@
 				4C81DFDB24B0026CCFCCA5D7 /* DemoViewModel+Config.swift in Sources */,
 				9BBEC7FE8D8B26F102D3E669 /* DemoViewModel+Conversions.swift in Sources */,
 				9C4E5395614537BF82D4DB47 /* DemoViewModel+Inspector.swift in Sources */,
+				DEC0DE000000000000000004 /* DemoViewModel+Preview.swift in Sources */,
 				5ABB54AE4D3E168525C35056 /* DemoViewModel.swift in Sources */,
 				0ADAFCE3988C3032083647DA /* EmptyStateView.swift in Sources */,
 				EA3FB463D99BCFED14D7199E /* EventInspectorSheet.swift in Sources */,
@@ -403,9 +409,8 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = BrandAccent;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -427,9 +432,8 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = BrandAccent;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

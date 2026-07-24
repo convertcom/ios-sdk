@@ -95,11 +95,18 @@ public struct ConfigFetchService: ConfigProviding {
     }
 
     /// Assembles `{apiConfigEndpoint}/config/{sdkKey}` and appends `environment={value}`
-    /// (when set) and `_conv_low_cache=1` (when `networkCacheLevel == .low`).
+    /// (when set), `debug_token={value}` (qs-02 IOS-1, when set), and `_conv_low_cache=1`
+    /// (when `networkCacheLevel == .low` OR a `debugToken` is set).
     ///
     /// `apiConfigEndpoint` carries NO trailing slash (References F-029), so the route
     /// path supplies the leading "/". `URLComponents` joins the query items with "&"
     /// and percent-encodes them; when there are no items the URL has no "?" segment.
+    ///
+    /// A `debugToken` FORCES `_conv_low_cache=1` (a QA debug session must never serve a
+    /// stale CDN-cached config) regardless of the configured `networkCacheLevel`. The
+    /// force and the `.low` cache level are combined into ONE `||` condition guarding a
+    /// SINGLE append, so `_conv_low_cache=1` is emitted exactly once even when both a
+    /// `debugToken` is set AND `networkCacheLevel == .low` — never twice.
     /// - Returns: The fully-built config URL.
     /// - Throws: ``ConvertError/invalidConfiguration(_:)`` if the endpoint string is
     ///   malformed or the components cannot resolve to a URL.
@@ -109,11 +116,8 @@ public struct ConfigFetchService: ConfigProviding {
         ) else {
             throw ConvertError.invalidConfiguration("Malformed config endpoint URL")
         }
-        var items: [URLQueryItem] = []
-        if let env = configuration.environment {
-            items.append(URLQueryItem(name: "environment", value: env))
-        }
-        if configuration.networkCacheLevel == .low {
+        var items = sharedConfigQueryItems()
+        if configuration.networkCacheLevel == .low || configuration.debugToken != nil {
             items.append(URLQueryItem(name: "_conv_low_cache", value: "1"))
         }
         if !items.isEmpty {
@@ -123,6 +127,52 @@ public struct ConfigFetchService: ConfigProviding {
             throw ConvertError.invalidConfiguration("Could not build config URL")
         }
         return url
+    }
+
+    /// Assembles `{apiConfigEndpoint}/config/{sdkKey}?exp={experienceId}` for an experience
+    /// preview fetch (qs-02 IOS-4): appends `exp={experienceId}`, FORCES
+    /// `_conv_low_cache=1` UNCONDITIONALLY (a preview must never risk a stale CDN-cached
+    /// config, regardless of `networkCacheLevel` — unlike ``buildConfigURL()``, which only
+    /// forces it when a `debugToken` is set OR `networkCacheLevel == .low`), and reuses the
+    /// shared `environment` / `debug_token` query-item logic ``buildConfigURL()`` already has.
+    /// - Parameter experienceId: The experience whose preview config is being requested.
+    /// - Returns: The fully-built experience-preview config URL.
+    /// - Throws: ``ConvertError/invalidConfiguration(_:)`` if the endpoint string is
+    ///   malformed or the components cannot resolve to a URL.
+    public func buildExperienceConfigURL(experienceId: String) throws -> URL {
+        guard var components = URLComponents(
+            string: configuration.apiConfigEndpoint + "/config/" + configuration.sdkKey
+        ) else {
+            throw ConvertError.invalidConfiguration("Malformed config endpoint URL")
+        }
+        var items = sharedConfigQueryItems()
+        items.append(URLQueryItem(name: "exp", value: experienceId))
+        items.append(URLQueryItem(name: "_conv_low_cache", value: "1"))
+        components.queryItems = items
+        guard let url = components.url else {
+            throw ConvertError.invalidConfiguration("Could not build config URL")
+        }
+        return url
+    }
+
+    /// Query items common to both ``buildConfigURL()`` and
+    /// ``buildExperienceConfigURL(experienceId:)``: `environment` (when set) and
+    /// `debug_token` (qs-02 IOS-1, when set). Extracted so the qs-02 IOS-4 experience-preview
+    /// URL builder does not duplicate this logic (SonarQube new-code-duplication discipline).
+    /// Query-item ORDER is not part of either builder's observable contract (both suites
+    /// assert via `URLComponents` filtering / an order-agnostic dictionary, never a raw
+    /// string compare), so extracting this without reordering is a pure, behavior-preserving
+    /// refactor of ``buildConfigURL()``.
+    /// - Returns: The shared `environment` / `debug_token` query items, in that order.
+    private func sharedConfigQueryItems() -> [URLQueryItem] {
+        var items: [URLQueryItem] = []
+        if let env = configuration.environment {
+            items.append(URLQueryItem(name: "environment", value: env))
+        }
+        if let debugToken = configuration.debugToken {
+            items.append(URLQueryItem(name: "debug_token", value: debugToken))
+        }
+        return items
     }
 
     /// Emits one WARN line tagged to this service and the originating `method`.
@@ -150,8 +200,15 @@ public struct ConfigFetchService: ConfigProviding {
     /// silently (nothing to log, nothing to delete). When the read SUCCEEDS but the
     /// bytes fail to decode (corrupt content), a WARN is logged, the corrupt file is
     /// deleted (so the next load re-fetches), and `nil` is returned (AC4).
-    /// - Returns: The decoded config, or `nil` on a miss / corrupt cache.
+    ///
+    /// With a `debugToken` configured (qs-02 IOS-1, AC2), the disk cache is skipped
+    /// entirely — this returns `nil` without touching `fileStore` at all, so a QA debug
+    /// session never resurrects a stale on-disk config from a prior ordinary session.
+    /// - Returns: The decoded config, or `nil` on a miss / corrupt cache / debug session.
     public func loadCachedConfig() async -> ProjectConfig? {
+        if configuration.debugToken != nil {
+            return nil
+        }
         let data: Data
         do {
             data = try await fileStore.read(from: cacheURL)
@@ -196,6 +253,66 @@ public struct ConfigFetchService: ConfigProviding {
             return nil
         }
 
+        guard let fetched = await getAndDecode(url: url, method: "fetchLiveConfig") else {
+            return nil
+        }
+
+        // Write-through the VERBATIM response bytes (inherited contract #4): the exact
+        // `data` from get(), NOT a re-encode of `config`. A write failure is non-fatal —
+        // log a WARN and still return the decoded config. Skipped entirely when a
+        // `debugToken` is configured (qs-02 IOS-1, AC2): a QA debug fetch is never
+        // persisted to disk.
+        if configuration.debugToken == nil {
+            do {
+                try await fileStore.write(fetched.data, to: cacheURL)
+            } catch {
+                warn(
+                    method: "fetchLiveConfig",
+                    reason: "cache write failed",
+                    detail: String(describing: error)
+                )
+            }
+        }
+
+        return fetched.config
+    }
+
+    /// Fetches the experience-preview config (qs-02 IOS-4): builds the `?exp={experienceId}`
+    /// URL, GETs and decodes it exactly like ``fetchLiveConfig()``, but NEVER reads from or
+    /// writes to the on-disk config cache — a preview/QA config must never persist as the
+    /// ordinary cached config for subsequent launches. Achieved structurally: this method
+    /// simply never calls the cache-write step, rather than widening `fetchLiveConfig()`'s
+    /// own debugToken-gated write condition (which would risk changing `fetchLiveConfig()`'s
+    /// own observable behavior).
+    /// - Parameter experienceId: The experience whose preview config is being requested.
+    /// - Returns: The decoded config on success, or `nil` on URL-build / network / decode
+    ///   failure.
+    public func fetchExperienceConfig(experienceId: String) async -> ProjectConfig? {
+        let url: URL
+        do {
+            url = try buildExperienceConfigURL(experienceId: experienceId)
+        } catch {
+            warn(
+                method: "fetchExperienceConfig",
+                reason: "could not build config URL",
+                detail: String(describing: error)
+            )
+            return nil
+        }
+        return await getAndDecode(url: url, method: "fetchExperienceConfig")?.config
+    }
+
+    /// Shared GET + decode step for ``fetchLiveConfig()`` and
+    /// ``fetchExperienceConfig(experienceId:)``: sends the auth-headered GET, then decodes the
+    /// SAME raw bytes (single decoder, NO keyDecodingStrategy — AR13). The only step that
+    /// differs between the two public methods is the subsequent disk-cache write, which stays
+    /// in ``fetchLiveConfig()`` — this helper never touches `fileStore`.
+    /// - Parameters:
+    ///   - url: The pre-built request URL.
+    ///   - method: The originating public method name, for the WARN `{method}` field.
+    /// - Returns: The decoded config AND the raw response bytes (the latter needed by
+    ///   `fetchLiveConfig()` for its verbatim write-through), or `nil` on any failure stage.
+    private func getAndDecode(url: URL, method: String) async -> (config: ProjectConfig, data: Data)? {
         // Auth header only when a non-empty secret is configured. The secret value is
         // never logged, and `toLoggable` strips any sk_/secret material from error text.
         var headers: [String: String] = [:]
@@ -203,45 +320,20 @@ public struct ConfigFetchService: ConfigProviding {
             headers["Authorization"] = "Bearer \(secret)"
         }
 
-        // CAPTURE the raw `data` here — it is what gets written through to the cache.
         let data: Data
         do {
             (data, _) = try await httpClient.get(url: url, headers: headers)
         } catch {
-            warn(
-                method: "fetchLiveConfig",
-                reason: "config fetch failed",
-                detail: String(describing: error)
-            )
+            warn(method: method, reason: "config fetch failed", detail: String(describing: error))
             return nil
         }
 
-        // Decode the SAME raw bytes (single decoder, NO keyDecodingStrategy — AR13).
-        let config: ProjectConfig
         do {
-            config = try JSONDecoder().decode(ProjectConfig.self, from: data)
+            let config = try JSONDecoder().decode(ProjectConfig.self, from: data)
+            return (config, data)
         } catch {
-            warn(
-                method: "fetchLiveConfig",
-                reason: "config decode failed",
-                detail: String(describing: error)
-            )
+            warn(method: method, reason: "config decode failed", detail: String(describing: error))
             return nil
         }
-
-        // Write-through the VERBATIM response bytes (inherited contract #4): the exact
-        // `data` from get(), NOT a re-encode of `config`. A write failure is non-fatal —
-        // log a WARN and still return the decoded config.
-        do {
-            try await fileStore.write(data, to: cacheURL)
-        } catch {
-            warn(
-                method: "fetchLiveConfig",
-                reason: "cache write failed",
-                detail: String(describing: error)
-            )
-        }
-
-        return config
     }
 }

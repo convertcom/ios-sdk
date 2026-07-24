@@ -79,6 +79,16 @@ public struct FeatureManager: Sendable {
     ///   - projectId: Project id — forwarded to `selectVariation` (sticky store key segment).
     ///   - attributes: The data map each carrying experience's audience gate evaluates against.
     ///   - locationProperties: The data map each carrying experience's location gate evaluates against.
+    ///   - enableTracking: Forwarded to the delegated `selectVariation` call — suppresses the
+    ///     bucketing enqueue at the source (e.g. under experiment preview, qs-02 IOS-fix2) while the
+    ///     variation is still selected. Defaults to `true` (today's behavior, unchanged for every
+    ///     other caller).
+    ///   - persistDecision: Forwarded to the delegated `selectVariation` call — suppresses the sticky
+    ///     decision WRITE at the source (e.g. under experiment preview). Defaults to `true` (today's
+    ///     behavior, unchanged for every other caller).
+    ///   - emitBucketing: Forwarded to the delegated `selectVariation` call — suppresses the
+    ///     `.bucketing` `EventBus` fire at the source (qs-02 Fix 1, e.g. under experiment preview).
+    ///     Defaults to `true` (today's behavior, unchanged for every other caller).
     /// - Returns: The resolved ``Feature`` — `.enabled` with typed variables, or `.disabled`.
     public func evaluateFeature( // swiftlint:disable:this function_parameter_count
         key: String,
@@ -87,7 +97,10 @@ public struct FeatureManager: Sendable {
         accountId: String,
         projectId: String,
         attributes: [String: String],
-        locationProperties: [String: String]
+        locationProperties: [String: String],
+        enableTracking: Bool = true,
+        persistDecision: Bool = true,
+        emitBucketing: Bool = true
     ) async -> Feature {
         // 1. Look up the feature; a miss is a population-layer warning, then disabled.
         guard let feature = config.features?.first(where: { $0.key == key }) else {
@@ -112,7 +125,9 @@ public struct FeatureManager: Sendable {
                 projectId: projectId,
                 attributes: attributes,
                 locationProperties: locationProperties,
-                enableTracking: true
+                enableTracking: enableTracking,
+                persistDecision: persistDecision,
+                emitBucketing: emitBucketing
             )
             // 3c. Visitor not bucketed into this carrier — a later experience might still carry it.
             guard let variation else { continue }
@@ -145,6 +160,15 @@ public struct FeatureManager: Sendable {
     ///   - projectId: Project id — forwarded to each `evaluateFeature`.
     ///   - attributes: The data map each feature's carrying experiences' audience gates evaluate against.
     ///   - locationProperties: The data map each feature's carrying experiences' location gates evaluate against.
+    ///   - enableTracking: Forwarded to each ``evaluateFeature`` call — suppresses the bucketing
+    ///     enqueue at the source (e.g. under experiment preview, qs-02 IOS-fix2). Defaults to `true`
+    ///     (today's behavior, unchanged for every other caller).
+    ///   - persistDecision: Forwarded to each ``evaluateFeature`` call — suppresses the sticky
+    ///     decision WRITE at the source (e.g. under experiment preview). Defaults to `true` (today's
+    ///     behavior, unchanged for every other caller).
+    ///   - emitBucketing: Forwarded to each ``evaluateFeature`` call — suppresses the `.bucketing`
+    ///     `EventBus` fire at the source (qs-02 Fix 1, e.g. under experiment preview). Defaults to
+    ///     `true` (today's behavior, unchanged for every other caller).
     /// - Returns: One ``Feature`` per `config.features` entry, in config order; `[]` when empty.
     public func evaluateAllFeatures( // swiftlint:disable:this function_parameter_count
         in config: ProjectConfig,
@@ -152,7 +176,10 @@ public struct FeatureManager: Sendable {
         accountId: String,
         projectId: String,
         attributes: [String: String],
-        locationProperties: [String: String]
+        locationProperties: [String: String],
+        enableTracking: Bool = true,
+        persistDecision: Bool = true,
+        emitBucketing: Bool = true
     ) async -> [Feature] {
         guard let features = config.features, !features.isEmpty else { return [] }
         var results: [Feature] = []
@@ -166,7 +193,10 @@ public struct FeatureManager: Sendable {
                 accountId: accountId,
                 projectId: projectId,
                 attributes: attributes,
-                locationProperties: locationProperties
+                locationProperties: locationProperties,
+                enableTracking: enableTracking,
+                persistDecision: persistDecision,
+                emitBucketing: emitBucketing
             )
             results.append(resolved)
         }

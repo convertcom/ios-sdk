@@ -12,8 +12,10 @@
 //      the bd-d4p empty-list rule); a non-empty set's rules are flattened and OR-combined across
 //      every attached audience, then evaluated against `attributes` (a fail returns nil).
 //   4. LOCATION gate: the same shape over `locations` against `locationProperties` (empty ⇒ pass).
-//   5. BUCKET via ``BucketingManager/bucket(visitorId:experience:enableTracking:)`` — that call
-//      owns the single bucketing enqueue (driven by `enableTracking`); this type NEVER enqueues.
+//   5. BUCKET via ``BucketingManager/bucketVersionGated(visitorId:experience:enableTracking:)``
+//      (qs-01: routes `version > 11` to the ANCHORED layout, `version <= 11`/missing delegates
+//      verbatim to the packed walk) — that call owns the single bucketing enqueue (driven by
+//      `enableTracking`); this type NEVER enqueues.
 //   6. PERSIST the new decision; FIRE `.bucketing` on the bus — only on a NEW decision.
 //
 // SCOPE (bd-d4p) — the audience/location combine is a FLAT OR across the attached objects'
@@ -139,6 +141,17 @@ public struct ExperienceManager: Sendable {
     ///   - locationProperties: The data map the location gate evaluates against.
     ///   - enableTracking: When `false`, suppresses the bucketing enqueue (passed through to the
     ///     bucket step); the variation is still selected, persisted, and fired.
+    ///   - persistDecision: When `false`, suppresses the sticky-decision ``DecisionStore/saveDecision``
+    ///     WRITE on a NEW decision (qs-02 IOS-6, AC6 zero-trace gate) — the variation is still
+    ///     selected and the `.bucketing` event still fires; only the disk write is skipped. Sticky
+    ///     READS (the short-circuit above) are unaffected. Defaults to `true` so every existing
+    ///     call site — unaware of preview — persists exactly as before (AC10 regression safety).
+    ///   - emitBucketing: When `false`, suppresses the `.bucketing` ``EventBus`` fire on a NEW
+    ///     decision (qs-02 Fix 1, JS parity: `context.ts` wraps every `SystemEvents.BUCKETING` emit
+    ///     in `if (!this._preview)`) — the variation is still selected and persisted (subject to
+    ///     `persistDecision`); only the observer notification is skipped. Defaults to `true` so
+    ///     every existing call site — unaware of preview — fires exactly as before (AC10 regression
+    ///     safety).
     /// - Returns: The assigned ``Variation``, or `nil` on any short-circuit / gate failure / miss.
     public func selectVariation( // swiftlint:disable:this function_parameter_count
         forKey key: String,
@@ -148,7 +161,9 @@ public struct ExperienceManager: Sendable {
         projectId: String,
         attributes: [String: String],
         locationProperties: [String: String],
-        enableTracking: Bool
+        enableTracking: Bool,
+        persistDecision: Bool = true,
+        emitBucketing: Bool = true
     ) async -> Variation? {
         // 1. Resolve the full experience and its id (the id keys sticky / persist).
         guard let full = config.fullExperience(forKey: key), let experienceId = full.id else {
@@ -164,28 +179,36 @@ public struct ExperienceManager: Sendable {
         }
 
         // 3–4. AUDIENCE then LOCATION gate (an empty resolved set is unrestricted / passes).
-        guard audiencePasses(full, in: config, attributes: attributes),
+        guard await audiencePasses(full, in: config, attributes: attributes, storeKey: storeKey),
               locationPasses(full, in: config, locationProperties: locationProperties) else {
             return nil
         }
 
-        // 5. BUCKET — this performs the single enqueue when `enableTracking`; a miss returns nil.
-        guard let variation = await bucketingManager.bucket(
+        // 5. BUCKET — routed through the version gate (qs-01): `version > 11` runs the ANCHORED
+        //    layout, `version <= 11`/missing delegates verbatim to the packed walk (AC6). This
+        //    performs the single enqueue when `enableTracking`; a miss returns nil.
+        guard let variation = await bucketingManager.bucketVersionGated(
             visitorId: visitorId, experience: full, enableTracking: enableTracking
         ) else {
             return nil
         }
 
-        // 6. PERSIST the new decision, then FIRE `.bucketing` (only on a NEW decision).
-        await decisionStore.saveDecision(
-            variationId: variation.id, experienceId: experienceId, storeKey: storeKey
-        )
-        await eventBus.fire(
-            .bucketing,
-            payload: .bucketing(BucketingPayload(
-                experienceId: experienceId, variationId: variation.id, visitorId: visitorId
-            ))
-        )
+        // 6. PERSIST the new decision (qs-02 IOS-6: skipped under preview via `persistDecision`),
+        //    then FIRE `.bucketing` on a NEW decision — gated by `emitBucketing` (qs-02 Fix 1:
+        //    skipped under preview, independent of `persistDecision`).
+        if persistDecision {
+            await decisionStore.saveDecision(
+                variationId: variation.id, experienceId: experienceId, storeKey: storeKey
+            )
+        }
+        if emitBucketing {
+            await eventBus.fire(
+                .bucketing,
+                payload: .bucketing(BucketingPayload(
+                    experienceId: experienceId, variationId: variation.id, visitorId: visitorId
+                ))
+            )
+        }
         return variation
     }
 
@@ -229,6 +252,12 @@ public struct ExperienceManager: Sendable {
     ///   - locationProperties: The data map each experience's location gate evaluates against.
     ///   - enableTracking: Forwarded UNCHANGED to every per-experience bucket; when `false` the bucketing
     ///     enqueue is suppressed (the variation is still selected, persisted, and fired).
+    ///   - persistDecision: Forwarded UNCHANGED to every per-experience ``selectVariation`` call
+    ///     (qs-02 IOS-6, AC6 zero-trace gate); defaults to `true` so every existing call site
+    ///     persists exactly as before (AC10 regression safety).
+    ///   - emitBucketing: Forwarded UNCHANGED to every per-experience ``selectVariation`` call
+    ///     (qs-02 Fix 1, JS parity); defaults to `true` so every existing call site fires exactly
+    ///     as before (AC10 regression safety).
     /// - Returns: The assigned ``Variation`` for every eligible experience, in config order; `[]` when
     ///   the config has no experiences or the visitor is eligible for none.
     public func selectVariations( // swiftlint:disable:this function_parameter_count
@@ -238,7 +267,9 @@ public struct ExperienceManager: Sendable {
         projectId: String,
         attributes: [String: String],
         locationProperties: [String: String],
-        enableTracking: Bool
+        enableTracking: Bool,
+        persistDecision: Bool = true,
+        emitBucketing: Bool = true
     ) async -> [Variation] {
         guard let experiences = config.rawExperiences, !experiences.isEmpty else { return [] }
         var results: [Variation] = []
@@ -256,7 +287,9 @@ public struct ExperienceManager: Sendable {
                 projectId: projectId,
                 attributes: attributes,
                 locationProperties: locationProperties,
-                enableTracking: enableTracking
+                enableTracking: enableTracking,
+                persistDecision: persistDecision,
+                emitBucketing: emitBucketing
             ) {
                 results.append(variation)
             }
@@ -289,22 +322,56 @@ public struct ExperienceManager: Sendable {
 
     /// Whether the experience's AUDIENCE gate passes for `attributes`.
     ///
-    /// An EMPTY resolved audience set is UNRESTRICTED → `true` (parity: an experience with no
-    /// audiences runs for everyone). Otherwise every attached audience's rules are flattened and
-    /// CONCATENATED into one outer-OR (the visitor matches if ANY audience's rules match), then
-    /// evaluated by ``RuleManager`` (which fails closed on an empty group).
+    /// An EMPTY resolved audience set is UNRESTRICTED → `true`. Otherwise EVERY attached
+    /// audience is resolved to its OWN match boolean via ``ExperienceManager
+    /// /flattenedGroups(for:in:)`` + ``ExperienceManager/statefulLeaf(in:)`` (whole-audience
+    /// EXCLUSION override through ``BucketingExclusion/resolve(targetExperienceKey:negated:
+    /// resolver:logger:)`` when a stateful leaf is detected; the generic ``RuleManager`` path
+    /// otherwise — see those declarations for the full JS-parity rationale, M2 iOS
+    /// mutual-exclusion qs-04), then composed via `full.settings?.matching_options?.audiences`
+    /// (JS `data-manager.ts:418-428`): `.all` requires every audience to match; `.any`/absent
+    /// requires only one.
+    ///
+    /// The visitor's sticky-bucketing SNAPSHOT is pre-fetched ONCE per call (a PURE read — no
+    /// LRU touch, no write, no bucketing, no tracking event; AC5) via ``DecisionStore
+    /// /bucketingDecisions(forStoreKey:)`` and closed over by a synchronous resolver: an unknown
+    /// target experience key resolves `nil` (warns, naming the key — AC8); a known target
+    /// resolves whether ITS id is a key in the pre-fetched snapshot.
     private func audiencePasses(
         _ full: Components.Schemas.ConfigExperience,
         in config: ProjectConfig,
-        attributes: [String: String]
-    ) -> Bool {
+        attributes: [String: String],
+        storeKey: String
+    ) async -> Bool {
         let audiences = (full.audiences ?? []).compactMap { config.audience(id: $0) }
         guard !audiences.isEmpty else { return true }
-        let groups = audiences.flatMap { audience -> [RuleGroup] in
-            guard let rules = audience.rules?.value1 else { return [] }
-            return RuleAdapter.flatten(rules)
+
+        let bucketing = await decisionStore.bucketingDecisions(forStoreKey: storeKey)
+        let resolver: (String) -> Bool? = { targetExperienceKey in
+            guard let target = config.fullExperience(forKey: targetExperienceKey),
+                  let targetId = target.id else {
+                return nil
+            }
+            return bucketing[targetId] != nil
         }
-        return ruleManager.evaluate(rules: groups, against: attributes)
+
+        let matches = audiences.map { audience -> Bool in
+            let groups = Self.flattenedGroups(for: audience, in: config)
+            if let leaf = Self.statefulLeaf(in: groups) {
+                return BucketingExclusion.resolve(
+                    targetExperienceKey: leaf.targetExperienceKey,
+                    negated: leaf.negated,
+                    resolver: resolver,
+                    logger: logger
+                )
+            }
+            return ruleManager.evaluate(rules: groups, against: attributes)
+        }
+
+        if full.settings?.matching_options?.audiences == .all {
+            return matches.allSatisfy { $0 }
+        }
+        return matches.contains(true)
     }
 
     /// Whether the experience's LOCATION gate passes for `locationProperties`.
