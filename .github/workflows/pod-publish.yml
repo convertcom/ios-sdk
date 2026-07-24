@@ -1,0 +1,160 @@
+# =============================================================================
+# Publish Pod — CocoaPods-only recovery for an already-tagged release
+# =============================================================================
+#
+# WHY THIS EXISTS
+# -----------------------------------------------------------------------------
+# `release.yml` pushes both pods in ONE step, core first:
+#
+#     pod trunk push ConvertSwiftSDKCore.podspec --allow-warnings
+#     pod trunk push ConvertSwiftSDK.podspec     --allow-warnings --synchronous
+#
+# Under the step's default `-e` shell that sequence is all-or-nothing in the
+# wrong direction: if the FIRST push succeeds and the SECOND fails, the release
+# is left half-published — and it cannot be repaired by re-running the job,
+# because:
+#
+#   1. Trunk rejects a duplicate name+version, so re-running aborts on the
+#      already-published core push and never reaches the umbrella; and
+#   2. a `push: tags:` workflow runs the workflow file AS IT EXISTS AT THE TAG's
+#      commit, so fixing `release.yml` on `main` does not change what a re-run
+#      of an existing tag executes.
+#
+# Observed on v2.0.0 (run 30115531359, 2026-07-24): `ConvertSwiftSDKCore 2.0.0`
+# published, then the umbrella push failed validation with a transient
+# `[!] Calling the GitHub commit API timed out.` SPM and the GitHub Release were
+# already complete and correct; only the umbrella pod was missing.
+#
+# This workflow publishes ONE podspec, at an EXISTING tag, without re-versioning
+# anything. It is the repair tool for that state.
+#
+# WHAT IT DELIBERATELY CANNOT DO
+# -----------------------------------------------------------------------------
+# `permissions: contents: read` — it cannot create a Release, cannot push a tag,
+# and cannot write to the repo. It is not a second release path and must never
+# become one: it only uploads a podspec that a tag already blesses. The version
+# always comes from the checked-out tag, never from an input, and the podspec is
+# asserted against that tag before anything is uploaded (same guard as
+# `release.yml`).
+#
+# `release.yml` keeps its tag-only trigger and no `workflow_dispatch` — see
+# RELEASE.md "Safeguards (DO NOT REMOVE)" #1. That safeguard is about never
+# publishing a *release* on a branch merge; it is not violated by a separate,
+# human-dispatched, single-podspec upload for a tag that already shipped.
+# =============================================================================
+name: Publish Pod
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to publish from (e.g. v2.0.0)'
+        required: true
+        type: string
+      podspec:
+        description: 'Which podspec to push. Core must already be on Trunk before the umbrella.'
+        required: true
+        type: choice
+        default: ConvertSwiftSDK
+        options:
+          - ConvertSwiftSDK
+          - ConvertSwiftSDKCore
+
+permissions:
+  contents: read   # read the tagged tree only — no Release, no tag, no repo write
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.podspec }} from ${{ inputs.tag }} to CocoaPods Trunk
+    runs-on: macos-26   # same runner as ci.yml / release.yml
+    steps:
+      - name: Checkout the tag
+        # Same SHA pin used across ci.yml, release.yml and generate-config-types.yml.
+        # Pinned to the TAG, so the uploaded podspec is byte-for-byte the one the
+        # release blessed — never whatever `main` happens to hold now.
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Derive and verify the version
+        # VERSION_NUMBER comes from the TAG (tag minus the leading 'v'), then the
+        # podspec's own s.version is asserted to equal it — the same invariant
+        # release.yml enforces, so this path can never upload a spec whose version
+        # disagrees with the tag it was checked out from. Grep/sed are copied from
+        # release.yml's "Assert podspec versions match tag" step verbatim.
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "tag '$TAG' is not a vX.Y.Z release tag" >&2; exit 1 ;;
+          esac
+          VERSION_NUMBER="${TAG#v}"
+          SPEC="${{ inputs.podspec }}.podspec"
+          SPEC_VER=$(grep -E "^[[:space:]]*s\.version[[:space:]]*=" "$SPEC" | head -1 | sed "s/.*=[[:space:]]*['\"]//;s/['\"].*//")
+          if [ "$SPEC_VER" != "$VERSION_NUMBER" ]; then
+            echo "$SPEC s.version ($SPEC_VER) != tag ($VERSION_NUMBER)" >&2; exit 1
+          fi
+          echo "VERSION_NUMBER=$VERSION_NUMBER" >> "$GITHUB_ENV"
+          echo "SPEC=$SPEC" >> "$GITHUB_ENV"
+
+      - name: Skip if this version is already on Trunk
+        # Makes the workflow idempotent and keeps a re-dispatch from failing on
+        # Trunk's duplicate-version rejection — the exact trap that makes a
+        # release.yml re-run useless after a partial push. A 404 (pod not yet
+        # published at all) is a normal "proceed" answer, not an error.
+        run: |
+          set -euo pipefail
+          NAME="${{ inputs.podspec }}"
+          BODY=$(curl -sS --max-time 30 "https://trunk.cocoapods.org/api/v1/pods/$NAME" || echo '')
+          # Membership is decided by python's exit code, not by shell word-splitting
+          # a version list — the same shape the confirm step uses. Keeps the check
+          # independent of shell-specific splitting and `set -e` interaction.
+          echo "$NAME versions on Trunk: $(printf '%s' "$BODY" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(" ".join(v.get("name","") for v in d.get("versions",[])) or "<none>")' 2>/dev/null || echo '<none>')"
+          if printf '%s' "$BODY" | python3 -c 'import sys,json; d=json.load(sys.stdin); sys.exit(0 if any(v.get("name")==sys.argv[1] for v in d.get("versions",[])) else 1)' "$VERSION_NUMBER" 2>/dev/null; then
+            echo "ALREADY_PUBLISHED=true" >> "$GITHUB_ENV"
+            echo "$NAME $VERSION_NUMBER is already on Trunk — nothing to do."
+          else
+            echo "ALREADY_PUBLISHED=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Publish to CocoaPods trunk
+        # Same token env-var and flags as release.yml. `--synchronous` is added for
+        # the umbrella only: ConvertSwiftSDK declares
+        # `s.dependency 'ConvertSwiftSDKCore', s.version.to_s`, and Trunk validates
+        # dependencies at push time against a CDN with a ~5-min propagation TTL, so
+        # the flag makes the validator read the master Specs git repo instead
+        # (CocoaPods/CocoaPods#9497). ConvertSwiftSDKCore depends on nothing.
+        if: env.ALREADY_PUBLISHED == 'false'
+        env:
+          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COCOAPODS_TRUNK_TOKEN:-}" ]; then
+            echo "COCOAPODS_TRUNK_TOKEN is not set on this repository — cannot publish." >&2
+            exit 1
+          fi
+          gem install cocoapods --no-document
+          if [ "${{ inputs.podspec }}" = "ConvertSwiftSDK" ]; then
+            pod trunk push "$SPEC" --allow-warnings --synchronous
+          else
+            pod trunk push "$SPEC" --allow-warnings
+          fi
+
+      - name: Confirm the version is live on Trunk
+        # Closes the loop: a green run must mean the version is actually resolvable,
+        # not merely that the push command exited 0.
+        run: |
+          set -euo pipefail
+          NAME="${{ inputs.podspec }}"
+          for attempt in 1 2 3 4 5 6; do
+            BODY=$(curl -sS --max-time 30 "https://trunk.cocoapods.org/api/v1/pods/$NAME" || echo '')
+            if printf '%s' "$BODY" | python3 -c 'import sys,json; d=json.load(sys.stdin); sys.exit(0 if any(v.get("name")==sys.argv[1] for v in d.get("versions",[])) else 1)' "$VERSION_NUMBER" 2>/dev/null; then
+              echo "confirmed: $NAME $VERSION_NUMBER is on Trunk"
+              exit 0
+            fi
+            echo "not visible yet (attempt $attempt/6) — Trunk CDN lag; retrying in 30s"
+            sleep 30
+          done
+          echo "$NAME $VERSION_NUMBER did not appear on Trunk within ~3 min" >&2
+          exit 1
