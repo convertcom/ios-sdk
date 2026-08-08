@@ -221,11 +221,18 @@ that entirely: the human pushes the tag, and CI only *reacts* to it with
 `gh release create … --generate-notes`.
 
 An isolated semantic-release manifest is **kept** at `Scripts/release/`
-(`.releaserc.json` + its own `package.json`) as a reference/tooling artifact.
-It is **not part of the SPM product graph and is not invoked by the release
-workflow.** Do not wire it into `release.yml` expecting it to publish — see the
-deviation block at the top of that file for the empirical evidence on why it
-cannot satisfy the "no push to protected `main`" invariant.
+(`.releaserc.json` + its own `package.json`, `yarn.lock` and `.yarnrc.yml`) as a
+reference/tooling artifact. It is **not part of the SPM product graph and is not
+invoked by the release workflow.** Do not wire it into `release.yml` expecting it
+to publish — see the deviation block at the top of that file for the empirical
+evidence on why it cannot satisfy the "no push to protected `main`" invariant.
+
+It installs with Yarn 4 (`packageManager` pins `yarn@4.18.0`, so `corepack` needs
+no separate flag) and `.yarnrc.yml` sets `npmMinimalAgeGate: 4320` — a dependency
+version published less than 3 days ago is refused, matching the gate in
+`javascript-sdk`, `php-sdk` and `python-sdk`. Run `yarn install` from
+`Scripts/release/`; never `npm install`, which would reintroduce a `package-lock.json`
+whose vendored npm-CLI tree carries advisories this repo cannot patch.
 
 ---
 
