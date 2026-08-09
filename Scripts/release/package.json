@@ -4,9 +4,10 @@
   "private": true,
   "description": "Isolated release tooling for the Convert iOS SDK (semantic-release). NOT part of the SPM product graph (NFR18/AC5).",
   "devDependencies": {
-    "semantic-release": "24.2.9",
     "@semantic-release/commit-analyzer": "13.0.1",
-    "@semantic-release/release-notes-generator": "14.0.3",
-    "@semantic-release/github": "11.0.6"
-  }
+    "@semantic-release/github": "12.0.9",
+    "@semantic-release/release-notes-generator": "14.1.1",
+    "semantic-release": "25.0.9"
+  },
+  "packageManager": "yarn@4.18.0+sha512.fcb8716fe7cd0eece141ffc18b92193a9df9204c1ba83189c288835223fc0bbe64af473bab0d5e9927a7daeb5caf2bb07eb2787cc9338ca040ea125f2a1f2f7e"
 }

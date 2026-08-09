@@ -12,9 +12,11 @@
 # named verbatim in Task 1.7 and listed in AC3 bullet 2). The isolated
 # semantic-release manifest in Scripts/release/ is KEPT (it is the AC5.3
 # isolated-tooling artifact and documents the attempted path) but is intentionally
-# NOT invoked by this workflow. Evidence, gathered locally on 2026-06-11:
+# NOT invoked by this workflow. Evidence, re-verified locally on 2026-08-08 against
+# the currently pinned 25.0.9 (every call below is unchanged from the 24.2.9 reading
+# this block was originally written against — `run()` has the same shape):
 #
-#   semantic-release 24.2.9 source (Scripts/release/node_modules/semantic-release/index.js):
+#   semantic-release 25.0.9 source (Scripts/release/node_modules/semantic-release/index.js):
 #     • L88   verifyAuth(repositoryUrl, branch) runs UNCONDITIONALLY before publish.
 #     • L101  throw getError("EGITNOPERMISSION") on auth failure — it HARD-REQUIRES
 #             push-to-branch credentials (the exact android-semrelease-git-push / GH013
@@ -25,7 +27,8 @@
 #             push(repositoryUrl) + pushNotes(repositoryUrl). Removing
 #             @semantic-release/git does NOT remove these CORE push calls.
 #     • L204-205 in --dry-run it SKIPS tag creation -> creates NO Release.
-#   Local dry-runs (GITHUB_TOKEN=dummy npx semantic-release --dry-run --no-ci):
+#   Local dry-runs (from Scripts/release, after `yarn install`:
+#   GITHUB_TOKEN=dummy yarn semantic-release --dry-run --no-ci):
 #     • With branches:[main]  -> "a new version won't be published" (branch gate); NO Release.
 #     • Forced past the gate   -> ERELEASEBRANCHES "These branches must exist on the
 #                                  remote repository" — and CI runs on a detached TAG
