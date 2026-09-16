@@ -323,7 +323,8 @@ final class DemoViewModel: ObservableObject {
 
     /// Resolves the single baseline feature and prepends it to ``evaluatedFeatures``.
     ///
-    /// `@MainActor` (inherited): the `await` on ``ConvertContext/runFeature(_:)``
+    /// `@MainActor` (inherited): the `await` on
+    /// ``ConvertContext/runFeature(_:enableTracking:experienceKeys:)``
     /// suspends without blocking the main actor (the SDK works off-actor), then
     /// ``evaluatedFeatures`` is mutated on the main actor. `enableTracking` is left at its
     /// default (`true`, CAP-1); the carrying experience's bucketing event still reaches the
@@ -341,7 +342,8 @@ final class DemoViewModel: ObservableObject {
 
     /// Resolves every feature the config carries and prepends each to ``evaluatedFeatures``.
     ///
-    /// `@MainActor` (inherited): the `await` on ``ConvertContext/runFeatures()``
+    /// `@MainActor` (inherited): the `await` on
+    /// ``ConvertContext/runFeatures(enableTracking:experienceKeys:)``
     /// suspends without blocking the main actor, then ``evaluatedFeatures`` is mutated on the
     /// main actor. `enableTracking` is left at its default (`true`, CAP-1); each
     /// carrying experience's bucketing event still reaches the Event Inspector (AC4). Each ``Feature``
