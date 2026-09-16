@@ -440,9 +440,8 @@ public final class ConvertContext: Sendable {
     ///
     /// `accountId` / `projectId` come from the snapshot (defaulting to `""` when absent) and
     /// `locationProperties` come from this context — as on ``runExperience(_:enableTracking:)``.
-    /// Unlike the experience API, this method takes NO `enableTracking` parameter (Android parity, F-171):
-    /// the feature path is not per-call tracking-gated; feature evaluation delegates to ``FeatureManager``,
-    /// which lets the underlying experience bucketing track per its own contract.
+    /// CAP-1 (SPEC-per-call-bucketing-attributes): `enableTracking` gates the call, ANDed with
+    /// `!previewActive` — never combined with `isTrackingEnabled()` (see the scope note below).
     ///
     /// SCOPE ASYMMETRY (Story 5.4, deliberate): unlike ``runExperience(_:enableTracking:)`` /
     /// ``runExperiences(enableTracking:)`` (which combine the global `network.tracking` flag into the
@@ -461,10 +460,13 @@ public final class ConvertContext: Sendable {
     /// NOT combined with it, mirroring the scope asymmetry above: the feature path stays uncoupled from
     /// `isTrackingEnabled()`). The feature itself still RESOLVES normally (coherent rendering) — only
     /// tracking/persistence/observer-notification at the source is suppressed.
-    /// - Parameter key: The feature `key` to look up and resolve.
+    /// - Parameters:
+    ///   - key: The feature `key` to look up and resolve.
+    ///   - enableTracking: When `false`, suppresses the bucketing enqueue for this call (CAP-1);
+    ///     the sticky decision write and `.bucketing` fire are unaffected. Defaults to `true`.
     /// - Returns: The resolved ``Feature`` — `.enabled` with typed variables, or `.disabled` on a
     ///   missing snapshot / miss.
-    public func runFeature(_ key: String) async -> Feature {
+    public func runFeature(_ key: String, enableTracking: Bool = true) async -> Feature {
         guard let config = await sdk.configStore.getSnapshot() else {
             // Pre-ready / degraded: a nil snapshot resolves to a disabled feature without reaching the
             // manager (AOD-6, no throw).
@@ -492,7 +494,7 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: stringLocationProperties(),
-            enableTracking: !previewActive,
+            enableTracking: enableTracking && !previewActive,
             persistDecision: !previewActive,
             emitBucketing: !previewActive
         )
@@ -515,15 +517,18 @@ public final class ConvertContext: Sendable {
     /// `projectId` come from the snapshot (defaulting to `""` when absent) and `locationProperties` come
     /// from this context — identical to the single-feature path. Never throws.
     ///
-    /// As with ``runFeature(_:)``, this method takes NO `enableTracking` parameter (Android parity, F-171):
-    /// the feature path is not per-call tracking-gated.
+    /// As with ``runFeature(_:enableTracking:)``, `enableTracking` here is ANDed with
+    /// `!previewActive` (CAP-1) and never combined with `isTrackingEnabled()`.
     ///
     /// qs-02 IOS-fix2 / contract §2 (zero-trace): same per-context `previewState` gate as
-    /// ``runFeature(_:)`` applies to every feature evaluated here — see its doc comment for the scope
-    /// asymmetry rationale (deliberately NOT combined with `isTrackingEnabled()`).
+    /// ``runFeature(_:enableTracking:)`` applies to every feature evaluated here — see its doc
+    /// comment for the scope asymmetry rationale (deliberately NOT combined with `isTrackingEnabled()`).
+    /// - Parameter enableTracking: When `false`, suppresses the bucketing enqueue for every
+    ///   evaluated feature (CAP-1); sticky writes and `.bucketing` fires are unaffected. Defaults
+    ///   to `true`.
     /// - Returns: One ``Feature`` per `config.features` entry, in config order; `[]` on a missing
     ///   snapshot.
-    public func runFeatures() async -> [Feature] {
+    public func runFeatures(enableTracking: Bool = true) async -> [Feature] {
         guard let config = await sdk.configStore.getSnapshot() else {
             return []
         }
@@ -545,7 +550,7 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: stringLocationProperties(),
-            enableTracking: !previewActive,
+            enableTracking: enableTracking && !previewActive,
             persistDecision: !previewActive,
             emitBucketing: !previewActive
         )
