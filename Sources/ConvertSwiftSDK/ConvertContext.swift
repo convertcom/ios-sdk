@@ -450,10 +450,10 @@ public final class ConvertContext: Sendable {
     /// bucketing path) and ``trackConversion(_:goalData:forceMultipleTransactions:)`` (which gates its
     /// enqueues on it), the feature path is NOT caller-gated by `network.tracking` in this story — Story
     /// 5.4's AC1 names only `runExperience`/`runExperiences`/`trackConversion`. A feature whose carrying
-    /// experience buckets here still produces a bucketing enqueue at the ``EventSink``; when
-    /// `network.tracking` is off, the PRODUCTION ``EventQueue`` drops that entry at its own static gate
-    /// (`trackingEnabled`), so no event reaches the network — the suppression happens one seam later than
-    /// on the experience/conversion paths, not at this caller.
+    /// experience buckets here (with `enableTracking: true`) still produces a bucketing enqueue at the
+    /// ``EventSink``; when `network.tracking` is off, the PRODUCTION ``EventQueue`` drops that entry at
+    /// its own static gate (`trackingEnabled`), so no event reaches the network — the suppression happens
+    /// one seam later than on the experience/conversion paths, not at this caller.
     ///
     /// qs-02 IOS-fix2 / contract §2 (zero-trace): a preview target on THIS context (any key, not just a
     /// carrying experience's) still suppresses the bucketing enqueue, the sticky WRITE, and (qs-02 Fix
@@ -541,9 +541,10 @@ public final class ConvertContext: Sendable {
         guard let config = await sdk.configStore.getSnapshot() else {
             return []
         }
-        // qs-02 IOS-fix3 (torn-read close): same single-read hoist as `runFeature(_:)` — see its
-        // comment for why two independent `await previewState.isPreviewActive` reads are a torn-gate
-        // risk under a concurrent `setPreview` call.
+        // qs-02 IOS-fix3 (torn-read close): same single-read hoist as
+        // `runFeature(_:enableTracking:experienceKeys:)` — see its comment for why two independent
+        // `await previewState.isPreviewActive` reads are a torn-gate risk under a concurrent
+        // `setPreview` call.
         let previewActive = await previewState.isPreviewActive
         // AC11 (JS parity, bd-0ca): same segment overlay as the single-feature path (run-all mirrors
         // run-single, not diverge) — each feature's carrying-experience audience gate sees the visitor's
@@ -551,7 +552,7 @@ public final class ConvertContext: Sendable {
         let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
         let attributes = mergedAttributes(stringAttributes(), with: segments)
         // qs-02 IOS-fix2 (AC6 zero-trace): gated on the PER-CONTEXT `previewState`, never the global
-        // `isTrackingEnabled()` — mirrors `runFeature(_:)`.
+        // `isTrackingEnabled()` — mirrors `runFeature(_:enableTracking:experienceKeys:)`.
         return await featureManager.evaluateAllFeatures(
             in: config,
             visitorId: visitorId,
