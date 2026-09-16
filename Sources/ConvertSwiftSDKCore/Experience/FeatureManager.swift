@@ -155,11 +155,8 @@ public struct FeatureManager: Sendable {
     // project-wide threshold.
     /// Resolves EVERY feature in `config.features` into a ``Feature``, in config order.
     ///
-    /// A thin bulk wrapper over
-    /// ``evaluateFeature(key:in:visitorId:accountId:projectId:attributes:locationProperties:experienceKeys:)``
-    /// — it
-    /// adds no logic of its own beyond enumerating `config.features` and threading the inputs. A
-    /// config with no features yields `[]`.
+    /// A thin bulk wrapper over `evaluateFeature` — it adds no logic of its own beyond enumerating
+    /// `config.features` and threading the inputs. A config with no features yields `[]`.
     ///
     /// - Parameters:
     ///   - config: The decoded project config whose `features` are enumerated; absent/empty yields `[]`.
