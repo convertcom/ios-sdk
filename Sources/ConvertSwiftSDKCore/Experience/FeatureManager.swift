@@ -165,15 +165,15 @@ public struct FeatureManager: Sendable {
     ///   - projectId: Project id — forwarded to each `evaluateFeature`.
     ///   - attributes: The data map each feature's carrying experiences' audience gates evaluate against.
     ///   - locationProperties: The data map each feature's carrying experiences' location gates evaluate against.
-    ///   - experienceKeys: Forwarded to each ``evaluateFeature`` call (CAP-2); `nil`/`[]` both mean
+    ///   - experienceKeys: Forwarded to each `evaluateFeature` call (CAP-2); `nil`/`[]` both mean
     ///     no filter. Defaults to `nil`.
-    ///   - enableTracking: Forwarded to each ``evaluateFeature`` call — suppresses the bucketing
+    ///   - enableTracking: Forwarded to each `evaluateFeature` call — suppresses the bucketing
     ///     enqueue at the source (e.g. under experiment preview, qs-02 IOS-fix2). Defaults to `true`
     ///     (today's behavior, unchanged for every other caller).
-    ///   - persistDecision: Forwarded to each ``evaluateFeature`` call — suppresses the sticky
+    ///   - persistDecision: Forwarded to each `evaluateFeature` call — suppresses the sticky
     ///     decision WRITE at the source (e.g. under experiment preview). Defaults to `true` (today's
     ///     behavior, unchanged for every other caller).
-    ///   - emitBucketing: Forwarded to each ``evaluateFeature`` call — suppresses the `.bucketing`
+    ///   - emitBucketing: Forwarded to each `evaluateFeature` call — suppresses the `.bucketing`
     ///     `EventBus` fire at the source (qs-02 Fix 1, e.g. under experiment preview). Defaults to
     ///     `true` (today's behavior, unchanged for every other caller).
     /// - Returns: One ``Feature`` per `config.features` entry, in config order; `[]` when empty.
