@@ -207,6 +207,29 @@ struct ConvertContextExperienceKeysTests {
         #expect(!json.contains(Self.experienceBId), "the excluded experience's id must not persist")
     }
 
+    // MARK: - CAP-1 cross-check: zero enqueue at n=2, not n=1
+
+    /// CAP-1's own suite (`ConvertContextFeatureTrackingTests`) asserts "zero enqueues across
+    /// every experience the call evaluates" against a ONE-experience fixture. Reusing THIS
+    /// suite's two-carrier fixture closes that n=1 gap for `runFeatures`: the positive control
+    /// enqueues BOTH experience ids, so the untracked call's empty set is not an inert fixture.
+    @Test("CAP-1: runFeatures(enableTracking: false) enqueues nothing across TWO carrying experiences")
+    func runFeaturesUntrackedZeroEnqueueAcrossTwoCarriers() async throws {
+        let sut = try await makeReadySDK()
+
+        let untracked: [Feature] = await sut.sdk.createContext(visitorId: "cap1-untracked-two-carriers")
+            .runFeatures(enableTracking: false)
+        #expect(try enqueuedExperienceIds(await sut.sink.recordedEvents()).isEmpty)
+
+        let tracked: [Feature] = await sut.sdk.createContext(visitorId: "cap1-tracked-two-carriers").runFeatures()
+        let enqueuedIds = Set(try enqueuedExperienceIds(await sut.sink.recordedEvents()))
+        #expect(
+            enqueuedIds == Set([Self.experienceAId, Self.experienceBId]),
+            "positive control: a tracked call enqueues BOTH carriers, proving the fixture is not inert"
+        )
+        #expect(untracked == tracked, "enableTracking must not change either resolved Feature value")
+    }
+
     /// A repeated key in `experienceKeys` is deduplicated: the carrier still enqueues exactly
     /// once, not once per repetition.
     @Test("duplicate experienceKeys enqueue their carrier exactly once")
