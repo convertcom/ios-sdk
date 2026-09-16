@@ -325,8 +325,8 @@ final class DemoViewModel: ObservableObject {
     ///
     /// `@MainActor` (inherited): the `await` on ``ConvertContext/runFeature(_:)``
     /// suspends without blocking the main actor (the SDK works off-actor), then
-    /// ``evaluatedFeatures`` is mutated on the main actor. `runFeature` takes no `enableTracking`
-    /// parameter (Android parity); the carrying experience's bucketing event still reaches the
+    /// ``evaluatedFeatures`` is mutated on the main actor. `enableTracking` is left at its
+    /// default (`true`, CAP-1); the carrying experience's bucketing event still reaches the
     /// Event Inspector (AC4).
     ///
     /// `runFeature` is NON-optional and never throws: a degraded outcome (missing snapshot /
@@ -343,7 +343,7 @@ final class DemoViewModel: ObservableObject {
     ///
     /// `@MainActor` (inherited): the `await` on ``ConvertContext/runFeatures()``
     /// suspends without blocking the main actor, then ``evaluatedFeatures`` is mutated on the
-    /// main actor. `runFeatures` takes no `enableTracking` parameter (Android parity); each
+    /// main actor. `enableTracking` is left at its default (`true`, CAP-1); each
     /// carrying experience's bucketing event still reaches the Event Inspector (AC4). Each ``Feature``
     /// is prepended in the array's natural (config) order, so the batch lands as a contiguous
     /// newest-first group; the ``featureCap`` trim applies per insert.

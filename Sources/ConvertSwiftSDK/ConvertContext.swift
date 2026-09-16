@@ -75,12 +75,14 @@ public final class ConvertContext: Sendable {
     /// `Sendable final class` with no suppression.
     private let experienceManager: ExperienceManager
 
-    /// The SDK's single, fully-wired ``FeatureManager`` that ``runFeature(_:)`` and
-    /// ``runFeatures()`` delegate to (Story 4.1). Injected from ``ConvertSwiftSDK`` (built
-    /// once over the same ``ExperienceManager`` this context delegates experiences to), so feature
-    /// evaluation buckets through the SAME underlying manager — sticky decisions and `.bucketing` fires
-    /// converge on the shared instances. ``FeatureManager`` is a stateless `Sendable` `struct`, so
-    /// storing it as a `let` keeps this class an all-`let` `Sendable final class` with no suppression.
+    /// The SDK's single, fully-wired ``FeatureManager`` that
+    /// ``runFeature(_:enableTracking:experienceKeys:)`` and
+    /// ``runFeatures(enableTracking:experienceKeys:)`` delegate to (Story 4.1). Injected from
+    /// ``ConvertSwiftSDK`` (built once over the same ``ExperienceManager`` this context delegates
+    /// experiences to), so feature evaluation buckets through the SAME underlying manager — sticky
+    /// decisions and `.bucketing` fires converge on the shared instances. ``FeatureManager`` is a
+    /// stateless `Sendable` `struct`, so storing it as a `let` keeps this class an all-`let`
+    /// `Sendable final class` with no suppression.
     private let featureManager: FeatureManager
 
     /// The SDK's ``EventSink`` this context enqueues the CONVERSION entry through in
