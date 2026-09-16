@@ -464,9 +464,12 @@ public final class ConvertContext: Sendable {
     ///   - key: The feature `key` to look up and resolve.
     ///   - enableTracking: When `false`, suppresses the bucketing enqueue for this call (CAP-1);
     ///     the sticky decision write and `.bucketing` fire are unaffected. Defaults to `true`.
+    ///   - experienceKeys: Restricts resolution to experiences whose `key` is included (CAP-2);
+    ///     `nil`/`[]` both mean no filter, an excluded carrier never buckets. Defaults to `nil`.
     /// - Returns: The resolved ``Feature`` — `.enabled` with typed variables, or `.disabled` on a
     ///   missing snapshot / miss.
-    public func runFeature(_ key: String, enableTracking: Bool = true) async -> Feature {
+    public func runFeature(_ key: String, enableTracking: Bool = true, experienceKeys: [String]? = nil)
+    async -> Feature {
         guard let config = await sdk.configStore.getSnapshot() else {
             // Pre-ready / degraded: a nil snapshot resolves to a disabled feature without reaching the
             // manager (AOD-6, no throw).
@@ -494,6 +497,7 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: stringLocationProperties(),
+            experienceKeys: experienceKeys,
             enableTracking: enableTracking && !previewActive,
             persistDecision: !previewActive,
             emitBucketing: !previewActive
@@ -512,23 +516,26 @@ public final class ConvertContext: Sendable {
     /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready /
     /// degraded) returns `[]` WITHOUT touching the manager (AOD-6 — degraded returns empty, never throws),
     /// the feature twin of ``runExperiences(enableTracking:)``. Otherwise delegates to the injected
-    /// ``FeatureManager/evaluateAllFeatures(in:visitorId:accountId:projectId:attributes:locationProperties:)``,
-    /// which enumerates `config.features` and resolves each through the single-feature path. `accountId` /
+    /// ``FeatureManager``'s `evaluateAllFeatures`, which enumerates `config.features` and resolves
+    /// each through the single-feature path. `accountId` /
     /// `projectId` come from the snapshot (defaulting to `""` when absent) and `locationProperties` come
     /// from this context — identical to the single-feature path. Never throws.
     ///
-    /// As with ``runFeature(_:enableTracking:)``, `enableTracking` here is ANDed with
+    /// As with ``runFeature(_:enableTracking:experienceKeys:)``, `enableTracking` here is ANDed with
     /// `!previewActive` (CAP-1) and never combined with `isTrackingEnabled()`.
     ///
     /// qs-02 IOS-fix2 / contract §2 (zero-trace): same per-context `previewState` gate as
-    /// ``runFeature(_:enableTracking:)`` applies to every feature evaluated here — see its doc
+    /// ``runFeature(_:enableTracking:experienceKeys:)`` applies to every feature evaluated here — see its doc
     /// comment for the scope asymmetry rationale (deliberately NOT combined with `isTrackingEnabled()`).
-    /// - Parameter enableTracking: When `false`, suppresses the bucketing enqueue for every
-    ///   evaluated feature (CAP-1); sticky writes and `.bucketing` fires are unaffected. Defaults
-    ///   to `true`.
+    /// - Parameters:
+    ///   - enableTracking: When `false`, suppresses the bucketing enqueue for every evaluated
+    ///     feature (CAP-1); sticky writes and `.bucketing` fires are unaffected. Defaults to `true`.
+    ///   - experienceKeys: Restricts resolution to experiences whose `key` is included (CAP-2);
+    ///     `nil`/`[]` both mean no filter. Every declared feature still resolves — an excluded
+    ///     carrier's feature is `.disabled`, never omitted. Defaults to `nil`.
     /// - Returns: One ``Feature`` per `config.features` entry, in config order; `[]` on a missing
     ///   snapshot.
-    public func runFeatures(enableTracking: Bool = true) async -> [Feature] {
+    public func runFeatures(enableTracking: Bool = true, experienceKeys: [String]? = nil) async -> [Feature] {
         guard let config = await sdk.configStore.getSnapshot() else {
             return []
         }
@@ -550,6 +557,7 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: stringLocationProperties(),
+            experienceKeys: experienceKeys,
             enableTracking: enableTracking && !previewActive,
             persistDecision: !previewActive,
             emitBucketing: !previewActive

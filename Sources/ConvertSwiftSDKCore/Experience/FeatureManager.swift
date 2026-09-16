@@ -55,7 +55,7 @@ public struct FeatureManager: Sendable {
         self.logger = logger
     }
 
-    // The seven parameters are the pinned call contract (the feature key, the config, the
+    // The eight parameters are the pinned call contract (the feature key, the config, the
     // visitor/account/project triple, and the two gate data maps are each a distinct input the
     // delegated `selectVariation` needs); the committed `FeatureManagerTests` invoke this exact
     // labelled signature, so the shape is fixed by test. Targeted disable (precedent:
@@ -79,6 +79,8 @@ public struct FeatureManager: Sendable {
     ///   - projectId: Project id — forwarded to `selectVariation` (sticky store key segment).
     ///   - attributes: The data map each carrying experience's audience gate evaluates against.
     ///   - locationProperties: The data map each carrying experience's location gate evaluates against.
+    ///   - experienceKeys: Restricts the walk to experiences whose `key` is included; `nil`/`[]`
+    ///     both mean no filter (CAP-2). Defaults to `nil`.
     ///   - enableTracking: Forwarded to the delegated `selectVariation` call — suppresses the
     ///     bucketing enqueue at the source (e.g. under experiment preview, qs-02 IOS-fix2) while the
     ///     variation is still selected. Defaults to `true` (today's behavior, unchanged for every
@@ -98,6 +100,7 @@ public struct FeatureManager: Sendable {
         projectId: String,
         attributes: [String: String],
         locationProperties: [String: String],
+        experienceKeys: [String]? = nil,
         enableTracking: Bool = true,
         persistDecision: Bool = true,
         emitBucketing: Bool = true
@@ -109,11 +112,15 @@ public struct FeatureManager: Sendable {
         }
         // 2. A feature with no id can't be matched against a change's `feature_id`.
         guard let featureId = feature.id else { return .disabled(key: key) }
+        // CAP-2: nil/empty both collapse to nil, so the guard below needs one branch, not two.
+        let allowedKeys = experienceKeys.flatMap { $0.isEmpty ? nil : Set($0) }
 
         // 3. Walk experiences in CONFIG ORDER; the first associated one the visitor buckets wins.
         for experience in config.rawExperiences ?? [] {
-            // 3a. Skip experiences that don't reference this feature (no selectVariation call).
-            guard experienceCarries(experience, featureId: featureId), let expKey = experience.key else {
+            // 3a. Skip experiences that don't reference this feature, aren't keyed, or are excluded.
+            guard experienceCarries(experience, featureId: featureId),
+                  let expKey = experience.key,
+                  allowedKeys?.contains(expKey) ?? true else {
                 continue
             }
             // 3b. Delegate the full bucketing decision for this experience.
@@ -140,7 +147,7 @@ public struct FeatureManager: Sendable {
         return .disabled(key: key)
     }
 
-    // The six parameters mirror `evaluateFeature`'s call contract minus the single `key` (the bulk
+    // The seven parameters mirror `evaluateFeature`'s call contract minus the single `key` (the bulk
     // form enumerates keys from `config.features` itself); like its singular sibling this exceeds
     // SwiftLint's default `function_parameter_count` threshold (5) and is fixed by the committed
     // tests. Targeted disable on the `func` line (precedent: `evaluateFeature` above) keeps the `///`
@@ -149,7 +156,8 @@ public struct FeatureManager: Sendable {
     /// Resolves EVERY feature in `config.features` into a ``Feature``, in config order.
     ///
     /// A thin bulk wrapper over
-    /// ``evaluateFeature(key:in:visitorId:accountId:projectId:attributes:locationProperties:)`` — it
+    /// ``evaluateFeature(key:in:visitorId:accountId:projectId:attributes:locationProperties:experienceKeys:)``
+    /// — it
     /// adds no logic of its own beyond enumerating `config.features` and threading the inputs. A
     /// config with no features yields `[]`.
     ///
@@ -160,6 +168,8 @@ public struct FeatureManager: Sendable {
     ///   - projectId: Project id — forwarded to each `evaluateFeature`.
     ///   - attributes: The data map each feature's carrying experiences' audience gates evaluate against.
     ///   - locationProperties: The data map each feature's carrying experiences' location gates evaluate against.
+    ///   - experienceKeys: Forwarded to each ``evaluateFeature`` call (CAP-2); `nil`/`[]` both mean
+    ///     no filter. Defaults to `nil`.
     ///   - enableTracking: Forwarded to each ``evaluateFeature`` call — suppresses the bucketing
     ///     enqueue at the source (e.g. under experiment preview, qs-02 IOS-fix2). Defaults to `true`
     ///     (today's behavior, unchanged for every other caller).
@@ -177,6 +187,7 @@ public struct FeatureManager: Sendable {
         projectId: String,
         attributes: [String: String],
         locationProperties: [String: String],
+        experienceKeys: [String]? = nil,
         enableTracking: Bool = true,
         persistDecision: Bool = true,
         emitBucketing: Bool = true
@@ -194,6 +205,7 @@ public struct FeatureManager: Sendable {
                 projectId: projectId,
                 attributes: attributes,
                 locationProperties: locationProperties,
+                experienceKeys: experienceKeys,
                 enableTracking: enableTracking,
                 persistDecision: persistDecision,
                 emitBucketing: emitBucketing
