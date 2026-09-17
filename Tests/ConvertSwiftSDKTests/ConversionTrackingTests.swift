@@ -293,11 +293,10 @@ struct ConversionTrackingTests {
     // MARK: - System event + wire tag (AC9 fire, AC7 eventType)
 
     /// AC9: `trackConversion` fires `SystemEvent.conversion` on the SDK's bus. Subscribes via the SDK's
-    /// public `on(.conversion)` BEFORE converting, then — because `EventBus.fire` delivers each callback
-    /// as a `MainActor` task — flushes with `await MainActor.run { }` (a serial-executor barrier, NOT
-    /// `Task.yield()`) before reading the captured flag. A `LockedBox<Bool>` carries the flag so the
-    /// `@Sendable` callback mutates it data-race-free. FAILS today: the no-op stub fires nothing, so the
-    /// flag stays `false`.
+    /// public `on(.conversion)` BEFORE converting, then waits for the flag with `waitFor(_:until:)`
+    /// (`Support/TestFixtures.swift`) — a single `MainActor.run { }` hop is a yield, not a delivery
+    /// guarantee. A `LockedBox<Bool>` carries the flag so the `@Sendable` callback mutates it
+    /// data-race-free. FAILS today: the no-op stub fires nothing, so the flag stays `false`.
     @Test("trackConversion fires SystemEvent.conversion on the SDK bus")
     func firesConversionSystemEvent() async throws {
         let sut = try await makeReadySDK()
@@ -305,7 +304,7 @@ struct ConversionTrackingTests {
         let token = await sut.sdk.on(.conversion) { _ in fired.set(true) }
 
         await sut.sdk.createContext(visitorId: "user-1").trackConversion(Self.goalKey)
-        await MainActor.run { }
+        await waitFor(fired, until: { $0 })
 
         #expect(fired.get, "a tracked conversion must fire SystemEvent.conversion")
         await sut.sdk.off(token)

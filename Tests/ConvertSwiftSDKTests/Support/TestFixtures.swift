@@ -577,6 +577,27 @@ func drainUntil(maxRounds: Int = 200, _ condition: @Sendable () async -> Bool) a
     }
 }
 
+// MARK: - Bounded delivery wait (sleeps between checks, does not re-hop)
+
+/// Polls `box` until `predicate` holds, up to `maxRounds * intervalNanoseconds` (~2s by default),
+/// returning the instant it does. `EventBus.fire` dispatches each subscriber callback as an
+/// unstructured, unawaited `MainActor` task, so a single `await MainActor.run { }` hop — and even
+/// a re-hopping ``drainUntil(maxRounds:_:)`` — is not a delivery guarantee: `ConfigRefreshSchedulerTests`
+/// already measured a bare-hop poll racing a detached `Task` under cooperative-pool load. Sleeping
+/// between checks gives the runtime real wall-clock room to schedule the pending callback; the
+/// bound still fails a genuine regression loudly instead of hanging.
+func waitFor<Value: Sendable>(
+    _ box: LockedBox<Value>,
+    maxRounds: Int = 200,
+    intervalNanoseconds: UInt64 = 10_000_000,
+    until predicate: @Sendable (Value) -> Bool
+) async {
+    for _ in 0..<maxRounds {
+        if predicate(box.get) { return }
+        try? await Task.sleep(nanoseconds: intervalNanoseconds)
+    }
+}
+
 // MARK: - Tracking-batch builder (Epic 5 / Story 5 — full-chain payload structure)
 
 /// The SINGLE canonical batch-construction path for the Story 5 integration tests: wraps `events`

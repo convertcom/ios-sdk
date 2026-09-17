@@ -159,7 +159,8 @@ struct PreviewFeatureZeroTraceTests {
 
     /// Subscribes a `.bucketing` fire-count counter on `sdk`'s bus, returning the counter and the
     /// token to `off` when the caller is done. `EventBus.fire` delivers each callback as an
-    /// independent `MainActor` task, so callers `await MainActor.run { }` before reading the count.
+    /// independent `MainActor` task; a POSITIVE assertion on the count must wait for it with
+    /// `waitFor(_:until:)` (`Support/TestFixtures.swift`), not a single `MainActor.run { }` hop.
     private func subscribeBucketingCount(on sdk: ConvertSwiftSDK) async -> (LockedBox<Int>, EventListenerToken) {
         let fired = LockedBox<Int>(0)
         let token = await sdk.on(.bucketing) { _ in fired.withLock { $0 += 1 } }
@@ -266,7 +267,7 @@ struct PreviewFeatureZeroTraceTests {
 
         let features = await context.runFeatures()
         #expect(features.first(where: { $0.key == Self.featureKey })?.status == .enabled)
-        await MainActor.run { }
+        await waitFor(bucketingFired, until: { $0 == 1 })
         #expect(bucketingFired.get == 1, "a non-preview .bucketing observer event must still fire normally")
         await sut.sdk.off(bucketingToken)
 

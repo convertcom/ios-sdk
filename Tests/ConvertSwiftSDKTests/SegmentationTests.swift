@@ -218,7 +218,7 @@ struct SegmentationTests {
         let (fireCount, token) = await countSegments(on: sut.sdk)
 
         await context.setDefaultSegments(["country": Self.gatedCountry])
-        await MainActor.run { }
+        await waitFor(fireCount, until: { $0 == 1 })
 
         #expect(fireCount.get == 1, "setDefaultSegments fires .segments exactly once")
         await sut.sdk.off(token)
@@ -233,7 +233,7 @@ struct SegmentationTests {
         let (fireCount, token) = await countSegments(on: sut.sdk)
 
         await context.setCustomSegments(["seg-1", "seg-2"])
-        await MainActor.run { }
+        await waitFor(fireCount, until: { $0 == 1 })
 
         #expect(fireCount.get == 1, "setCustomSegments fires .segments exactly once")
         await sut.sdk.off(token)
@@ -250,7 +250,8 @@ struct SegmentationTests {
         let (captured, token) = await captureSegments(on: sut.sdk)
 
         await context.setDefaultSegments(["country": Self.gatedCountry, "campaign": "launch"])
-        await MainActor.run { }
+        let gatedCountry = Self.gatedCountry
+        await waitFor(captured, until: { $0?.country == gatedCountry && $0?.campaign == "launch" })
 
         #expect(captured.get?.country == Self.gatedCountry, "the payload carries the country segment")
         #expect(captured.get?.campaign == "launch", "the payload carries the campaign segment")

@@ -178,9 +178,9 @@ struct PreviewZeroTraceTests {
 
     /// Subscribes a `.bucketing` fire-count counter on `sdk`'s bus, returning the counter and the
     /// token to `off` when the caller is done. `EventBus.fire` delivers each callback as an
-    /// independent `MainActor` task, so callers `await MainActor.run { }` (the same barrier
-    /// `ConversionTrackingTests` uses) before reading the count. Centralized so no test in this file
-    /// re-spells the subscribe wiring (SonarQube 3% gate).
+    /// independent `MainActor` task; a POSITIVE assertion on the count must wait for it with
+    /// `waitFor(_:until:)` (`Support/TestFixtures.swift`), not a single `MainActor.run { }` hop.
+    /// Centralized so no test in this file re-spells the subscribe wiring (SonarQube 3% gate).
     private func subscribeBucketingCount(on sdk: ConvertSwiftSDK) async -> (LockedBox<Int>, EventListenerToken) {
         let fired = LockedBox<Int>(0)
         let token = await sdk.on(.bucketing) { _ in fired.withLock { $0 += 1 } }
@@ -312,7 +312,7 @@ struct PreviewZeroTraceTests {
 
         let other = await context.runExperience(Self.otherKey)
         #expect(other?.id == Self.otherVariationId)
-        await MainActor.run { }
+        await waitFor(bucketingFired, until: { $0 == 1 })
         #expect(bucketingFired.get == 1, "a non-preview .bucketing observer event must still fire normally")
         await sut.sdk.off(bucketingToken)
         await context.trackConversion(Self.goalKey, goalData: [.amount: .double(9.99)])

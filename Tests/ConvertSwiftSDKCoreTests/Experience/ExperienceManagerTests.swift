@@ -22,11 +22,10 @@
 // (a nil is excluded, the loop never aborts), thread `enableTracking` straight through; empty/nil → [].
 //
 // ── Test-hygiene invariants ──────────────────────────────────────────────────────────────
-//   * EventBus delivery is asynchronous (`fire` dispatches each callback as a `MainActor` task), so
-//     every fired-or-not assertion drains via `await MainActor.run { }` (`drain()`) — NEVER
-//     `Task.yield()`. The fire count + payload are captured into a `LockedBox` (the project's
-//     `Sendable` lock cell from `MockCorePorts.swift`) so the `@Sendable` callback has no
-//     `inout`/actor-capture issue under Swift 6 strict concurrency.
+//   * EventBus delivery is asynchronous (`fire` dispatches each callback as a `MainActor` task). A
+//     `MainActor.run { }` hop — even repeated — is a yield, not a delivery guarantee, so a flaky
+//     fired-or-not assertion needs a sleep-based bounded poll instead (`waitFor(_:until:)` in
+//     `ConvertSwiftSDKTests/Support/TestFixtures.swift`), never `Task.yield()`.
 //   * SonarQube 3% `new_duplicated_lines_density`: every manager goes through `makeExperienceManager`,
 //     every config through the shared `ProjectConfigFixtures`, the single/bulk call contracts through
 //     `select`/`selectAll`, and the subscribe-and-capture wiring through `subscribeBucketing` — no

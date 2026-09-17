@@ -236,7 +236,7 @@ struct GoalDeduplicationTests {
         let context = sut.sdk.createContext(visitorId: Self.visitorId)
         await context.trackConversion(Self.goalKey)
         await context.trackConversion(Self.goalKey)
-        await MainActor.run { }
+        await waitFor(fireCount, until: { $0 == 1 })
 
         #expect(fireCount.get == 1, "the conversion fires once; the deduped repeat must not re-fire")
         await sut.sdk.off(token)
@@ -253,7 +253,7 @@ struct GoalDeduplicationTests {
 
         await sut.sdk.createContext(visitorId: Self.visitorId)
             .trackConversion(Self.goalKey, goalData: purchaseData())
-        await MainActor.run { }
+        await waitFor(fireCount, until: { $0 == 1 })
 
         #expect(fireCount.get == 1, "two events are enqueued but only ONE .conversion fires")
         await sut.sdk.off(token)
