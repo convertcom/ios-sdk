@@ -10,7 +10,7 @@ The SDK is built to keep working when the network is not. Two behaviors make tha
 
 ### Deciding offline
 
-Once a configuration has been cached, ``ConvertContext/runExperience(_:enableTracking:)`` and ``ConvertContext/runFeature(_:)`` resolve with no network call. Bucketing is deterministic and sticky — the same visitor buckets into the same ``Variation`` across sessions and across launches, online or offline. On a cold start while offline, ``ConvertSwiftSDK/ready()`` resolves from the cached config rather than hanging.
+Once a configuration has been cached, ``ConvertContext/runExperience(_:enableTracking:)`` and ``ConvertContext/runFeature(_:enableTracking:experienceKeys:)`` resolve with no network call. Bucketing is deterministic and sticky — the same visitor buckets into the same ``Variation`` across sessions and across launches, online or offline. On a cold start while offline, ``ConvertSwiftSDK/ready()`` resolves from the cached config rather than hanging.
 
 If repeated configuration refreshes fail, the SDK keeps serving the last-good config indefinitely and emits a `[WARN]` line. Stale config is a warning, not a failure — bucketing never breaks.
 
@@ -56,7 +56,7 @@ Three independent mechanisms suppress event **delivery**. In all cases bucketing
 
    On the experience path the per-call flag is combined with the static flag: an exposure event is delivered only when `networkTracking` is `true` **and** the call's `enableTracking` is `true`.
 
-   > Note: ``ConvertContext/runFeature(_:)`` and ``ConvertContext/runFeatures()`` take **no** `enableTracking` parameter (Android parity with the sibling mobile SDK) — the feature path is not per-call tracking-gated. To suppress feature tracking, use the static `networkTracking: false`, which drops feature events at the delivery gate one seam later.
+   > Note: ``ConvertContext/runFeature(_:enableTracking:experienceKeys:)`` and ``ConvertContext/runFeatures(enableTracking:experienceKeys:)`` also take a per-call `enableTracking`, but it suppresses only the outbound bucketing exposure for the carrying experience — the sticky decision is still written and the in-process ``SystemEvent/bucketing`` observer signal still fires, because sticky bucketing is a correctness invariant, not a tracking concern. **This is the opposite of the Android SDK**, which suppresses its in-process fire too. Unlike the experience path, this per-call flag is NOT combined with the static `networkTracking` flag: `networkTracking: false` still drops feature events, but one seam later, at the `EventQueue`'s own delivery gate. A preview target on the context always wins: `enableTracking: true` cannot re-enable delivery on a previewed context.
 
 3. **Runtime — mid-session toggle.** Call ``ConvertSwiftSDK/setTrackingEnabled(_:)`` at any point after initialization. This is the supported path for GDPR mid-session opt-out:
 

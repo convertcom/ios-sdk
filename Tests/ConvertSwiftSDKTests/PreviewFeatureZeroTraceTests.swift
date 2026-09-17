@@ -286,4 +286,74 @@ struct PreviewFeatureZeroTraceTests {
             "a non-preview context's runFeatures must still write a sticky decision"
         )
     }
+
+    // MARK: - CAP-3 (SPEC-per-call-bucketing-attributes) — zero-trace survives a "track me" ask
+
+    /// CAP-3: the SINGULAR `runFeature(_:)` must ALSO produce zero on-disk queue entries, zero
+    /// uploader calls, and zero sticky-bucketing writes under preview — the existing singular
+    /// test above checks only the `.bucketing` observer fire. Passes `enableTracking: true`
+    /// explicitly: CAP-3 locks that a caller who actively asks to be tracked still gets nothing.
+    @Test("CAP-3: preview zero-trace holds for runFeature across the queue, uploader, and decision store")
+    func previewRunFeatureZeroTraceAcrossEveryChannel() async throws {
+        let sut = try await makeSUT()
+        defer { try? FileManager.default.removeItem(at: sut.queueStoreURL) }
+        let context = sut.sdk.createContext(visitorId: "cap3-runfeature-visitor")
+
+        await context.setPreview(experienceId: Self.targetExperienceId, variationId: Self.targetForcedVariationId)
+        let forced = await context.runExperience(Self.targetKey)
+        #expect(forced?.id == Self.targetForcedVariationId, "preview must be genuinely active for this context")
+
+        let feature: Feature = await context.runFeature(Self.featureKey, enableTracking: true)
+        #expect(feature.status == .enabled, "coherent rendering under preview")
+
+        await sut.queue.persistBeforeBackground()
+        let persisted = try await sut.queueStore.load()
+        #expect(persisted.isEmpty, "CAP-3: zero on-disk queue entries for runFeature under preview")
+
+        await sut.queue.flush()
+        #expect(await sut.uploader.callCount == 0, "CAP-3: zero background-session uploads for runFeature")
+
+        let decisionURL = try Self.decisionStoreFileURL()
+        #expect(
+            await sut.decisionFileStore.contents(at: decisionURL) == nil,
+            "CAP-3: zero sticky-bucketing writes for runFeature under preview"
+        )
+    }
+
+    /// CAP-3: calling BOTH `runFeature(_:)` and `runFeatures()` under the SAME preview context
+    /// still produces zero trace on every channel — the guarantee is per-context, not merely
+    /// per-call-shape (neither entry point leaves a trace the other's cleanup would mask).
+    @Test("CAP-3: preview zero-trace holds when both runFeature and runFeatures are called together")
+    func previewBothFeatureEntryPointsZeroTraceTogether() async throws {
+        let sut = try await makeSUT()
+        defer { try? FileManager.default.removeItem(at: sut.queueStoreURL) }
+        let context = sut.sdk.createContext(visitorId: "cap3-both-entry-points-visitor")
+        let (bucketingFired, token) = await subscribeBucketingCount(on: sut.sdk)
+
+        await context.setPreview(experienceId: Self.targetExperienceId, variationId: Self.targetForcedVariationId)
+        let forced = await context.runExperience(Self.targetKey)
+        #expect(forced?.id == Self.targetForcedVariationId, "preview must be genuinely active for this context")
+
+        let feature: Feature = await context.runFeature(Self.featureKey, enableTracking: true)
+        let features: [Feature] = await context.runFeatures(enableTracking: true)
+        #expect(feature.status == .enabled, "coherent rendering under preview (singular)")
+        #expect(features.first?.status == .enabled, "coherent rendering under preview (bulk)")
+
+        await sut.queue.persistBeforeBackground()
+        let persisted = try await sut.queueStore.load()
+        #expect(persisted.isEmpty, "CAP-3: zero on-disk queue entries from either entry point")
+
+        await sut.queue.flush()
+        #expect(await sut.uploader.callCount == 0, "CAP-3: zero uploads from either entry point")
+
+        let decisionURL = try Self.decisionStoreFileURL()
+        #expect(
+            await sut.decisionFileStore.contents(at: decisionURL) == nil,
+            "CAP-3: zero sticky-bucketing writes from either entry point"
+        )
+
+        await MainActor.run { }
+        #expect(bucketingFired.get == 0, "CAP-3: zero .bucketing observer fires from either entry point")
+        await sut.sdk.off(token)
+    }
 }

@@ -75,12 +75,14 @@ public final class ConvertContext: Sendable {
     /// `Sendable final class` with no suppression.
     private let experienceManager: ExperienceManager
 
-    /// The SDK's single, fully-wired ``FeatureManager`` that ``runFeature(_:)`` and
-    /// ``runFeatures()`` delegate to (Story 4.1). Injected from ``ConvertSwiftSDK`` (built
-    /// once over the same ``ExperienceManager`` this context delegates experiences to), so feature
-    /// evaluation buckets through the SAME underlying manager — sticky decisions and `.bucketing` fires
-    /// converge on the shared instances. ``FeatureManager`` is a stateless `Sendable` `struct`, so
-    /// storing it as a `let` keeps this class an all-`let` `Sendable final class` with no suppression.
+    /// The SDK's single, fully-wired ``FeatureManager`` that
+    /// ``runFeature(_:enableTracking:experienceKeys:)`` and
+    /// ``runFeatures(enableTracking:experienceKeys:)`` delegate to (Story 4.1). Injected from
+    /// ``ConvertSwiftSDK`` (built once over the same ``ExperienceManager`` this context delegates
+    /// experiences to), so feature evaluation buckets through the SAME underlying manager — sticky
+    /// decisions and `.bucketing` fires converge on the shared instances. ``FeatureManager`` is a
+    /// stateless `Sendable` `struct`, so storing it as a `let` keeps this class an all-`let`
+    /// `Sendable final class` with no suppression.
     private let featureManager: FeatureManager
 
     /// The SDK's ``EventSink`` this context enqueues the CONVERSION entry through in
@@ -440,19 +442,18 @@ public final class ConvertContext: Sendable {
     ///
     /// `accountId` / `projectId` come from the snapshot (defaulting to `""` when absent) and
     /// `locationProperties` come from this context — as on ``runExperience(_:enableTracking:)``.
-    /// Unlike the experience API, this method takes NO `enableTracking` parameter (Android parity, F-171):
-    /// the feature path is not per-call tracking-gated; feature evaluation delegates to ``FeatureManager``,
-    /// which lets the underlying experience bucketing track per its own contract.
+    /// CAP-1 (SPEC-per-call-bucketing-attributes): `enableTracking` gates the call, ANDed with
+    /// `!previewActive` — never combined with `isTrackingEnabled()` (see the scope note below).
     ///
     /// SCOPE ASYMMETRY (Story 5.4, deliberate): unlike ``runExperience(_:enableTracking:)`` /
     /// ``runExperiences(enableTracking:)`` (which combine the global `network.tracking` flag into the
     /// bucketing path) and ``trackConversion(_:goalData:forceMultipleTransactions:)`` (which gates its
     /// enqueues on it), the feature path is NOT caller-gated by `network.tracking` in this story — Story
     /// 5.4's AC1 names only `runExperience`/`runExperiences`/`trackConversion`. A feature whose carrying
-    /// experience buckets here still produces a bucketing enqueue at the ``EventSink``; when
-    /// `network.tracking` is off, the PRODUCTION ``EventQueue`` drops that entry at its own static gate
-    /// (`trackingEnabled`), so no event reaches the network — the suppression happens one seam later than
-    /// on the experience/conversion paths, not at this caller.
+    /// experience buckets here (with `enableTracking: true`) still produces a bucketing enqueue at the
+    /// ``EventSink``; when `network.tracking` is off, the PRODUCTION ``EventQueue`` drops that entry at
+    /// its own static gate (`trackingEnabled`), so no event reaches the network — the suppression happens
+    /// one seam later than on the experience/conversion paths, not at this caller.
     ///
     /// qs-02 IOS-fix2 / contract §2 (zero-trace): a preview target on THIS context (any key, not just a
     /// carrying experience's) still suppresses the bucketing enqueue, the sticky WRITE, and (qs-02 Fix
@@ -461,10 +462,16 @@ public final class ConvertContext: Sendable {
     /// NOT combined with it, mirroring the scope asymmetry above: the feature path stays uncoupled from
     /// `isTrackingEnabled()`). The feature itself still RESOLVES normally (coherent rendering) — only
     /// tracking/persistence/observer-notification at the source is suppressed.
-    /// - Parameter key: The feature `key` to look up and resolve.
+    /// - Parameters:
+    ///   - key: The feature `key` to look up and resolve.
+    ///   - enableTracking: When `false`, suppresses the bucketing enqueue for this call (CAP-1);
+    ///     the sticky decision write and `.bucketing` fire are unaffected. Defaults to `true`.
+    ///   - experienceKeys: Restricts resolution to experiences whose `key` is included (CAP-2);
+    ///     `nil`/`[]` both mean no filter, an excluded carrier never buckets. Defaults to `nil`.
     /// - Returns: The resolved ``Feature`` — `.enabled` with typed variables, or `.disabled` on a
     ///   missing snapshot / miss.
-    public func runFeature(_ key: String) async -> Feature {
+    public func runFeature(_ key: String, enableTracking: Bool = true, experienceKeys: [String]? = nil)
+    async -> Feature {
         guard let config = await sdk.configStore.getSnapshot() else {
             // Pre-ready / degraded: a nil snapshot resolves to a disabled feature without reaching the
             // manager (AOD-6, no throw).
@@ -492,7 +499,8 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: stringLocationProperties(),
-            enableTracking: !previewActive,
+            experienceKeys: experienceKeys,
+            enableTracking: enableTracking && !previewActive,
             persistDecision: !previewActive,
             emitBucketing: !previewActive
         )
@@ -510,26 +518,33 @@ public final class ConvertContext: Sendable {
     /// Reads the SDK's current config snapshot from its ``ConfigStore``; a `nil` snapshot (pre-ready /
     /// degraded) returns `[]` WITHOUT touching the manager (AOD-6 — degraded returns empty, never throws),
     /// the feature twin of ``runExperiences(enableTracking:)``. Otherwise delegates to the injected
-    /// ``FeatureManager/evaluateAllFeatures(in:visitorId:accountId:projectId:attributes:locationProperties:)``,
-    /// which enumerates `config.features` and resolves each through the single-feature path. `accountId` /
+    /// ``FeatureManager``'s `evaluateAllFeatures`, which enumerates `config.features` and resolves
+    /// each through the single-feature path. `accountId` /
     /// `projectId` come from the snapshot (defaulting to `""` when absent) and `locationProperties` come
     /// from this context — identical to the single-feature path. Never throws.
     ///
-    /// As with ``runFeature(_:)``, this method takes NO `enableTracking` parameter (Android parity, F-171):
-    /// the feature path is not per-call tracking-gated.
+    /// As with ``runFeature(_:enableTracking:experienceKeys:)``, `enableTracking` here is ANDed with
+    /// `!previewActive` (CAP-1) and never combined with `isTrackingEnabled()`.
     ///
     /// qs-02 IOS-fix2 / contract §2 (zero-trace): same per-context `previewState` gate as
-    /// ``runFeature(_:)`` applies to every feature evaluated here — see its doc comment for the scope
-    /// asymmetry rationale (deliberately NOT combined with `isTrackingEnabled()`).
+    /// ``runFeature(_:enableTracking:experienceKeys:)`` applies to every feature evaluated here — see its doc
+    /// comment for the scope asymmetry rationale (deliberately NOT combined with `isTrackingEnabled()`).
+    /// - Parameters:
+    ///   - enableTracking: When `false`, suppresses the bucketing enqueue for every evaluated
+    ///     feature (CAP-1); sticky writes and `.bucketing` fires are unaffected. Defaults to `true`.
+    ///   - experienceKeys: Restricts resolution to experiences whose `key` is included (CAP-2);
+    ///     `nil`/`[]` both mean no filter. Every declared feature still resolves — an excluded
+    ///     carrier's feature is `.disabled`, never omitted. Defaults to `nil`.
     /// - Returns: One ``Feature`` per `config.features` entry, in config order; `[]` on a missing
     ///   snapshot.
-    public func runFeatures() async -> [Feature] {
+    public func runFeatures(enableTracking: Bool = true, experienceKeys: [String]? = nil) async -> [Feature] {
         guard let config = await sdk.configStore.getSnapshot() else {
             return []
         }
-        // qs-02 IOS-fix3 (torn-read close): same single-read hoist as `runFeature(_:)` — see its
-        // comment for why two independent `await previewState.isPreviewActive` reads are a torn-gate
-        // risk under a concurrent `setPreview` call.
+        // qs-02 IOS-fix3 (torn-read close): same single-read hoist as
+        // `runFeature(_:enableTracking:experienceKeys:)` — see its comment for why two independent
+        // `await previewState.isPreviewActive` reads are a torn-gate risk under a concurrent
+        // `setPreview` call.
         let previewActive = await previewState.isPreviewActive
         // AC11 (JS parity, bd-0ca): same segment overlay as the single-feature path (run-all mirrors
         // run-single, not diverge) — each feature's carrying-experience audience gate sees the visitor's
@@ -537,7 +552,7 @@ public final class ConvertContext: Sendable {
         let segments = await decisionStore.currentSegments(forVisitorKey: storeKey(for: config))
         let attributes = mergedAttributes(stringAttributes(), with: segments)
         // qs-02 IOS-fix2 (AC6 zero-trace): gated on the PER-CONTEXT `previewState`, never the global
-        // `isTrackingEnabled()` — mirrors `runFeature(_:)`.
+        // `isTrackingEnabled()` — mirrors `runFeature(_:enableTracking:experienceKeys:)`.
         return await featureManager.evaluateAllFeatures(
             in: config,
             visitorId: visitorId,
@@ -545,7 +560,8 @@ public final class ConvertContext: Sendable {
             projectId: config.project?.id ?? "",
             attributes: attributes,
             locationProperties: stringLocationProperties(),
-            enableTracking: !previewActive,
+            experienceKeys: experienceKeys,
+            enableTracking: enableTracking && !previewActive,
             persistDecision: !previewActive,
             emitBucketing: !previewActive
         )
