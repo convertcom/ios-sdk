@@ -414,6 +414,7 @@ components:
         key:
           description: Audience unique key
           type: string
+          nullable: true
         name:
           type: string
           description: Audience Name
@@ -873,6 +874,10 @@ components:
       type: string
       enum:
         - bucketed_into_segment
+    ExperienceKeyBucketedMatchRulesTypes:
+      type: string
+      enum:
+        - bucketed_into_experience_key
     DayOfWeekMatchRulesTypes:
       type: string
       enum:
@@ -913,6 +918,7 @@ components:
         - $ref: '#/components/schemas/LanguageMatchRulesTypes'
         - $ref: '#/components/schemas/GoalTriggeredMatchRulesTypes'
         - $ref: '#/components/schemas/SegmentBucketedMatchRulesTypes'
+        - $ref: '#/components/schemas/ExperienceKeyBucketedMatchRulesTypes'
         - $ref: '#/components/schemas/DayOfWeekMatchRulesTypes'
         - $ref: '#/components/schemas/HourOfDayMatchRulesTypes'
         - $ref: '#/components/schemas/MinuteOfHourMatchRulesTypes'
@@ -1175,6 +1181,22 @@ components:
                   properties:
                     match_type:
                       $ref: '#/components/schemas/ChoiceMatchingOptions'
+    ExperienceKeyBucketedMatchRule:
+      allOf:
+        - $ref: '#/components/schemas/BaseRuleWithStringValue'
+        - type: object
+          required:
+            - rule_type
+          properties:
+            rule_type:
+              $ref: '#/components/schemas/ExperienceKeyBucketedMatchRulesTypes'
+            matching:
+              allOf:
+                - $ref: '#/components/schemas/BaseMatch'
+                - type: object
+                  properties:
+                    match_type:
+                      $ref: '#/components/schemas/ChoiceMatchingOptions'
     ExperienceBucketedMatchRule:
       allOf:
         - $ref: '#/components/schemas/BaseRuleWithExperienceBucketedValue'
@@ -1300,6 +1322,7 @@ components:
         - $ref: '#/components/schemas/LanguageMatchRule'
         - $ref: '#/components/schemas/GoalTriggeredMatchRule'
         - $ref: '#/components/schemas/SegmentBucketedMatchRule'
+        - $ref: '#/components/schemas/ExperienceKeyBucketedMatchRule'
         - $ref: '#/components/schemas/DayOfWeekMatchRule'
         - $ref: '#/components/schemas/HourOfDayMatchRule'
         - $ref: '#/components/schemas/MinuteOfHourMatchRule'
@@ -1330,6 +1353,7 @@ components:
           visits_count: '#/components/schemas/GenericNumericMatchRule'
           bucketed_into_experience: '#/components/schemas/GenericBoolMatchRule'
           bucketed_into_segment: '#/components/schemas/SegmentBucketedMatchRule'
+          bucketed_into_experience_key: '#/components/schemas/ExperienceKeyBucketedMatchRule'
           local_time_day_of_week: '#/components/schemas/DayOfWeekMatchRule'
           local_time_hour_of_day: '#/components/schemas/HourOfDayMatchRule'
           local_time_minute_of_hour: '#/components/schemas/MinuteOfHourMatchRule'
@@ -1374,6 +1398,7 @@ components:
         - $ref: '#/components/schemas/LanguageMatchRule'
         - $ref: '#/components/schemas/GoalTriggeredMatchRule'
         - $ref: '#/components/schemas/SegmentBucketedMatchRule'
+        - $ref: '#/components/schemas/ExperienceKeyBucketedMatchRule'
         - $ref: '#/components/schemas/DayOfWeekMatchRule'
         - $ref: '#/components/schemas/HourOfDayMatchRule'
         - $ref: '#/components/schemas/MinuteOfHourMatchRule'
@@ -1406,6 +1431,7 @@ components:
           visits_count: '#/components/schemas/GenericNumericMatchRule'
           bucketed_into_experience: '#/components/schemas/GenericBoolMatchRule'
           bucketed_into_segment: '#/components/schemas/SegmentBucketedMatchRule'
+          bucketed_into_experience_key: '#/components/schemas/ExperienceKeyBucketedMatchRule'
           local_time_day_of_week: '#/components/schemas/DayOfWeekMatchRule'
           local_time_hour_of_day: '#/components/schemas/HourOfDayMatchRule'
           local_time_minute_of_hour: '#/components/schemas/MinuteOfHourMatchRule'
@@ -1448,6 +1474,7 @@ components:
         - $ref: '#/components/schemas/LanguageMatchRule'
         - $ref: '#/components/schemas/GoalTriggeredMatchRule'
         - $ref: '#/components/schemas/SegmentBucketedMatchRule'
+        - $ref: '#/components/schemas/ExperienceKeyBucketedMatchRule'
         - $ref: '#/components/schemas/DayOfWeekMatchRule'
         - $ref: '#/components/schemas/HourOfDayMatchRule'
         - $ref: '#/components/schemas/MinuteOfHourMatchRule'
@@ -1481,6 +1508,7 @@ components:
           visits_count: '#/components/schemas/GenericNumericMatchRule'
           bucketed_into_experience: '#/components/schemas/GenericBoolMatchRule'
           bucketed_into_segment: '#/components/schemas/SegmentBucketedMatchRule'
+          bucketed_into_experience_key: '#/components/schemas/ExperienceKeyBucketedMatchRule'
           local_time_day_of_week: '#/components/schemas/DayOfWeekMatchRule'
           local_time_hour_of_day: '#/components/schemas/HourOfDayMatchRule'
           local_time_minute_of_hour: '#/components/schemas/MinuteOfHourMatchRule'
@@ -3021,6 +3049,7 @@ components:
         key:
           description: Experience readable key that uniquely identifies this experience
           type: string
+          nullable: true
         locations:
           description: >-
             List of locations IDs on which this experience is presented. Either
@@ -3206,6 +3235,7 @@ components:
         key:
           description: Variation Key
           type: string
+          nullable: true
         traffic_allocation:
           description: >
             Percentage of traffic allocation for this variation, as a number
@@ -3270,6 +3300,7 @@ components:
         key:
           description: A unique per project level identifier
           type: string
+          nullable: true
         variables:
           type: array
           description: An array of user-defined variables of a feature.
@@ -3308,6 +3339,7 @@ components:
         key:
           description: Goal Key
           type: string
+          nullable: true
         type:
           type: array
           description: List of goal types to be returned
@@ -3696,6 +3728,7 @@ components:
         key:
           description: Location unique key
           type: string
+          nullable: true
         name:
           type: string
           description: Location Name
@@ -4015,6 +4048,7 @@ components:
         key:
           description: Segment unique key
           type: string
+          nullable: true
         name:
           type: string
           description: Segment Name
@@ -4217,6 +4251,9 @@ components:
             - ai_tool
         campaign:
           description: Campaign string
+          type: string
+        content:
+          description: Content string (ad-creative identifier from utm_content)
           type: string
         visitorType:
           description: Type of the visitor
