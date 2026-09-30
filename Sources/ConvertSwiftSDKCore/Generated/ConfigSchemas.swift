@@ -938,6 +938,10 @@ public enum Components {
         @frozen public enum SegmentBucketedMatchRulesTypes: String, Codable, Hashable, Sendable, CaseIterable {
             case bucketed_into_segment = "bucketed_into_segment"
         }
+        /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRulesTypes`.
+        @frozen public enum ExperienceKeyBucketedMatchRulesTypes: String, Codable, Hashable, Sendable, CaseIterable {
+            case bucketed_into_experience_key = "bucketed_into_experience_key"
+        }
         /// - Remark: Generated from `#/components/schemas/DayOfWeekMatchRulesTypes`.
         @frozen public enum DayOfWeekMatchRulesTypes: String, Codable, Hashable, Sendable, CaseIterable {
             case local_time_day_of_week = "local_time_day_of_week"
@@ -2299,6 +2303,98 @@ public enum Components {
                 try self.value2.encode(to: encoder)
             }
         }
+        /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRule`.
+        public struct ExperienceKeyBucketedMatchRule: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRule/value1`.
+            public var value1: Components.Schemas.BaseRuleWithStringValue
+            /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRule/value2`.
+            public struct Value2Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRule/value2/rule_type`.
+                public var rule_type: Components.Schemas.ExperienceKeyBucketedMatchRulesTypes
+                /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRule/value2/matching`.
+                public struct matchingPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRule/value2/matching/value1`.
+                    public var value1: Components.Schemas.BaseMatch
+                    /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRule/value2/matching/value2`.
+                    public struct Value2Payload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRule/value2/matching/value2/match_type`.
+                        public var match_type: Components.Schemas.ChoiceMatchingOptions?
+                        /// Creates a new `Value2Payload`.
+                        ///
+                        /// - Parameters:
+                        ///   - match_type:
+                        public init(match_type: Components.Schemas.ChoiceMatchingOptions? = nil) {
+                            self.match_type = match_type
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case match_type
+                        }
+                    }
+                    /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRule/value2/matching/value2`.
+                    public var value2: Components.Schemas.ExperienceKeyBucketedMatchRule.Value2Payload.matchingPayload.Value2Payload
+                    /// Creates a new `matchingPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - value1:
+                    ///   - value2:
+                    public init(
+                        value1: Components.Schemas.BaseMatch,
+                        value2: Components.Schemas.ExperienceKeyBucketedMatchRule.Value2Payload.matchingPayload.Value2Payload
+                    ) {
+                        self.value1 = value1
+                        self.value2 = value2
+                    }
+                    public init(from decoder: any Swift.Decoder) throws {
+                        self.value1 = try .init(from: decoder)
+                        self.value2 = try .init(from: decoder)
+                    }
+                    public func encode(to encoder: any Swift.Encoder) throws {
+                        try self.value1.encode(to: encoder)
+                        try self.value2.encode(to: encoder)
+                    }
+                }
+                /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRule/value2/matching`.
+                public var matching: Components.Schemas.ExperienceKeyBucketedMatchRule.Value2Payload.matchingPayload?
+                /// Creates a new `Value2Payload`.
+                ///
+                /// - Parameters:
+                ///   - rule_type:
+                ///   - matching:
+                public init(
+                    rule_type: Components.Schemas.ExperienceKeyBucketedMatchRulesTypes,
+                    matching: Components.Schemas.ExperienceKeyBucketedMatchRule.Value2Payload.matchingPayload? = nil
+                ) {
+                    self.rule_type = rule_type
+                    self.matching = matching
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case rule_type
+                    case matching
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ExperienceKeyBucketedMatchRule/value2`.
+            public var value2: Components.Schemas.ExperienceKeyBucketedMatchRule.Value2Payload
+            /// Creates a new `ExperienceKeyBucketedMatchRule`.
+            ///
+            /// - Parameters:
+            ///   - value1:
+            ///   - value2:
+            public init(
+                value1: Components.Schemas.BaseRuleWithStringValue,
+                value2: Components.Schemas.ExperienceKeyBucketedMatchRule.Value2Payload
+            ) {
+                self.value1 = value1
+                self.value2 = value2
+            }
+            public init(from decoder: any Swift.Decoder) throws {
+                self.value1 = try .init(from: decoder)
+                self.value2 = try .init(from: decoder)
+            }
+            public func encode(to encoder: any Swift.Encoder) throws {
+                try self.value1.encode(to: encoder)
+                try self.value2.encode(to: encoder)
+            }
+        }
         /// - Remark: Generated from `#/components/schemas/DayOfWeekMatchRule`.
         public struct DayOfWeekMatchRule: Codable, Hashable, Sendable {
             /// - Remark: Generated from `#/components/schemas/DayOfWeekMatchRule/value1`.
@@ -2861,6 +2957,8 @@ public enum Components {
             case browser_version(Components.Schemas.GenericTextMatchRule)
             /// - Remark: Generated from `#/components/schemas/RuleElement/GenericBoolMatchRule`.
             case bucketed_into_experience(Components.Schemas.GenericBoolMatchRule)
+            /// - Remark: Generated from `#/components/schemas/RuleElement/ExperienceKeyBucketedMatchRule`.
+            case bucketed_into_experience_key(Components.Schemas.ExperienceKeyBucketedMatchRule)
             /// - Remark: Generated from `#/components/schemas/RuleElement/SegmentBucketedMatchRule`.
             case bucketed_into_segment(Components.Schemas.SegmentBucketedMatchRule)
             /// - Remark: Generated from `#/components/schemas/RuleElement/GenericTextMatchRule`.
@@ -2971,6 +3069,8 @@ public enum Components {
                     self = .browser_version(try .init(from: decoder))
                 case "bucketed_into_experience":
                     self = .bucketed_into_experience(try .init(from: decoder))
+                case "bucketed_into_experience_key":
+                    self = .bucketed_into_experience_key(try .init(from: decoder))
                 case "bucketed_into_segment":
                     self = .bucketed_into_segment(try .init(from: decoder))
                 case "campaign":
@@ -3081,6 +3181,8 @@ public enum Components {
                     try value.encode(to: encoder)
                 case let .bucketed_into_experience(value):
                     try value.encode(to: encoder)
+                case let .bucketed_into_experience_key(value):
+                    try value.encode(to: encoder)
                 case let .bucketed_into_segment(value):
                     try value.encode(to: encoder)
                 case let .campaign(value):
@@ -3186,6 +3288,8 @@ public enum Components {
             case browser_version(Components.Schemas.GenericTextMatchRule)
             /// - Remark: Generated from `#/components/schemas/RuleElementAudience/GenericBoolMatchRule`.
             case bucketed_into_experience(Components.Schemas.GenericBoolMatchRule)
+            /// - Remark: Generated from `#/components/schemas/RuleElementAudience/ExperienceKeyBucketedMatchRule`.
+            case bucketed_into_experience_key(Components.Schemas.ExperienceKeyBucketedMatchRule)
             /// - Remark: Generated from `#/components/schemas/RuleElementAudience/SegmentBucketedMatchRule`.
             case bucketed_into_segment(Components.Schemas.SegmentBucketedMatchRule)
             /// - Remark: Generated from `#/components/schemas/RuleElementAudience/GenericTextMatchRule`.
@@ -3300,6 +3404,8 @@ public enum Components {
                     self = .browser_version(try .init(from: decoder))
                 case "bucketed_into_experience":
                     self = .bucketed_into_experience(try .init(from: decoder))
+                case "bucketed_into_experience_key":
+                    self = .bucketed_into_experience_key(try .init(from: decoder))
                 case "bucketed_into_segment":
                     self = .bucketed_into_segment(try .init(from: decoder))
                 case "campaign":
@@ -3413,6 +3519,8 @@ public enum Components {
                 case let .browser_version(value):
                     try value.encode(to: encoder)
                 case let .bucketed_into_experience(value):
+                    try value.encode(to: encoder)
+                case let .bucketed_into_experience_key(value):
                     try value.encode(to: encoder)
                 case let .bucketed_into_segment(value):
                     try value.encode(to: encoder)
@@ -3767,20 +3875,7 @@ public enum Components {
             ///
             ///
             /// - Remark: Generated from `#/components/schemas/VisitorInsightsBase/sampling_rate`.
-            @frozen public enum sampling_ratePayload: Int, Codable, Hashable, Sendable, CaseIterable {
-                case _5 = 5
-                case _10 = 10
-                case _20 = 20
-                case _30 = 30
-                case _40 = 40
-                case _50 = 50
-            }
-            /// The percentage of visitors included in sampling for Convert Signals session recordings and Heatmaps for this project.
-            /// Higher values collect data from a larger share of traffic and consume allocation faster.
-            ///
-            ///
-            /// - Remark: Generated from `#/components/schemas/VisitorInsightsBase/sampling_rate`.
-            public var sampling_rate: Components.Schemas.VisitorInsightsBase.sampling_ratePayload?
+            public var sampling_rate: Swift.Int?
             /// Maximum number of visits per variation used when generating a heatmap for this project.
             /// Applies to newly created heatmaps when an experience is activated.
             ///
@@ -3808,7 +3903,7 @@ public enum Components {
             public init(
                 enabled: Swift.Bool? = nil,
                 obfuscate_text: Swift.Bool? = nil,
-                sampling_rate: Components.Schemas.VisitorInsightsBase.sampling_ratePayload? = nil,
+                sampling_rate: Swift.Int? = nil,
                 heatmap_visits_limit: Components.Schemas.VisitorInsightsBase.heatmap_visits_limitPayload? = nil
             ) {
                 self.enabled = enabled
@@ -8504,7 +8599,7 @@ public enum Components {
                 /// The sampling rate for tracking events.
                 ///
                 /// - Remark: Generated from `#/components/schemas/VisitorInsightsData/value2/sampling_rate`.
-                public var sampling_rate: Swift.Double?
+                public var sampling_rate: Swift.Int?
                 /// Creates a new `Value2Payload`.
                 ///
                 /// - Parameters:
@@ -8512,7 +8607,7 @@ public enum Components {
                 ///   - sampling_rate: The sampling rate for tracking events.
                 public init(
                     tracking_id: Components.Schemas.VisitorInsightsTrackingId? = nil,
-                    sampling_rate: Swift.Double? = nil
+                    sampling_rate: Swift.Int? = nil
                 ) {
                     self.tracking_id = tracking_id
                     self.sampling_rate = sampling_rate
