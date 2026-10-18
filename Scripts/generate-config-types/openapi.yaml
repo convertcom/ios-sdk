@@ -4218,6 +4218,9 @@ components:
         campaign:
           description: Campaign string
           type: string
+        content:
+          description: Content string (ad-creative identifier from utm_content)
+          type: string
         visitorType:
           description: Type of the visitor
           type: string
