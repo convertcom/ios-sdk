@@ -133,6 +133,99 @@ paths:
         description: Live API server for **Configs** endpoints
       - url: 'https://cdn-provider-dev.convertexperiments.com/api/v1'
         description: Live API server for **Configs** endpoints
+  '/config-js/{account_id}/{project_id}':
+    get:
+      operationId: getProjectConfigJs
+      summary: Default Get Project Config as JavaScript
+      description: >
+        This is the default endpoint that does not need SDK Keys. It returns the
+        project's config as a JavaScript document that a page can load with a
+        script tag. The default form declares `const convertConfig`. The window
+        form assigns `window._conv_config`.
+      tags:
+        - Project Config
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          description: ID of the account that owns the retrieved/saved data
+          schema:
+            type: integer
+        - name: project_id
+          in: path
+          required: true
+          description: ID of the project to be retrieved
+          schema:
+            type: integer
+        - name: environment
+          in: query
+          description: Filter experiences based on environment.
+          schema:
+            type: string
+        - name: _conv_assign
+          in: query
+          description: >
+            Selects the form of the JavaScript body. Only the exact value
+            `window` selects the window form. Any other value, an empty value,
+            or no parameter gives the default form. An unrecognized value never
+            causes an error.
+          schema:
+            type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/ProjectConfigJsResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    servers:
+      - url: 'https://cdn-4.convertexperiments.com/api/v1'
+        description: Live API server for **Configs** endpoints
+      - url: 'https://cdn-provider-dev.convertexperiments.com/api/v1'
+        description: Live API server for **Configs** endpoints
+  '/config-js/{sdk_key}':
+    get:
+      operationId: getProjectConfigJsBySdkKey
+      summary: Sdk-Key Get Project Config as JavaScript
+      description: >
+        This endpoint returns the project's config as a JavaScript document that
+        a page can load with a script tag, using the SDK Key. The default form
+        declares `const convertConfig`. The window form assigns
+        `window._conv_config`.
+      tags:
+        - Project Config
+      parameters:
+        - name: sdk_key
+          in: path
+          required: true
+          description: The SDK key used to retrieve the project's config
+          schema:
+            type: string
+        - name: environment
+          in: query
+          description: Filter experiences based on environment.
+          schema:
+            type: string
+        - name: _conv_assign
+          in: query
+          description: >
+            Selects the form of the JavaScript body. Only the exact value
+            `window` selects the window form. Any other value, an empty value,
+            or no parameter gives the default form. An unrecognized value never
+            causes an error.
+          schema:
+            type: string
+      security:
+        - sdkKeyAuth: []
+        - debuggingTokenAuth: []
+      responses:
+        '200':
+          $ref: '#/components/responses/ProjectConfigJsResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    servers:
+      - url: 'https://cdn-4.convertexperiments.com/api/v1'
+        description: Live API server for **Configs** endpoints
+      - url: 'https://cdn-provider-dev.convertexperiments.com/api/v1'
+        description: Live API server for **Configs** endpoints
   '/project-settings/{account_id}/{project_id}':
     get:
       operationId: getProjectSettings
@@ -287,8 +380,11 @@ paths:
           schema:
             type: integer
         - name: visitor_id
-          in: query
-          description: ID of the visitor to be retrieved
+          in: path
+          description: >-
+            ID of the visitor to be retrieved. Use the same visitor ID sent to
+            the tracking endpoints. They accept only 0-9, a-z, A-Z, ., - and _.
+            Keep it to 64 characters or fewer.
           required: true
           schema:
             type: string
@@ -319,8 +415,11 @@ paths:
           schema:
             type: string
         - name: visitor_id
-          in: query
-          description: ID of the visitor to be retrieved
+          in: path
+          description: >-
+            ID of the visitor to be retrieved. Use the same visitor ID sent to
+            the tracking endpoints. They accept only 0-9, a-z, A-Z, ., - and _.
+            Keep it to 64 characters or fewer.
           required: true
           schema:
             type: string
@@ -370,6 +469,16 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ConfigResponseData'
+    ProjectConfigJsResponse:
+      description: >
+        The project config as a JavaScript document. The default form is `const
+        convertConfig = {json};`. The window form, selected with
+        `_conv_assign=window`, is `window._conv_config = {json};`. The window
+        form carries `Cache-Control: no-store` and `edge-control: no-store`.
+      content:
+        application/javascript:
+          schema:
+            type: string
     ProjectConfigMinimalResponse:
       description: |
         Object consumed by SDKs
@@ -414,6 +523,7 @@ components:
         key:
           description: Audience unique key
           type: string
+          nullable: true
         name:
           type: string
           description: Audience Name
@@ -873,6 +983,10 @@ components:
       type: string
       enum:
         - bucketed_into_segment
+    ExperienceKeyBucketedMatchRulesTypes:
+      type: string
+      enum:
+        - bucketed_into_experience_key
     DayOfWeekMatchRulesTypes:
       type: string
       enum:
@@ -913,6 +1027,7 @@ components:
         - $ref: '#/components/schemas/LanguageMatchRulesTypes'
         - $ref: '#/components/schemas/GoalTriggeredMatchRulesTypes'
         - $ref: '#/components/schemas/SegmentBucketedMatchRulesTypes'
+        - $ref: '#/components/schemas/ExperienceKeyBucketedMatchRulesTypes'
         - $ref: '#/components/schemas/DayOfWeekMatchRulesTypes'
         - $ref: '#/components/schemas/HourOfDayMatchRulesTypes'
         - $ref: '#/components/schemas/MinuteOfHourMatchRulesTypes'
@@ -1175,6 +1290,22 @@ components:
                   properties:
                     match_type:
                       $ref: '#/components/schemas/ChoiceMatchingOptions'
+    ExperienceKeyBucketedMatchRule:
+      allOf:
+        - $ref: '#/components/schemas/BaseRuleWithStringValue'
+        - type: object
+          required:
+            - rule_type
+          properties:
+            rule_type:
+              $ref: '#/components/schemas/ExperienceKeyBucketedMatchRulesTypes'
+            matching:
+              allOf:
+                - $ref: '#/components/schemas/BaseMatch'
+                - type: object
+                  properties:
+                    match_type:
+                      $ref: '#/components/schemas/ChoiceMatchingOptions'
     ExperienceBucketedMatchRule:
       allOf:
         - $ref: '#/components/schemas/BaseRuleWithExperienceBucketedValue'
@@ -1300,6 +1431,7 @@ components:
         - $ref: '#/components/schemas/LanguageMatchRule'
         - $ref: '#/components/schemas/GoalTriggeredMatchRule'
         - $ref: '#/components/schemas/SegmentBucketedMatchRule'
+        - $ref: '#/components/schemas/ExperienceKeyBucketedMatchRule'
         - $ref: '#/components/schemas/DayOfWeekMatchRule'
         - $ref: '#/components/schemas/HourOfDayMatchRule'
         - $ref: '#/components/schemas/MinuteOfHourMatchRule'
@@ -1330,6 +1462,7 @@ components:
           visits_count: '#/components/schemas/GenericNumericMatchRule'
           bucketed_into_experience: '#/components/schemas/GenericBoolMatchRule'
           bucketed_into_segment: '#/components/schemas/SegmentBucketedMatchRule'
+          bucketed_into_experience_key: '#/components/schemas/ExperienceKeyBucketedMatchRule'
           local_time_day_of_week: '#/components/schemas/DayOfWeekMatchRule'
           local_time_hour_of_day: '#/components/schemas/HourOfDayMatchRule'
           local_time_minute_of_hour: '#/components/schemas/MinuteOfHourMatchRule'
@@ -1374,6 +1507,7 @@ components:
         - $ref: '#/components/schemas/LanguageMatchRule'
         - $ref: '#/components/schemas/GoalTriggeredMatchRule'
         - $ref: '#/components/schemas/SegmentBucketedMatchRule'
+        - $ref: '#/components/schemas/ExperienceKeyBucketedMatchRule'
         - $ref: '#/components/schemas/DayOfWeekMatchRule'
         - $ref: '#/components/schemas/HourOfDayMatchRule'
         - $ref: '#/components/schemas/MinuteOfHourMatchRule'
@@ -1406,6 +1540,7 @@ components:
           visits_count: '#/components/schemas/GenericNumericMatchRule'
           bucketed_into_experience: '#/components/schemas/GenericBoolMatchRule'
           bucketed_into_segment: '#/components/schemas/SegmentBucketedMatchRule'
+          bucketed_into_experience_key: '#/components/schemas/ExperienceKeyBucketedMatchRule'
           local_time_day_of_week: '#/components/schemas/DayOfWeekMatchRule'
           local_time_hour_of_day: '#/components/schemas/HourOfDayMatchRule'
           local_time_minute_of_hour: '#/components/schemas/MinuteOfHourMatchRule'
@@ -1448,6 +1583,7 @@ components:
         - $ref: '#/components/schemas/LanguageMatchRule'
         - $ref: '#/components/schemas/GoalTriggeredMatchRule'
         - $ref: '#/components/schemas/SegmentBucketedMatchRule'
+        - $ref: '#/components/schemas/ExperienceKeyBucketedMatchRule'
         - $ref: '#/components/schemas/DayOfWeekMatchRule'
         - $ref: '#/components/schemas/HourOfDayMatchRule'
         - $ref: '#/components/schemas/MinuteOfHourMatchRule'
@@ -1481,6 +1617,7 @@ components:
           visits_count: '#/components/schemas/GenericNumericMatchRule'
           bucketed_into_experience: '#/components/schemas/GenericBoolMatchRule'
           bucketed_into_segment: '#/components/schemas/SegmentBucketedMatchRule'
+          bucketed_into_experience_key: '#/components/schemas/ExperienceKeyBucketedMatchRule'
           local_time_day_of_week: '#/components/schemas/DayOfWeekMatchRule'
           local_time_hour_of_day: '#/components/schemas/HourOfDayMatchRule'
           local_time_minute_of_hour: '#/components/schemas/MinuteOfHourMatchRule'
@@ -1819,14 +1956,9 @@ components:
             obfuscated inside a recording.
         sampling_rate:
           type: integer
+          minimum: 0
+          maximum: 100
           default: 5
-          enum:
-            - 5
-            - 10
-            - 20
-            - 30
-            - 40
-            - 50
           description: >
             The percentage of visitors included in sampling for Convert Signals
             session recordings and Heatmaps for this project.
@@ -1996,6 +2128,10 @@ components:
         version and retry your update with the new concurrency_key. This
         implements optimistic concurrency control to prevent lost updates in
         concurrent scenarios.
+    UserAuthMetaData:
+      type: string
+      description: Device fingerprint computed by client-side.
+      x-mcp-exclude-field: true
     ConfigResponseData:
       type: object
       description: >-
@@ -3021,6 +3157,7 @@ components:
         key:
           description: Experience readable key that uniquely identifies this experience
           type: string
+          nullable: true
         locations:
           description: >-
             List of locations IDs on which this experience is presented. Either
@@ -3206,6 +3343,7 @@ components:
         key:
           description: Variation Key
           type: string
+          nullable: true
         traffic_allocation:
           description: >
             Percentage of traffic allocation for this variation, as a number
@@ -3270,6 +3408,7 @@ components:
         key:
           description: A unique per project level identifier
           type: string
+          nullable: true
         variables:
           type: array
           description: An array of user-defined variables of a feature.
@@ -3308,6 +3447,7 @@ components:
         key:
           description: Goal Key
           type: string
+          nullable: true
         type:
           type: array
           description: List of goal types to be returned
@@ -3696,6 +3836,7 @@ components:
         key:
           description: Location unique key
           type: string
+          nullable: true
         name:
           type: string
           description: Location Name
@@ -3958,7 +4099,7 @@ components:
             tracking_id:
               $ref: '#/components/schemas/VisitorInsightsTrackingId'
             sampling_rate:
-              type: number
+              type: integer
               description: The sampling rate for tracking events.
               minimum: 0
               maximum: 100
@@ -4015,6 +4156,7 @@ components:
         key:
           description: Segment unique key
           type: string
+          nullable: true
         name:
           type: string
           description: Segment Name
@@ -4060,7 +4202,15 @@ components:
                 $ref: '#/components/schemas/VisitorSegments'
               visitorId:
                 type: string
-                description: Id of the visitor tracked
+                pattern: '^[0-9a-zA-Z._-]+$'
+                description: >
+                  The ID of the visitor tracked. Only 0-9, a-z, A-Z, ., - and _
+                  are allowed. The tracking server drops a visitor whose ID
+                  breaks this rule and still answers 200, so the events never
+                  reach reports or Live Logs. Keep the ID to 64 characters or
+                  fewer. One longer ID can stop reports from using visitor-level
+                  revenue statistics for its whole variation. An ID over 256
+                  characters may not be tracked at all.
               events:
                 type: array
                 description: List of events fired for the given visitor
@@ -4217,6 +4367,9 @@ components:
             - ai_tool
         campaign:
           description: Campaign string
+          type: string
+        content:
+          description: Content string (ad-creative identifier from utm_content)
           type: string
         visitorType:
           description: Type of the visitor
